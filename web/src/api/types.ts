@@ -213,8 +213,31 @@ export interface Download {
   created: number
   state: DownloadState
   error?: string
+  /** What Modal had to do with a failure: it said the workspace is out of money ('billing'), or stopped the work without a reason ('unexplained'). */
+  error_kind?: 'billing' | 'unexplained'
+  /** Seconds a download that should be running has gone without a word from its container. */
+  silent?: number
   cookies?: boolean
   status?: DownloadStatus
+}
+
+/** An account's spending this month. Modal's API doesn't tell the credit left or the spend limit. */
+export interface Billing {
+  period_start: number
+  period_end: number
+  /** This month's cost before credits and free allowances, in US dollars. */
+  metered: number
+  /** What Modal charges after them. */
+  billed: number
+  adjustments?: Record<string, number>
+  /** What remote downloads cost this month in the environment (Modal's report lags an hour or so). */
+  downloads?: number
+  downloads_error?: string
+  /** What a download costs an hour while it runs, per size, at the workspace's rates. */
+  hourly?: Partial<Record<DownloadSize, number>>
+  /** Modal's Usage & Billing page, where the spend limit and the credit are. */
+  usage_url: string
+  at: number
 }
 
 /** A line of the download's events.jsonl: what happened to it, and when. */

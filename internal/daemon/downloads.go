@@ -32,11 +32,12 @@ type dlManager struct {
 	d     *Daemon
 	store *downloads.Store
 	// runnerFor and volumeFor reach Modal; tests replace them.
-	runnerFor func(accountID, env string) (downloads.Runner, error)
-	volumeFor func(ctx context.Context, accountID, env, name string) (modalapi.VolumeInfo, error)
-	poll      time.Duration // how often a running download's records are read
-	stopAfter time.Duration // how long a pause may take before the call is cancelled
-	quit      <-chan struct{}
+	runnerFor  func(accountID, env string) (downloads.Runner, error)
+	volumeFor  func(ctx context.Context, accountID, env, name string) (modalapi.VolumeInfo, error)
+	billingFor func(ctx context.Context, accountID, env string) (Billing, error)
+	poll       time.Duration // how often a running download's records are read
+	stopAfter  time.Duration // how long a pause may take before the call is cancelled
+	quit       <-chan struct{}
 
 	mu        sync.Mutex
 	runners   map[clientKey]*downloads.Modal
@@ -45,6 +46,8 @@ type dlManager struct {
 	status    map[string]downloads.Status // the latest status.json of a running job
 	history   map[string]*downloads.History
 	live      map[string]*liveFeed
+
+	bills billingCache
 }
 
 func newDLManager(d *Daemon, dir string, quit <-chan struct{}) (*dlManager, error) {
@@ -56,6 +59,7 @@ func newDLManager(d *Daemon, dir string, quit <-chan struct{}) (*dlManager, erro
 		runners: map[clientKey]*downloads.Modal{}, following: map[string]bool{}, stopping: map[string]bool{},
 		status: map[string]downloads.Status{}, history: map[string]*downloads.History{}, live: map[string]*liveFeed{}}
 	m.runnerFor = m.modalRunner
+	m.billingFor = m.readBilling
 	m.volumeFor = func(ctx context.Context, accountID, env, name string) (modalapi.VolumeInfo, error) {
 		c, _, err := d.clientFor(accountID, env)
 		if err != nil {
@@ -218,8 +222,12 @@ func (m *dlManager) launch(id string) {
 	}
 	name := displayName(j, nil)
 	fail := func(err error) {
-		_, _ = m.store.Update(id, func(j *downloads.Job) { j.State, j.Error = "failed", err.Error() })
-		m.d.emitC("error", "dl_failed", "", j.VolumeName, "download of "+name+" failed: "+err.Error(), name, err.Error())
+		if failed, e := m.store.Update(id, func(j *downloads.Job) {
+			j.State, j.Error, j.ErrorKind = "failed", err.Error(), downloads.Why(err.Error())
+		}); e == nil {
+			j = failed
+		}
+		m.announce(j)
 	}
 	r, err := m.runner(j)
 	if err != nil {
@@ -264,7 +272,7 @@ func (m *dlManager) launch(id string) {
 	}
 	_, _ = m.store.Update(id, func(j *downloads.Job) {
 		j.Calls = append(j.Calls, call)
-		j.State, j.Error = downloads.StateRunning, ""
+		j.State, j.Error, j.ErrorKind, j.Started = downloads.StateRunning, "", "", time.Now().Unix()
 	})
 	m.d.emitC("info", "dl_started", "", j.VolumeName, "downloading "+name+" into "+j.VolumeName+":/"+j.Folder, name, j.VolumeName+":/"+j.Folder)
 	m.follow(id)
@@ -377,7 +385,7 @@ func (m *dlManager) ended(ctx context.Context, r downloads.Runner, j downloads.J
 		m.d.emitC("info", "dl_continued", "", j.VolumeName, name+" reached the Function's time limit and continues in a new one", name)
 		return false
 	}
-	state, msg := "", ""
+	state, msg, kind := "", "", ""
 	switch {
 	case callErr != nil && st != nil && !st.Running() && st.State != "interrupted":
 		// The call's result is lost, but the agent recorded how it ended.
@@ -393,6 +401,12 @@ func (m *dlManager) ended(ctx context.Context, r downloads.Runner, j downloads.J
 		state = "paused"
 	default:
 		state, msg = "failed", callErr.Error()
+		kind = downloads.Why(msg)
+		if kind == "" && (st == nil || st.Running()) {
+			// The container went without the agent's last word, and Modal
+			// didn't start another: Modal stopped it.
+			kind = downloads.WhyUnexplained
+		}
 	}
 	if j.Stopping == "cancel" && state != "done" {
 		if err := m.discard(ctx, r, j); err != nil {
@@ -406,7 +420,7 @@ func (m *dlManager) ended(ctx context.Context, r downloads.Runner, j downloads.J
 		st.State, st.Speed, st.ETA = state, 0, nil
 	}
 	j, _ = m.store.Update(j.ID, func(j *downloads.Job) {
-		j.State, j.Error, j.Stopping, j.Keep = state, msg, "", false
+		j.State, j.Error, j.ErrorKind, j.Stopping, j.Keep = state, msg, kind, "", false
 		if st != nil {
 			j.Status = st
 		}
@@ -433,7 +447,14 @@ func (m *dlManager) announce(j downloads.Job) {
 	case downloads.StateCancelled:
 		m.d.emitC("info", "dl_cancelled", "", j.VolumeName, name+" cancelled", name)
 	default:
-		m.d.emitC("error", "dl_failed", "", j.VolumeName, "download of "+name+" failed: "+j.Error, name, j.Error)
+		switch j.ErrorKind {
+		case downloads.WhyBilling:
+			m.d.emitC("error", "dl_failed_billing", "", j.VolumeName, "download of "+name+" failed: "+j.Error+". Modal says the workspace is out of credit or over its spend limit; raise the limit or add credit on Modal's Usage & Billing page, then resume it", name, j.Error)
+		case downloads.WhyUnexplained:
+			m.d.emitC("error", "dl_failed_unexplained", "", j.VolumeName, "download of "+name+" failed: "+j.Error+". Modal stopped it without saying why; one cause is a workspace over its spend limit or out of credit, so check Modal's Usage & Billing page, then resume it", name, j.Error)
+		default:
+			m.d.emitC("error", "dl_failed", "", j.VolumeName, "download of "+name+" failed: "+j.Error, name, j.Error)
+		}
 	}
 }
 
@@ -622,7 +643,7 @@ func (m *dlManager) Resume(ctx context.Context, id string) error {
 			return fmt.Errorf("download %s's last run is still ending; try again in a moment", id)
 		}
 	}
-	if _, err := m.store.Update(id, func(j *downloads.Job) { j.State, j.Error = downloads.StatePreparing, "" }); err != nil {
+	if _, err := m.store.Update(id, func(j *downloads.Job) { j.State, j.Error, j.ErrorKind = downloads.StatePreparing, "", "" }); err != nil {
 		return err
 	}
 	go m.launch(id)
@@ -663,22 +684,28 @@ func (m *dlManager) Forget(ctx context.Context, id string) error {
 // DownloadView is a download as the API shows it: no live token, no
 // cookies, and the link without credentials.
 type DownloadView struct {
-	ID           string            `json:"id"`
-	AccountID    string            `json:"account_id"`
-	AccountLabel string            `json:"account_label"`
-	Environment  string            `json:"environment,omitempty"`
-	VolumeID     string            `json:"volume_id"`
-	VolumeName   string            `json:"volume_name"`
-	Folder       string            `json:"folder"`
-	URL          string            `json:"url"`
-	Name         string            `json:"name"`
-	Tool         string            `json:"tool"`
-	Size         string            `json:"size"`
-	Created      int64             `json:"created"`
-	State        string            `json:"state"`
-	Error        string            `json:"error,omitempty"`
-	Cookies      bool              `json:"cookies,omitempty"`
-	Status       *downloads.Status `json:"status,omitempty"`
+	ID           string `json:"id"`
+	AccountID    string `json:"account_id"`
+	AccountLabel string `json:"account_label"`
+	Environment  string `json:"environment,omitempty"`
+	VolumeID     string `json:"volume_id"`
+	VolumeName   string `json:"volume_name"`
+	Folder       string `json:"folder"`
+	URL          string `json:"url"`
+	Name         string `json:"name"`
+	Tool         string `json:"tool"`
+	Size         string `json:"size"`
+	Created      int64  `json:"created"`
+	State        string `json:"state"`
+	Error        string `json:"error,omitempty"`
+	ErrorKind    string `json:"error_kind,omitempty"` // see downloads.Why
+	// Silent is how many seconds a download that should be running has
+	// gone without a word from its container (status.json or the live
+	// channel): a minute or so when Modal moves it, longer when Modal
+	// doesn't start one.
+	Silent  int64             `json:"silent,omitempty"`
+	Cookies bool              `json:"cookies,omitempty"`
+	Status  *downloads.Status `json:"status,omitempty"`
 }
 
 func (m *dlManager) views() []DownloadView {
@@ -710,7 +737,14 @@ func (m *dlManager) view(j downloads.Job, account string) DownloadView {
 	v := DownloadView{ID: j.ID, AccountID: j.AccountID, AccountLabel: account, Environment: j.Environment,
 		VolumeID: j.VolumeID, VolumeName: j.VolumeName, Folder: j.Folder, URL: downloads.StripCredentials(j.URL),
 		Name: displayName(j, st), Tool: j.Tool, Size: j.Size, Created: j.Created, State: j.State, Error: j.Error,
-		Cookies: j.Cookies != "", Status: st}
+		ErrorKind: j.ErrorKind, Cookies: j.Cookies != "", Status: st}
+	if j.State == downloads.StateRunning && j.Started > 0 {
+		last := float64(j.Started)
+		if st != nil && st.T > j.Before {
+			last = max(last, st.T)
+		}
+		v.Silent = max(0, time.Now().Unix()-int64(last))
+	}
 	if j.State == downloads.StateRunning && (st == nil || st.T <= j.Before) {
 		v.State = "starting"
 	} else if j.State == downloads.StateRunning {
@@ -1042,10 +1076,13 @@ func (m *dlManager) runLive(j downloads.Job, url string, f *liveFeed) {
 
 // ---------- API ----------
 
+var errNoDownloads = errors.New("remote downloads aren't available in this process")
+
 func (d *Daemon) downloadRoutes(mux *http.ServeMux) {
+	d.billingRoutes(mux)
 	ready := func(w http.ResponseWriter) bool {
 		if d.dl == nil {
-			writeErr(w, errors.New("remote downloads aren't available in this process"))
+			writeErr(w, errNoDownloads)
 			return false
 		}
 		return true

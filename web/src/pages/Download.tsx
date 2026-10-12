@@ -1,11 +1,11 @@
 import { cn } from 'cn'
-import { ChevronLeft, FileText, Pause, Play, Trash2, TriangleAlert, X } from 'lucide-react'
+import { ChevronLeft, ExternalLink, FileText, Pause, Play, RotateCcw, Trash2, TriangleAlert, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { api, apiText } from '@/api/client'
-import { refreshDownloads, refreshState, useAppState, useDownloadRecords, useLive } from '@/api/queries'
-import type { Download } from '@/api/types'
+import { refreshDownloads, refreshState, useAppState, useBilling, useDownloadRecords, useLive } from '@/api/queries'
+import type { Billing, Download, DownloadStatus } from '@/api/types'
 import { useIsDark } from '@/app/theme'
 import { confirm } from '@/components/confirm'
 import { Card, Mono, Page, Section } from '@/components/page'
@@ -16,8 +16,9 @@ import { duration } from '@/components/StopProgress'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { BUSY, ENDED, HOURLY, happenings, progressText, RESUMABLE, RUNNING, series, speed, type Tone, when } from '@/lib/downloads'
+import { BUSY, ENDED, happenings, hourlyFor, progressText, RESUMABLE, RUNNING, SILENT_WARN, series, speed, type Tone, when } from '@/lib/downloads'
 import { bytes } from '@/lib/format'
+import { openExternal } from '@/lib/platform'
 import { StateBadge, useDownloadAction } from './Downloads'
 
 /** One download: where it stands, its speed over the whole run, and everything that happened to it. */
@@ -32,6 +33,7 @@ export function DownloadPage({ d, onBack }: { d: Download; onBack: () => void })
   const [range, setRange] = useState<Range>('all')
   const [logOpen, setLogOpen] = useState(false)
   const act = useDownloadAction()
+  const billing = useBilling(d.account_id, d.environment)
 
   const s = live.view?.status ?? d.status
   const points = useMemo(() => series(records.history, running ? live.samples : []), [records.history, live.samples, running])
@@ -40,6 +42,9 @@ export function DownloadPage({ d, onBack }: { d: Download; onBack: () => void })
   const pct = s && s.total > 0 ? Math.min(100, (s.done / s.total) * 100) : undefined
   const started = events.find((e) => e.ev === 'start')?.t
   const finished = events.findLast((e) => e.ev === 'finished')?.t
+  // A download Modal refused to start never ran: there's nothing to chart or count.
+  const ran = !!s || records.history.length > 0 || events.length > 0 || running
+  const silent = !ENDED.has(d.state) && (d.silent ?? 0) >= SILENT_WARN
 
   const askCancel = () => cancelDialog(d, t)
   const askRemove = () =>
@@ -75,7 +80,7 @@ export function DownloadPage({ d, onBack }: { d: Download; onBack: () => void })
       }
       actions={
         <>
-          {(running || BUSY.has(d.state)) && (
+          {(running || d.state === 'pausing' || d.state === 'cancelling') && (
             <Button variant="outline" disabled={!running || d.state === 'pausing' || d.state === 'finishing' || act.isPending} onClick={() => act.mutate({ id: d.id, action: 'pause' })}>
               {d.state === 'pausing' ? <Spinner /> : <Pause />}
               {t(d.state === 'pausing' ? 'downloads.state.pausing' : 'downloads.pause')}
@@ -83,23 +88,17 @@ export function DownloadPage({ d, onBack }: { d: Download; onBack: () => void })
           )}
           {RESUMABLE.has(d.state) && (
             <Button disabled={act.isPending} onClick={() => act.mutate({ id: d.id, action: 'resume' })}>
-              <Play />
-              {t('downloads.resume')}
+              {ran ? <Play /> : <RotateCcw />}
+              {t(ran ? 'downloads.resume' : 'downloads.retry')}
             </Button>
           )}
         </>
       }
     >
-      {(d.state === 'failed' || d.state === 'stalled') && (d.error || s?.log_tail?.length) && (
-        <div data-selectable className="-mt-2 flex gap-2 rounded-xl bg-destructive/8 px-4 py-3 text-[12.5px] leading-relaxed text-destructive">
-          <TriangleAlert className="mt-0.5 size-4 shrink-0" />
-          <div className="min-w-0">
-            <div className="font-medium">{d.error || t(`downloads.state.${d.state}`)}</div>
-            {s?.log_tail && s.log_tail.length > 0 && <pre className="mt-1.5 max-h-28 overflow-auto font-mono text-[11px] whitespace-pre-wrap text-destructive/80">{s.log_tail.slice(-6).join('\n')}</pre>}
-          </div>
-        </div>
-      )}
+      {(d.state === 'failed' || d.state === 'stalled') && (d.error || s?.log_tail?.length) && <Problem d={d} s={s} billing={billing.data} />}
+      {silent && <Silent d={d} billing={billing.data} />}
 
+      {ran && (
       <div>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           <Stat value={s ? (pct !== undefined && d.state !== 'done' ? `${pct.toFixed(pct < 10 ? 1 : 0)}%` : bytes(s.done)) : '—'} label={s && s.total > 0 && d.state !== 'done' ? progressText(d, t) : t('downloads.downloaded')} />
@@ -117,7 +116,9 @@ export function DownloadPage({ d, onBack }: { d: Download; onBack: () => void })
           </span>
         )}
       </div>
+      )}
 
+      {ran && (
       <Section
         label={t('downloads.speedOver')}
         aside={
@@ -146,6 +147,7 @@ export function DownloadPage({ d, onBack }: { d: Download; onBack: () => void })
           </p>
         )}
       </Section>
+      )}
 
       {what.length > 0 && (
         <Section label={t('downloads.happened')}>
@@ -201,7 +203,7 @@ export function DownloadPage({ d, onBack }: { d: Download; onBack: () => void })
             <dt className="text-muted-foreground">{t('downloads.size')}</dt>
             <dd>
               {t(`downloads.sizes.${d.size}`)}
-              <span className="text-muted-foreground"> · {t('downloads.perHour', { price: HOURLY[d.size].toFixed(4) })}</span>
+              <span className="text-muted-foreground"> · {t('downloads.perHour', { price: hourlyFor(d.size, billing.data).toFixed(4) })}</span>
             </dd>
             <dt className="text-muted-foreground">{t('form.account')}</dt>
             <dd data-selectable>
@@ -215,12 +217,14 @@ export function DownloadPage({ d, onBack }: { d: Download; onBack: () => void })
       </Section>
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="outline" size="sm" onClick={() => setLogOpen(true)}>
-          <FileText />
-          {t('downloads.log')}
-        </Button>
+        {ran && (
+          <Button variant="outline" size="sm" onClick={() => setLogOpen(true)}>
+            <FileText />
+            {t('downloads.log')}
+          </Button>
+        )}
         <span className="flex-1" />
-        {!ENDED.has(d.state) || RESUMABLE.has(d.state) ? (
+        {ran && (!ENDED.has(d.state) || RESUMABLE.has(d.state)) ? (
           <Button variant="ghost" size="sm" className="text-destructive hover:bg-destructive/10 hover:text-destructive" disabled={BUSY.has(d.state)} onClick={askCancel}>
             <X />
             {t('downloads.cancel')}
@@ -235,6 +239,48 @@ export function DownloadPage({ d, onBack }: { d: Download; onBack: () => void })
       </div>
       <LogDialog id={d.id} name={d.name} open={logOpen} onOpenChange={setLogOpen} />
     </Page>
+  )
+}
+
+/** Why it failed, in plain words, with Modal's own message under it when Modal was the reason. */
+function Problem({ d, s, billing }: { d: Download; s?: DownloadStatus; billing?: Billing }) {
+  const { t } = useTranslation()
+  const kind = d.error_kind
+  return (
+    <div data-selectable className="-mt-2 flex gap-2 rounded-xl bg-destructive/8 px-4 py-3 text-[12.5px] leading-relaxed text-destructive">
+      <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+      <div className="min-w-0">
+        <div className="font-medium text-pretty">{kind ? t(`downloads.why.${kind}`) : d.error || t(`downloads.state.${d.state}`)}</div>
+        {kind && d.error && <div className="mt-1 font-mono text-[11px] break-words text-destructive/80">{t('downloads.modalSaid', { message: d.error })}</div>}
+        {s?.log_tail && s.log_tail.length > 0 && <pre className="mt-1.5 max-h-28 overflow-auto font-mono text-[11px] whitespace-pre-wrap text-destructive/80">{s.log_tail.slice(-6).join('\n')}</pre>}
+        {kind && <BillingLink billing={billing} className="mt-2" />}
+      </div>
+    </div>
+  )
+}
+
+/** Running, but nothing heard from its container for longer than Modal takes to move one. */
+function Silent({ d, billing }: { d: Download; billing?: Billing }) {
+  const { t } = useTranslation()
+  return (
+    <div className="-mt-2 flex gap-2 rounded-xl bg-warn/15 px-4 py-3 text-[12.5px] leading-relaxed text-warn-ink">
+      <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warn" />
+      <div className="min-w-0">
+        <div className="text-pretty">{t('downloads.silent', { time: duration(d.silent ?? 0, t) })}</div>
+        <BillingLink billing={billing} className="mt-2" />
+      </div>
+    </div>
+  )
+}
+
+/** Modal's Usage & Billing page, where the spend limit and the credit are (the API doesn't tell them). */
+export function BillingLink({ billing, className }: { billing?: Billing; className?: string }) {
+  const { t } = useTranslation()
+  return (
+    <Button variant="outline" size="sm" className={cn('bg-background/60', className)} onClick={() => openExternal(billing?.usage_url || 'https://modal.com/settings/usage')}>
+      <ExternalLink />
+      {t('downloads.usagePage')}
+    </Button>
   )
 }
 

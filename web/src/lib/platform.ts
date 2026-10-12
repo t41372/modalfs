@@ -4,7 +4,7 @@
 declare global {
   interface Window {
     /** Wails' runtime, present in the desktop app. */
-    runtime?: { Quit?: () => void }
+    runtime?: { Quit?: () => void; BrowserOpenURL?: (url: string) => void }
     /** Go methods the desktop app binds (cmd/modalfs-gui). */
     go?: { main?: { App?: { SetAppearance?: (a: string) => Promise<void>; Quitting?: () => Promise<void> } } }
   }
@@ -30,6 +30,12 @@ export function markPlatform() {
   root.dataset.glass = glass ? 'on' : 'off'
   root.dataset.platform = isMac ? 'darwin' : 'other'
   if (inApp) root.dataset.app = ''
+}
+
+/** Opens a web page in the default browser: the desktop app's WebView can't open one itself. */
+export function openExternal(url: string) {
+  if (window.runtime?.BrowserOpenURL) window.runtime.BrowserOpenURL(url)
+  else window.open(url, '_blank', 'noopener,noreferrer')
 }
 
 /** The desktop app's window follows the appearance chosen here, not only the system's. */

@@ -264,7 +264,26 @@
     "perHour": "每小时约 ${{price}}",
     "log": "下载工具的日志",
     "logOf": "{{name}} 的日志",
-    "logEmpty": "日志是空的。"
+    "logEmpty": "日志是空的。",
+    "volumesOurs": "用 modalfs 挂载的",
+    "volumesOthers": "其他 volume",
+    "retry": "重试",
+    "why": {
+      "billing": "Modal 表示这个工作区的额度已用完，或已达支出上限，所以不执行这个下载。请到 Modal 的 Usage & Billing 页面提高上限或充值，再继续下载。",
+      "unexplained": "Modal 停止了这个下载，但没有说明原因。其中一种可能是工作区已达支出上限或额度用完，这时 Modal 不会启动容器。请到 Modal 的 Usage & Billing 页面确认，再重试。"
+    },
+    "whyShort": {
+      "billing": "Modal：额度用完或已达支出上限",
+      "unexplained": "Modal 停止了它但没说原因。请确认支出上限和额度"
+    },
+    "modalSaid": "Modal 的消息：{{message}}",
+    "silent": "已经 {{time}} 没收到下载容器的消息。Modal 可能还在启动或迁移它。如果一直这样，可能是工作区已达支出上限或额度用完，Modal 不会再启动容器。",
+    "silentShort": "已 {{time}} 没有 Modal 的消息",
+    "usagePage": "Usage & Billing",
+    "spending": "本月",
+    "spendingNote": "Modal 的 API 只提供已花费的金额，不提供剩余额度或支出上限；这两项在 Modal 的 Usage & Billing 页面。下载的费用大约延迟一小时才会出现在那里和这里。",
+    "spentDownloads": "下载 {{amount}}",
+    "spentWorkspace": "整个工作区已用 {{used}}，扣除额度后 {{charged}}"
   },
   "accounts": {
     "title": "账号",
@@ -334,6 +353,8 @@
     "dl_time_limit": "{{a0}} 在 Function 的时间上限暂停了。点继续可以接着下载",
     "dl_cancelled": "{{a0}} 已取消",
     "dl_failed": "{{a0}} 下载失败：{{a1}}",
+    "dl_failed_billing": "{{a0}} 下载失败：Modal 表示工作区额度用完或已达支出上限（{{a1}}）",
+    "dl_failed_unexplained": "{{a0}} 下载失败：Modal 停止了它但没说原因（{{a1}}）。请确认工作区的支出上限和额度",
     "dl_stop_failed": "无法停止 {{a0}}：{{a1}}。它可能还在你的 Modal 工作区运行",
     "dl_stopped_hard": "下载 {{a0}} 的容器没有响应，所以直接停掉了。继续时会从最后保存的进度接着下载"
   },

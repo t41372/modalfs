@@ -1,7 +1,13 @@
 import { cn } from 'cn'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Fragment } from 'react'
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select'
 
-/** A drop-down list of options. `value` must be one of them; an empty value shows the placeholder. */
+type Option<T> = { value: T; label: string; hint?: string; disabled?: boolean; group?: string }
+
+/**
+ * A drop-down list of options. `value` must be one of them; an empty value shows the placeholder.
+ * Options with a `group` are listed under its label, groups in the order they first appear.
+ */
 export function Choice<T extends string>({
   value,
   options,
@@ -12,13 +18,25 @@ export function Choice<T extends string>({
   disabled,
 }: {
   value: T
-  options: { value: T; label: string; hint?: string; disabled?: boolean }[]
+  options: Option<T>[]
   onChange: (value: T) => void
   label: string
   placeholder?: string
   className?: string
   disabled?: boolean
 }) {
+  const groups: { label?: string; options: Option<T>[] }[] = []
+  for (const o of options) {
+    const g = groups.find((x) => x.label === o.group)
+    if (g) g.options.push(o)
+    else groups.push({ label: o.group, options: [o] })
+  }
+  const item = (o: Option<T>) => (
+    <SelectItem key={o.value} value={o.value} disabled={o.disabled}>
+      {o.label}
+      {o.hint && <span className="ml-1.5 text-muted-foreground">{o.hint}</span>}
+    </SelectItem>
+  )
   return (
     <Select
       value={value}
@@ -30,12 +48,19 @@ export function Choice<T extends string>({
         <SelectValue placeholder={placeholder} />
       </SelectTrigger>
       <SelectContent alignItemWithTrigger={false} align="end">
-        {options.map((o) => (
-          <SelectItem key={o.value} value={o.value} disabled={o.disabled}>
-            {o.label}
-            {o.hint && <span className="ml-1.5 text-muted-foreground">{o.hint}</span>}
-          </SelectItem>
-        ))}
+        {groups.map((g, i) =>
+          g.label === undefined ? (
+            <Fragment key={i}>{g.options.map(item)}</Fragment>
+          ) : (
+            <Fragment key={i}>
+              {i > 0 && <SelectSeparator />}
+              <SelectGroup className="p-0">
+                <SelectLabel>{g.label}</SelectLabel>
+                {g.options.map(item)}
+              </SelectGroup>
+            </Fragment>
+          ),
+        )}
       </SelectContent>
     </Select>
   )

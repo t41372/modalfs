@@ -2,13 +2,22 @@
 // over the whole run, what interrupted it, and what it costs.
 
 import type { TFunction } from 'i18next'
-import type { Download, DownloadEvent, DownloadSize, Sample } from '@/api/types'
+import type { Billing, Download, DownloadEvent, DownloadSize, Sample } from '@/api/types'
 import { intlTag } from '@/i18n'
 import { duration as span } from '@/components/StopProgress'
 import { bytes } from './format'
 
 /** Roughly what a download's Function costs an hour while it runs, in US dollars (Modal's rates for a Function's cores and memory). */
 export const HOURLY: Record<DownloadSize, number> = { small: 0.0099, medium: 0.0198, large: 0.063 }
+
+/** What a size costs an hour at the workspace's own rates when they're known, else Modal's list price. */
+export const hourlyFor = (size: DownloadSize, b?: Billing) => b?.hourly?.[size] ?? HOURLY[size]
+
+/** A download that should be running has gone this long (seconds) without a word: longer than Modal takes to move a container. */
+export const SILENT_WARN = 180
+
+/** Dollars, with cents for bigger sums and more places for the small ones a download costs. */
+export const dollars = (n: number) => `$${n >= 1 || n === 0 ? n.toFixed(2) : n.toFixed(4)}`
 
 /** States in which a run is going, so it can be paused. */
 export const RUNNING = new Set(['starting', 'running', 'retrying', 'finishing', 'interrupted'])

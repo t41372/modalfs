@@ -33,6 +33,7 @@ type fakeRunner struct {
 	calls     map[string]*fakeCall
 	n         int
 	cancelled []string
+	startErr  error // Modal refusing to start a call
 }
 
 type fakeCall struct {
@@ -45,6 +46,9 @@ type fakeCall struct {
 func (f *fakeRunner) Start(_ context.Context, j downloads.Job) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.startErr != nil {
+		return "", f.startErr
+	}
 	f.n++
 	id := fmt.Sprintf("fc-%d", f.n)
 	f.calls[id] = &fakeCall{job: j}
@@ -662,4 +666,108 @@ func (w slowWriter) Write(p []byte) (int, error) {
 		time.Sleep(time.Duration(k) * time.Second / (1 << 20)) // 1 MiB/s per connection
 	}
 	return n, nil
+}
+
+// Modal's refusals are told apart: one that names the spend limit is
+// believed, one without a reason says so and points at billing as a cause.
+func TestDownloadRefusedByModal(t *testing.T) {
+	x := newDLTest(t, true)
+	x.r.startErr = errors.New("RemoteError: Image build for im-AmHP9P7tCZr2GkFtM90o5A terminated due to external shut-down. Please try again.")
+	v := x.add("https://example.com/a.bin")
+	f := x.waitState(v.ID, "failed")
+	if f.ErrorKind != downloads.WhyUnexplained || len(x.events("dl_failed_unexplained")) != 1 {
+		t.Fatalf("refused without a reason: %+v, events %+v", f, x.d.Events(0))
+	}
+
+	x.r.startErr = errors.New("FailedPrecondition: workspace has reached its spend limit")
+	if code, body := x.do("POST", "/api/downloads/"+v.ID+"/resume", map[string]any{}, nil); code != 200 {
+		t.Fatalf("resume: %d %s", code, body)
+	}
+	f = x.waitState(v.ID, "failed")
+	if f.ErrorKind != downloads.WhyBilling || len(x.events("dl_failed_billing")) != 1 {
+		t.Fatalf("refused for money: %+v", f)
+	}
+
+	// Resuming once Modal starts it again clears the reason.
+	x.r.startErr = nil
+	if code, body := x.do("POST", "/api/downloads/"+v.ID+"/resume", map[string]any{}, nil); code != 200 {
+		t.Fatalf("resume: %d %s", code, body)
+	}
+	if r := x.waitState(v.ID, "starting"); r.ErrorKind != "" || r.Error != "" {
+		t.Fatalf("after a resume: %+v", r)
+	}
+
+	// A container gone without the agent's last word, and no other started:
+	// Modal stopped it, reason unknown.
+	x.r.record(t, v.ID, "status.json", map[string]any{"state": "running", "done": 20, "t": float64(time.Now().Unix()), "attempt": 1})
+	x.waitState(v.ID, "running")
+	x.r.mu.Lock()
+	c := x.r.calls[x.job(v.ID).Calls[len(x.job(v.ID).Calls)-1]]
+	c.ended, c.err = true, errors.New("RemoteError: some message")
+	x.r.mu.Unlock()
+	if f = x.waitState(v.ID, "failed"); f.ErrorKind != downloads.WhyUnexplained {
+		t.Fatalf("container gone: %+v", f)
+	}
+}
+
+// A download that should be running but hasn't been heard from says for how
+// long, so the UI can tell a slow start or a move from Modal not starting it.
+func TestDownloadSilence(t *testing.T) {
+	x := newDLTest(t, true)
+	v := x.add("https://example.com/a.bin")
+	x.waitState(v.ID, "starting")
+	if _, err := x.d.dl.store.Update(v.ID, func(j *downloads.Job) { j.Started = time.Now().Unix() - 600 }); err != nil {
+		t.Fatal(err)
+	}
+	if s := x.view(v.ID).Silent; s < 600 || s > 660 {
+		t.Fatalf("silent %d, want about 600", s)
+	}
+	x.r.record(t, v.ID, "status.json", map[string]any{"state": "running", "done": 20, "t": float64(time.Now().Unix() - 5), "attempt": 1})
+	x.waitState(v.ID, "running")
+	if s := x.view(v.ID).Silent; s > 60 {
+		t.Fatalf("silent %d after a fresh status", s)
+	}
+}
+
+func TestBilling(t *testing.T) {
+	x := newDLTest(t, true)
+	calls := 0
+	x.d.dl.billingFor = func(_ context.Context, account, env string) (Billing, error) {
+		calls++
+		cost := 0.25
+		return Billing{Metered: 10.5, Billed: 1.5, Downloads: &cost, UsageURL: "https://modal.com/settings/ws/usage"}, nil
+	}
+	var b Billing
+	for range 2 {
+		if code, body := x.do("GET", "/api/accounts/acct-1/billing", nil, &b); code != 200 {
+			t.Fatalf("billing: %d %s", code, body)
+		}
+	}
+	if calls != 1 || b.Billed != 1.5 || b.Downloads == nil || *b.Downloads != 0.25 || b.At == 0 {
+		t.Fatalf("calls %d, billing %+v", calls, b)
+	}
+	x.do("GET", "/api/accounts/acct-1/billing?fresh=1", nil, &b)
+	if calls != 2 {
+		t.Fatalf("fresh=1 didn't ask again (%d)", calls)
+	}
+}
+
+func TestBillingHelpers(t *testing.T) {
+	h := hourly(map[string]float64{"cpu_hour_cost": 0.0473, "mem_gib_hour_cost": 0.008})
+	if got := h["small"]; got < 0.00990 || got > 0.00992 {
+		t.Fatalf("small costs %f an hour, want about 0.0099", got)
+	}
+	if hourly(map[string]float64{"cpu_hour_cost": 1}) != nil {
+		t.Fatal("hourly without a memory rate")
+	}
+	for in, want := range map[string]string{
+		"https://modal.com/apps/example-workspace/main": "https://modal.com/settings/example-workspace/usage",
+		"https://modal.com/apps/ws":                     "https://modal.com/settings/ws/usage",
+		"https://example.com/":                          "https://modal.com/settings/usage",
+		"::":                                            "https://modal.com/settings/usage",
+	} {
+		if got := usageURL(in); got != want {
+			t.Errorf("usageURL(%q) = %q, want %q", in, got, want)
+		}
+	}
 }

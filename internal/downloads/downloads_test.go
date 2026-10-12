@@ -265,3 +265,24 @@ func TestStripCredentials(t *testing.T) {
 		}
 	}
 }
+
+func TestWhy(t *testing.T) {
+	for msg, want := range map[string]string{
+		"RemoteError: Image build for im-AmHP9P7tCZr2GkFtM90o5A terminated due to external shut-down. Please try again.": WhyUnexplained,
+		"RemoteError: Function call was cancelled by user or a failure.":                                                 WhyUnexplained,
+		"FailedPrecondition: Workspace has reached its spend limit":                                                      WhyBilling,
+		"You have run out of credits":       WhyBilling,
+		"the server answered 404 Not Found": "",
+		"invalid credentials":               "",
+	} {
+		if got := Why(msg); got != want {
+			t.Errorf("Why(%q) = %q, want %q", msg, got, want)
+		}
+	}
+	if got := ImageIDIn("starting the deploy Sandbox: RemoteError: Image build for im-AmHP9P7tCZr2GkFtM90o5A terminated"); got != "im-AmHP9P7tCZr2GkFtM90o5A" {
+		t.Errorf("ImageIDIn: %q", got)
+	}
+	if ImageIDIn("something else") != "" {
+		t.Error("ImageIDIn found an ID in nothing")
+	}
+}

@@ -28,6 +28,8 @@ into a volume, so your computer can sleep meanwhile. Billed to your account.
   modalfs download cancel ID [--keep]       stop it and delete the partial files (--keep keeps them)
   modalfs download logs ID                  the downloader's log, saved when a run ends
   modalfs download rm ID                    forget it and delete its records (finished files stay)
+  modalfs download spend [--account A] [--env E]
+                                            what the workspace and its downloads cost this month
 
 The downloader is yt-dlp for video sites and gopeed for everything else;
 if gopeed keeps failing on a link, the download switches to aria2 by itself.
@@ -123,6 +125,12 @@ func cmdDownload(args []string) {
 		resp, err := c.Raw("GET", "/api/downloads/"+id+"/log")
 		must(err)
 		_, _ = os.Stdout.Write(resp)
+	case "spend", "cost":
+		st := state(c)
+		a := pickAccount(st, *acctF)
+		var b daemon.Billing
+		must(c.Do("GET", "/api/accounts/"+a.ID+"/billing?fresh=1&env="+url.QueryEscape(*env), nil, &b))
+		printSpend(a.Label, b)
 	case "rm", "forget":
 		id := downloadID(c, pos)
 		must(c.Do("DELETE", "/api/downloads/"+id, nil, nil))
@@ -175,6 +183,10 @@ func showDownload(c *daemon.Client, id string) {
 	row("Into", fmt.Sprintf("%s:/%s (%s)", v.VolumeName, v.Folder, v.AccountLabel))
 	row("State", v.State)
 	row("Error", v.Error)
+	row("Why", whyText(v.ErrorKind))
+	if v.Silent >= silentWarn {
+		row("Note", silentText(v))
+	}
 	row("Downloader", fmt.Sprintf("%s, %s", v.Tool, v.Size))
 	if s := v.Status; s != nil {
 		row("Progress", dlProgress(s))
@@ -243,6 +255,9 @@ func followDownload(c *daemon.Client, id string) {
 			fmt.Println()
 			if v.Error != "" {
 				fmt.Println(v.Error)
+			}
+			if w := whyText(v.ErrorKind); w != "" {
+				fmt.Println(w)
 			}
 			return
 		}
@@ -352,4 +367,42 @@ func eventLine(e downloads.Event) string {
 		return "finished"
 	}
 	return e.Kind
+}
+
+// silentWarn is how long a download may go unheard from before show says
+// so: Modal moving a container takes about a minute.
+const silentWarn = 180
+
+func silentText(v daemon.DownloadView) string {
+	return fmt.Sprintf("no word from its container for %s. Modal may still be starting or moving it; if it doesn't come back, the workspace may be over its spend limit or out of credit (see `modalfs download spend`)", (time.Duration(v.Silent) * time.Second).String())
+}
+
+// whyText explains what Modal had to do with a failure.
+func whyText(kind string) string {
+	switch kind {
+	case downloads.WhyBilling:
+		return "Modal says the workspace is out of credit or over its spend limit. Raise the limit or add credit on Modal's Usage & Billing page (`modalfs download spend` shows the link), then resume it."
+	case downloads.WhyUnexplained:
+		return "Modal stopped it without saying why. One cause is a workspace over its spend limit or out of credit: check Modal's Usage & Billing page (`modalfs download spend` shows the link), then resume it."
+	}
+	return ""
+}
+
+func printSpend(account string, b daemon.Billing) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	month := time.Unix(b.PeriodStart, 0).UTC().Format("January 2006")
+	fmt.Fprintf(w, "Account\t%s\n", account)
+	fmt.Fprintf(w, "Used in %s\t$%.2f (before credits and free allowances)\n", month, b.Metered)
+	fmt.Fprintf(w, "To be charged\t$%.2f (after them)\n", b.Billed)
+	switch {
+	case b.Downloads != nil:
+		fmt.Fprintf(w, "Remote downloads\t$%.4f this month (Modal's report lags by an hour or so)\n", *b.Downloads)
+	case b.DownloadsError != "":
+		fmt.Fprintf(w, "Remote downloads\tunknown: %s\n", b.DownloadsError)
+	}
+	if h := b.Hourly; h != nil {
+		fmt.Fprintf(w, "A download costs\t$%.4f an hour (small), $%.4f (medium), $%.4f (large) while it runs\n", h["small"], h["medium"], h["large"])
+	}
+	_ = w.Flush()
+	fmt.Printf("\nModal's API doesn't show the credit left or the spend limit. They're on %s\n", b.UsageURL)
 }

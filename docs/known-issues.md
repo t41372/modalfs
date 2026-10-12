@@ -36,6 +36,10 @@ When a server answers a range request with the whole file (HTTP 200 instead of 2
 
 yt-dlp in a Modal container is often refused by YouTube ("Sign in to confirm you're not a bot"). A cookies file from a signed-in browser helps sometimes. **Fix:** none on modalfs's side short of a residential proxy.
 
+### A spend limit isn't recognised for certain
+
+Modal's API reports what a workspace spent, not its credit or its spend limit, and a workspace over its limit refused the deploy with only "Image build … terminated due to external shut-down". So such a failure is shown as "Modal stopped this without saying why", with the spend limit as one cause to check, and a running download Modal stops at the limit looks the same. Only a message that names the limit or credit is shown as one. **Fix:** once Modal's wording for a refused or stopped container at the limit has been seen, recognise it; or ask Modal for an API that reports the limit. `internal/downloads/refusal.go`.
+
 ## Operations
 
 ### Auto-mount retries on a timer, not when the network returns

@@ -64,6 +64,10 @@ type Job struct {
 	// cancelling, or how it ended (see Ended).
 	State string `json:"state,omitempty"`
 	Error string `json:"error,omitempty"`
+	// ErrorKind is what Modal had to do with a failure (see Why).
+	ErrorKind string `json:"error_kind,omitempty"`
+	// Started is when the last call was spawned (Unix seconds).
+	Started int64 `json:"started,omitempty"`
 	// Stopping is "pause" or "cancel" while the daemon is stopping the
 	// download's call for the user, so the call's end is read as that and
 	// not as a failure. Keep keeps the partial files of a cancel.

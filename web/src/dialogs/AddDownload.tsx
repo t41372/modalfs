@@ -6,14 +6,14 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { api } from '@/api/client'
-import { refreshDownloads, refreshState, useEnvironments, useLoadedState, useVolumes } from '@/api/queries'
+import { refreshDownloads, refreshState, useBilling, useEnvironments, useLoadedState, useVolumes } from '@/api/queries'
 import type { Download, DownloadSize, DownloadTool } from '@/api/types'
 import { Choice } from '@/components/Choice'
 import { Field, FormDialog } from '@/components/FormDialog'
 import { Segmented } from '@/components/Segmented'
 import { Spinner } from '@/components/Spinner'
 import { Input } from '@/components/ui/input'
-import { HOURLY } from '@/lib/downloads'
+import { hourlyFor } from '@/lib/downloads'
 
 const NONE = '__default__'
 type ToolChoice = 'auto' | DownloadTool
@@ -46,6 +46,11 @@ export function AddDownloadDialog({ open, onOpenChange, onAdded }: { open: boole
   const envs = useEnvironments(open ? account : undefined)
   const vols = useVolumes(open ? account : undefined, env === NONE ? '' : env)
   const usable = (vols.data ?? []).filter((v) => v.format === 'v2')
+  // Volumes modalfs mounts come first, apart from the rest: a workspace may hold many of other projects'.
+  const ours = usable.filter((v) => v.mount_id)
+  const others = usable.filter((v) => !v.mount_id)
+  const grouped = ours.length > 0 && others.length > 0
+  const billing = useBilling(open ? account : undefined, env === NONE ? '' : env)
   const vol = usable.find((v) => v.name === volume)
   useEffect(() => {
     if (volume && vols.data && !vol) setVolume('')
@@ -134,7 +139,10 @@ export function AddDownloadDialog({ open, onOpenChange, onAdded }: { open: boole
           onChange={setVolume}
           disabled={vols.isLoading || usable.length === 0}
           placeholder={vols.isLoading ? t('form.loading') : usable.length ? t('downloads.pickVolume') : t('downloads.noVolumes')}
-          options={usable.map((v) => ({ value: v.name, label: v.name }))}
+          options={[
+            ...ours.map((v) => ({ value: v.name, label: v.name, group: grouped ? t('downloads.volumesOurs') : undefined })),
+            ...others.map((v) => ({ value: v.name, label: v.name, group: grouped ? t('downloads.volumesOthers') : undefined })),
+          ]}
         />
       </Field>
       {vol && (
@@ -185,7 +193,7 @@ export function AddDownloadDialog({ open, onOpenChange, onAdded }: { open: boole
         </CollapsiblePrimitive.Panel>
       </CollapsiblePrimitive.Root>
       <p className="rounded-lg bg-muted/70 px-3 py-2 text-[12px] leading-relaxed text-muted-foreground">
-        {t('downloads.costNote', { workspace: acct?.workspace || acct?.label || '…', price: HOURLY[size].toFixed(4), size: t(`downloads.sizes.${size}`) })}
+        {t('downloads.costNote', { workspace: acct?.workspace || acct?.label || '…', price: hourlyFor(size, billing.data).toFixed(4), size: t(`downloads.sizes.${size}`) })}
       </p>
     </FormDialog>
   )

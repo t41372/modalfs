@@ -172,6 +172,7 @@ Give modalfs a link and a Modal Function in your workspace downloads it straight
 - **Interruptions:** Modal sometimes stops a container to move work around. The downloader's progress is saved on the volume, so the download continues on a new container from where it was, usually within a minute. A Function runs for at most 24 hours; a longer download continues in a new one by itself. Each of these shows on the download's page, on its speed chart and in plain words.
 - **Live speed**, four times a second, while you watch a download in the app; the daemon relays it from the container. The record that survives everything (status, events, the speed history) is kept on the volume in `.modalfs/downloads/`.
 - **Finished files never overwrite anything:** a name already taken gets ` (1)` added.
+- **Money:** the Downloads page (and `modalfs download spend`) shows what the workspace and its downloads have spent this month. Modal's API doesn't tell the credit left or the spend limit, so for those it links to Modal's Usage & Billing page. When Modal refuses to start a download or stops one, the download's page says so; if Modal names the spend limit or credit, it says that, and otherwise it says Modal gave no reason and that the spend limit is one cause to check.
 
 ```console
 $ modalfs download enable
@@ -218,6 +219,7 @@ Remote downloads (off until enabled; each runs in a Modal Function billed to you
   modalfs download cancel ID [--keep]         stop it and delete the partial files
   modalfs download logs ID                    the downloader's log
   modalfs download rm ID                      forget it (finished files stay)
+  modalfs download spend [--account A]        what the workspace and its downloads spent this month
 
 Background process
   modalfs daemon                              run the daemon in the foreground

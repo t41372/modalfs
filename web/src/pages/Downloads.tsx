@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { api } from '@/api/client'
-import { patchSettings, refreshDownloads, useAction, useDownloads, useLoadedState } from '@/api/queries'
+import { patchSettings, refreshDownloads, useAction, useBilling, useDownloads, useLoadedState } from '@/api/queries'
 import type { Download } from '@/api/types'
 import { Badge, Card, Empty, Page, Row, Section } from '@/components/page'
 import { duration } from '@/components/StopProgress'
@@ -12,9 +12,9 @@ import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { AddDownloadDialog } from '@/dialogs/AddDownload'
-import { BUSY, ENDED, HOURLY, progressText, RESUMABLE, RUNNING, speed } from '@/lib/downloads'
+import { BUSY, dollars, ENDED, HOURLY, progressText, RESUMABLE, RUNNING, SILENT_WARN, speed } from '@/lib/downloads'
 import { bytes } from '@/lib/format'
-import { DownloadPage } from './Download'
+import { BillingLink, DownloadPage } from './Download'
 
 export function Downloads() {
   const { t } = useTranslation()
@@ -81,6 +81,7 @@ export function Downloads() {
                   </Card>
                 </Section>
               )}
+              <Spending downloads={downloads} />
             </>
           )}
       <AddDownloadDialog open={adding} onOpenChange={setAdding} onAdded={(added) => added.length === 1 && setOpenId(added[0].id)} />
@@ -164,8 +165,11 @@ function DownloadRow({ d, onOpen }: { d: Download; onOpen: () => void }) {
           </div>
           {(d.state === 'failed' || d.state === 'stalled') && d.error && (
             <div data-selectable className="mt-1 line-clamp-1 text-[12px] text-destructive">
-              {d.error}
+              {d.error_kind ? t(`downloads.whyShort.${d.error_kind}`) : d.error}
             </div>
+          )}
+          {!ENDED.has(d.state) && (d.silent ?? 0) >= SILENT_WARN && (
+            <div className="mt-1 line-clamp-1 text-[12px] text-warn-ink">{t('downloads.silentShort', { time: duration(d.silent ?? 0, t) })}</div>
           )}
         </div>
         <ChevronRight aria-label={t('downloads.details')} className="size-4 shrink-0 text-muted-foreground/70" />
@@ -189,5 +193,51 @@ function DownloadRow({ d, onOpen }: { d: Download; onOpen: () => void }) {
         </Tooltip>
       )}
     </div>
+  )
+}
+
+/**
+ * What the accounts that downloads run in have spent this month. Modal's API
+ * tells spending, not the credit left or the spend limit, so it says so and
+ * links to where those are.
+ */
+function Spending({ downloads }: { downloads: Download[] }) {
+  const { t } = useTranslation()
+  const seen = new Set<string>()
+  const places: { account: string; label: string; env: string }[] = []
+  for (const d of downloads) {
+    const key = `${d.account_id}\u0000${d.environment ?? ''}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    places.push({ account: d.account_id, label: d.account_label, env: d.environment ?? '' })
+  }
+  if (!places.length) return null
+  return (
+    <Section label={t('downloads.spending')}>
+      <Card>
+        {places.map((p) => (
+          <SpendingRow key={`${p.account}/${p.env}`} {...p} showEnv={places.some((q) => q.account === p.account && q.env !== p.env)} />
+        ))}
+      </Card>
+      <p className="mt-2 px-1 text-[12px] text-muted-foreground">{t('downloads.spendingNote')}</p>
+    </Section>
+  )
+}
+
+function SpendingRow({ account, label, env, showEnv }: { account: string; label: string; env: string; showEnv: boolean }) {
+  const { t } = useTranslation()
+  const b = useBilling(account, env)
+  const lines: string[] = []
+  if (b.data) {
+    if (b.data.downloads !== undefined) lines.push(t('downloads.spentDownloads', { amount: dollars(b.data.downloads) }))
+    lines.push(t('downloads.spentWorkspace', { used: dollars(b.data.metered), charged: dollars(b.data.billed) }))
+  }
+  return (
+    <Row
+      title={showEnv && env ? `${label} · ${env}` : label}
+      desc={b.isLoading ? t('form.loading') : b.error ? b.error.message : lines.join(' · ')}
+    >
+      <BillingLink billing={b.data} />
+    </Row>
   )
 }

@@ -271,7 +271,26 @@
     "perHour": "about ${{price}} an hour",
     "log": "Downloader's log",
     "logOf": "Log of {{name}}",
-    "logEmpty": "The log is empty."
+    "logEmpty": "The log is empty.",
+    "volumesOurs": "Mounted with modalfs",
+    "volumesOthers": "Other volumes",
+    "retry": "Try again",
+    "why": {
+      "billing": "Modal says this workspace is out of credit or has hit its spend limit, so it won't run the download. Raise the limit or add credit on Modal's Usage & Billing page, then resume it.",
+      "unexplained": "Modal stopped this without saying why. One cause is a workspace that has hit its spend limit or run out of credit, when Modal won't start containers. Check Modal's Usage & Billing page, then try again."
+    },
+    "whyShort": {
+      "billing": "Modal: out of credit or over the spend limit",
+      "unexplained": "Modal stopped it without saying why. Check the spend limit and credit"
+    },
+    "modalSaid": "Modal said: {{message}}",
+    "silent": "No word from the download's container for {{time}}. Modal may still be starting or moving it. If this goes on, the workspace may have hit its spend limit or run out of credit, and Modal won't start one.",
+    "silentShort": "No word from Modal for {{time}}",
+    "usagePage": "Usage & Billing",
+    "spending": "This month",
+    "spendingNote": "Modal's API tells what was spent, not the credit left or the spend limit: those are on Modal's Usage & Billing page. Download costs show up there and here an hour or so late.",
+    "spentDownloads": "Downloads {{amount}}",
+    "spentWorkspace": "whole workspace {{used}} used, {{charged}} after credits"
   },
   "accounts": {
     "title": "Accounts",
@@ -342,6 +361,8 @@
     "dl_time_limit": "{{a0}} paused at the Function's time limit. Resume it to continue",
     "dl_cancelled": "{{a0}} cancelled",
     "dl_failed": "Download of {{a0}} failed: {{a1}}",
+    "dl_failed_billing": "Download of {{a0}} failed: Modal says the workspace is out of credit or over its spend limit ({{a1}})",
+    "dl_failed_unexplained": "Download of {{a0}} failed: Modal stopped it without saying why ({{a1}}). Check the workspace's spend limit and credit",
     "dl_stop_failed": "Couldn't stop {{a0}}: {{a1}}. It may still be running in your Modal workspace",
     "dl_stopped_hard": "The container downloading {{a0}} didn't answer, so it was stopped at once. Resuming continues from its last saved state"
   },

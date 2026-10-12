@@ -2,7 +2,7 @@ import { QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/re
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { api } from './client'
-import type { Download, DownloadDetail, Environment, LiveView, Mount, Sample, Settings, State, Volume } from './types'
+import type { Billing, Download, DownloadDetail, Environment, LiveView, Mount, Sample, Settings, State, Volume } from './types'
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -105,6 +105,18 @@ export function useAction<V = void>(
 
 export const patchMount = (id: string, body: Partial<Mount>) => api('PATCH', `/mounts/${id}`, body)
 export const patchSettings = (body: Settings | { transport: string }) => api('PATCH', '/settings', body)
+
+/** An account's spending this month, which the daemon reads from Modal every few minutes at most. */
+export function useBilling(accountId: string | undefined, env = '', enabled = true) {
+  return useQuery({
+    queryKey: ['billing', accountId, env],
+    queryFn: () => api<Billing>('GET', `/accounts/${accountId}/billing?env=${encodeURIComponent(env)}`),
+    enabled: enabled && !!accountId,
+    staleTime: 5 * 60_000,
+    refetchInterval: 5 * 60_000,
+    retry: false,
+  })
+}
 
 /** The downloads, with live numbers for the running ones, while the Downloads page shows them. */
 export function useDownloads(enabled: boolean) {

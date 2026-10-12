@@ -118,7 +118,7 @@ func (m *Modal) deploy(ctx context.Context, version string) error {
 		Secrets: []*modal.Secret{secret}, Env: env, Timeout: 10 * time.Minute, CPU: 0.25, MemoryMiB: 1024,
 	})
 	if err != nil {
-		return fmt.Errorf("starting the deploy Sandbox: %w", err)
+		return fmt.Errorf("starting the deploy Sandbox: %w", m.buildReason(ctx, err))
 	}
 	defer func() { _, _ = sb.Terminate(context.WithoutCancel(ctx), nil) }()
 	if err := sb.Filesystem.WriteBytes(ctx, remote.App, "/app/app.py", nil); err != nil {
@@ -138,6 +138,22 @@ func (m *Modal) deploy(ctx context.Context, version string) error {
 		return fmt.Errorf("modal deploy failed (exit %d): %s", code, lastLines(string(out)+string(errOut), 15))
 	}
 	return nil
+}
+
+// buildReason adds what Modal said about a failed image build, which the
+// SDK leaves out of a build it reports as terminated: it may name the cause
+// (a spend limit, say). Asking is best effort.
+func (m *Modal) buildReason(ctx context.Context, err error) error {
+	id := ImageIDIn(err.Error())
+	if id == "" {
+		return err
+	}
+	_, exception, e := m.API.ImageBuildResult(ctx, id)
+	exception = strings.TrimSpace(exception)
+	if e != nil || exception == "" || strings.Contains(err.Error(), exception) {
+		return err
+	}
+	return fmt.Errorf("%w (Modal: %s)", err, exception)
 }
 
 // Start spawns a call of the download Function for the job, with its

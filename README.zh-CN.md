@@ -172,6 +172,7 @@ modalfs 会记住每个挂载，所以下次 `modalfs mount my-data` 会沿用�
 - **中断**：Modal 有时会停掉容器来调度资源。下载工具的进度存在 volume 上，所以会在新容器上从原来的地方接着下载，通常一分钟内。一个 Function 最多运行 24 小时，更久的下载会自己换到新的 Function 继续。这些都会显示在下载的页面上，在速度图上标出来，也会用文字说明。
 - **实时速度**：在应用里看一个下载时每秒更新四次，由后台进程从容器转发。无论发生什么都留得下来的记录（状态、事件、速度历史）存在 volume 的 `.modalfs/downloads/` 里。
 - **下载好的文件从不覆盖任何东西**：名字已被占用时会加上 ` (1)`。
+- **费用**：“下载”页（以及 `modalfs download spend`）显示工作区和它的下载本月花了多少钱。Modal 的 API 不提供剩余额度和支出上限，所以这两项会链接到 Modal 的 Usage & Billing 页面。Modal 拒绝启动或停止了一个下载时，下载的页面会说明：如果 Modal 说是支出上限或额度的问题，就直接说；否则会说 Modal 没有给出原因，并提示支出上限是其中一个要检查的可能。
 
 ```console
 $ modalfs download enable
@@ -218,6 +219,7 @@ Volumes
   modalfs download cancel ID [--keep]         停止并删除下载了一半的文件
   modalfs download logs ID                    下载工具的日志
   modalfs download rm ID                      从列表移除（下载好的文件保留）
+  modalfs download spend [--account A]        工作区和它的下载本月花了多少钱
 
 后台进程
   modalfs daemon                              在前台运行后台进程

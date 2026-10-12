@@ -6,7 +6,7 @@
 // URL parameters set what the screenshots need: ?lang=en|zh-Hant|zh-Hans and
 // ?theme=light|dark.
 
-import type { Account, DaemonEvent, Download, DownloadEvent, Environment, Identity, Mount, Profile, Sample, State, Volume } from './types'
+import type { Account, Billing, DaemonEvent, Download, DownloadEvent, Environment, Identity, Mount, Profile, Sample, State, Volume } from './types'
 
 const HOME = '/Users/you'
 const ROOT = `${HOME}/ModalVolumes`
@@ -386,6 +386,45 @@ function addMockDownload(o: { id: string; url: string; name: string; tool: Downl
   }
 }
 
+// Modal wouldn't start these. The first is what a workspace over its spend
+// limit showed (Modal gave no reason); the second's message is made up, as
+// Modal's own wording for a spend limit hasn't been seen yet.
+{
+  const t0 = now()
+  const iso = addMockDownload({ id: 'dl-iso', url: 'https://releases.example.com/26.04/desktop-amd64.iso', name: 'desktop-amd64.iso', tool: 'gopeed', folder: 'scratch', volume: 'eval-runs', created: t0 - 1800, state: 'failed' })
+  iso.d.error = 'preparing the downloader: starting the deploy Sandbox: RemoteError: Image build for im-AmHP9P7tCZr2GkFtM90o5A terminated due to external shut-down. Please try again.'
+  iso.d.error_kind = 'unexplained'
+  const ck = addMockDownload({ id: 'dl-ckpt', url: 'https://files.example.net/models/ckpt-step-90000.pt', name: 'ckpt-step-90000.pt', tool: 'aria2', folder: 'models', volume: 'checkpoints', created: t0 - 4000, state: 'failed' })
+  ck.d.error = 'RemoteError: the workspace has reached its spend limit'
+  ck.d.error_kind = 'billing'
+  const s1 = t0 - 3950
+  const done = run(ck.history, s1, s1 + 60, 0, profile(50e6, 9))
+  ck.events.push({ ev: 'start', t: s1, attempt: 1 })
+  ck.d.status = { state: 'running', tool: 'aria2', url: ck.d.url, name: ck.d.name, done, total: 14.2e9, speed: 0, attempt: 1, t: s1 + 60 }
+  // Running as far as the daemon knows, but nothing heard from its container for a while.
+  const q = addMockDownload({ id: 'dl-quiet', url: 'https://data.example.org/audio/librispeech-960h.tar', name: 'librispeech-960h.tar', tool: 'gopeed', folder: 'datasets', volume: 'datasets', created: t0 - 500, state: 'starting' })
+  q.d.silent = 480
+}
+
+const billing = (account: string): Billing => {
+  const start = new Date()
+  start.setUTCDate(1)
+  start.setUTCHours(0, 0, 0, 0)
+  const end = new Date(start)
+  end.setUTCMonth(end.getUTCMonth() + 1)
+  return {
+    period_start: start.getTime() / 1000,
+    period_end: end.getTime() / 1000,
+    metered: account === 'acc-research' ? 41.27 : 3.1,
+    billed: account === 'acc-research' ? 11.27 : 0,
+    adjustments: { Credits: account === 'acc-research' ? -30 : -3.1 },
+    downloads: account === 'acc-research' ? 0.3812 : 0,
+    hourly: { small: 0.0099, medium: 0.0198, large: 0.063 },
+    usage_url: `https://modal.com/settings/${account === 'acc-research' ? 'research-lab' : 'sam'}/usage`,
+    at: now(),
+  }
+}
+
 /** The running downloads go on: a sample every 250 ms, as the agent takes them. */
 let ticking = false
 function tickDownloads() {
@@ -469,6 +508,7 @@ async function downloadsRoute(method: string, p: string, url: URL, body: Body): 
       if (!['paused', 'stalled', 'failed', 'time limit'].includes(x.d.state)) fail(`download ${x.d.id} is ${x.d.state} already`)
       x.d.state = 'preparing'
       x.d.error = undefined
+      x.d.error_kind = undefined
       setTimeout(() => startMock(x, (s?.attempt ?? 0) + 1), 1200)
     } else {
       if (ENDED_MOCK.has(x.d.state)) {
@@ -488,6 +528,7 @@ async function downloadsRoute(method: string, p: string, url: URL, body: Body): 
     }
     return clone(x.d)
   }
+  if ((m = p.match(/^\/accounts\/([^/]+)\/billing$/))) return billing(m[1])
   if ((m = p.match(/^\/accounts\/([^/]+)\/volumes\/([^/]+)\/folders$/))) {
     const path = url.searchParams.get('path') || ''
     const tree: Record<string, string[]> = { '': ['datasets', 'models', 'scratch'], datasets: ['coco', 'raw'], models: [] }
@@ -523,7 +564,7 @@ export async function mockRequest(method: string, path: string, raw?: unknown): 
     tickDownloads()
     return clone({ ...state, downloads: listed() })
   }
-  if (p.startsWith('/downloads') || p.endsWith('/folders')) {
+  if (p.startsWith('/downloads') || p.endsWith('/folders') || p.endsWith('/billing')) {
     const r = await downloadsRoute(method, p, url, body)
     if (r !== undefined) return r
   }
