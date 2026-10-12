@@ -1,0 +1,17 @@
+# build output
+/dist/
+
+# macOS
+.DS_Store
+._*
+
+# local tool settings
+.claude/settings.local.json
+.claude/worktrees/
+.idea/
+.vscode/
+
+# the UI: dependencies, and its build, which `just ui` writes into the Go package
+/web/node_modules/
+/internal/webui/dist/*
+!/internal/webui/dist/.gitkeep

@@ -1,0 +1,353 @@
+<p align="center">
+  <img src="packaging/icon.png" width="112" alt="modalfs icon">
+</p>
+
+<h1 align="center">modalfs</h1>
+
+<p align="center">
+  <b>Mount Modal Volumes as local folders on macOS and Linux, without starting any Modal compute.</b>
+</p>
+
+<p align="center">English · <a href="README.zh-CN.md">简体中文</a></p>
+
+<p align="center">
+  <img src="docs/screenshots/en/mounts.jpg" alt="The modalfs app: a mounted volume, open, with its traffic, sync state and options">
+</p>
+
+---
+
+modalfs lets Finder, your editor, `ffmpeg` and AI agents work with a [Modal Volume](https://modal.com/docs/guide/volumes) as an ordinary folder. Reads stream directly from Modal's block store. Writes are committed from your machine, and only the 8 MiB blocks you changed get uploaded. modalfs **never starts a Sandbox, Function or container**, so mounting costs no compute.
+
+```console
+$ modalfs volume create datasets
+$ modalfs mount datasets                  # → ~/ModalVolumes/datasets
+$ echo hi >> ~/ModalVolumes/datasets/notes.md
+$ modalfs status
+VOLUME    ACCOUNT  STATE    MOUNTPOINT                  PENDING  DOWN/UP
+datasets  work     mounted  /Users/me/ModalVolumes/datasets  0        0 B / 3 B
+```
+
+> [!IMPORTANT]
+> modalfs is an independent project. It is **not affiliated with or endorsed by Modal Labs**. It uses the same gRPC API as Modal's official client SDKs. Parts of that API are undocumented and may change without notice. Read [Limitations](#limitations) before you put data you care about on it.
+
+## Contents
+
+- [Highlights](#highlights)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [The app](#the-app)
+- [CLI reference](#cli-reference)
+- [Accounts and pinning](#accounts-and-pinning)
+- [How it works](#how-it-works)
+- [Performance](#performance)
+- [Limitations](#limitations)
+- [Security](#security)
+- [Files and configuration](#files-and-configuration)
+- [FAQ](#faq)
+- [Development](#development)
+- [License](#license)
+
+## Highlights
+
+- **Zero compute.** modalfs only calls Modal's control-plane API and the signed block-store URLs. Nothing runs on Modal's side.
+- **No kernel extension on macOS.** modalfs serves NFSv3 on localhost and macOS's built-in NFS client mounts it. Linux uses FUSE. macFUSE also works if you prefer it.
+- **Lazy, ranged reads.** Opening a 100 GiB file and reading 4 KiB from the middle downloads one 8 MiB block. Sequential reads prefetch in parallel.
+- **Block-level writes.** Volume v2 is content-addressed. Changing 4 KiB inside a 100 GiB file uploads one 8 MiB block and commits a new manifest. Renames and copies change only manifests, with no data transfer.
+- **Create, rename and delete volumes**, which the Modal web dashboard doesn't offer today.
+- **Multiple accounts, pinned per mount.** modalfs keeps its own account list and ignores the Modal CLI's active profile, so switching profiles never moves a mount to another workspace.
+- **Crash-safe write-back.** Unsaved edits are journaled locally and committed on the next start, even after `kill -9`. Data an app has saved (closed or fsynced) is on disk before the app hears it's saved, so it survives a power loss too.
+- **Stays usable while it uploads.** A 13 GB copy uploads in the background, in parts as it's written; Finder, reads and other files keep working meanwhile.
+- **A small native app**, a matching CLI, start-at-login and auto-mount.
+
+## Install
+
+### macOS
+
+Requires macOS 13 or later. Download `modalfs-<version>-macos.zip` from [Releases](https://github.com/t41372/modalfs/releases), unzip it, and move **modalfs.app** to Applications. It's a universal app for Apple silicon and Intel. To use the CLI from a terminal too:
+
+```sh
+sudo ln -sf /Applications/modalfs.app/Contents/Resources/bin/modalfs /usr/local/bin/modalfs
+```
+
+The app is signed ad hoc, not notarized. The first time you open it, macOS may block it. If it does, right-click the app in Finder and choose **Open**.
+
+Only want the CLI? Releases also have `modalfs-<version>-darwin-arm64.tar.gz` and `-darwin-amd64.tar.gz`.
+
+### Linux
+
+Download `modalfs-<version>-linux-amd64.tar.gz` (or `-linux-arm64`) from [Releases](https://github.com/t41372/modalfs/releases), then:
+
+```sh
+tar -xzf modalfs-*-linux-amd64.tar.gz
+sudo install modalfs-*-linux-amd64/modalfs /usr/local/bin/modalfs
+```
+
+FUSE must be available (`fuse3` package, `/dev/fuse`). The desktop app for x86_64 is `modalfs-gui-<version>-linux-amd64.tar.gz`; it needs WebKitGTK 4.1 (`libwebkit2gtk-4.1-0`). Without it, `modalfs ui` opens the same UI in your browser.
+
+### From source
+
+You need Go 1.26+, [Bun](https://bun.sh) for the UI and [just](https://github.com/casey/just) (`brew install just`). The macOS app also needs the Xcode Command Line Tools (`xcode-select --install`), and the Linux app needs `libgtk-3-dev` and `libwebkit2gtk-4.1-dev`.
+
+```sh
+git clone https://github.com/t41372/modalfs && cd modalfs
+just app          # macOS: dist/modalfs.app, universal arm64 + x86_64
+just cli          # CLI for macOS and Linux: dist/modalfs-{darwin,linux}-{arm64,amd64}
+just linux-gui    # Linux: dist/modalfs-gui
+```
+
+On macOS 12 you can build the app yourself with Go 1.26 and `MIN_MACOS=12.0 just app`. This setup isn't tested or supported.
+
+`go install github.com/t41372/modalfs/cmd/modalfs@latest` also works, but it can't build the UI: `modalfs ui` then shows a page saying so, and the CLI works as usual.
+
+## Quick start
+
+1. **Add an account.** Create a token at [modal.com → Settings → API Tokens](https://modal.com/settings/tokens), then run:
+
+   ```sh
+   modalfs account add                    # prompts for Token ID and Secret
+   # or copy existing profiles from the Modal CLI:
+   modalfs account import
+   ```
+
+2. **Mount a volume.** You can create one first if you need to:
+
+   ```sh
+   modalfs volume create my-data
+   modalfs mount my-data                  # ~/ModalVolumes/my-data
+   ```
+
+3. **Use it.** Open the folder in Finder or your editor. modalfs commits each change about 3 seconds after the file goes idle.
+
+4. **Unmount** when you're done. modalfs uploads anything still pending first.
+
+   ```sh
+   modalfs unmount my-data
+   ```
+
+modalfs saves each mount, so `modalfs mount my-data` reuses the same account, environment and folder next time.
+
+## The app
+
+`modalfs ui`, or opening **modalfs.app**, shows a small window:
+
+| Page | What you can do |
+|---|---|
+| **Mounts** | Mount or unmount with a switch. See pending uploads, traffic, commits and conflicts. Sync now, show in Finder, force unmount. Per-mount options: auto-mount, read-only, filter macOS litter, conflict policy, NFS/FUSE. |
+| **Volumes** | Browse volumes by account and environment. Create, rename, delete (type the name to confirm), mount. |
+| **Accounts** | Add a token, import from `~/.modal.toml`, check that a token still works, remove. |
+| **Activity** | Mounts, uploads, conflicts, errors and crash recoveries, grouped by day, with notifications for the important ones. |
+| **Settings** | Language (English / 繁體中文 / 简体中文), light/dark mode, start at login, cache size, read-ahead, default mount folder, connection mode. |
+
+The window is only a remote control. Mounts live in the background daemon, so **closing the window never unmounts anything**. On macOS the window is glass over your desktop. In a browser (`modalfs ui` without the app), or on a phone-sized window, the same UI moves its tabs to the bottom.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="docs/screenshots/en/volumes.jpg"><img src="docs/screenshots/en/volumes.jpg" alt="Volumes in the dark theme: the account and environment, and each volume with its mount button"></a>
+    </td>
+    <td width="50%" valign="top">
+      <a href="docs/screenshots/en/activity.jpg"><img src="docs/screenshots/en/activity.jpg" alt="Activity: uploads, a mount, a conflict and a recovery, grouped by day"></a>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="docs/screenshots/en/settings.jpg"><img src="docs/screenshots/en/settings.jpg" alt="Settings in the dark theme: language, appearance, start at login and the cache"></a>
+    </td>
+    <td width="50%" valign="top"></td>
+  </tr>
+</table>
+
+## CLI reference
+
+```
+Everyday
+  modalfs ui [--print]                        open the app (starts the daemon if needed);
+                                              --print shows the browser URL instead
+  modalfs status                              mounts and their sync state
+  modalfs mount VOLUME [MOUNTPOINT]           mount and remember it
+        [--account A] [--env E] [--ro] [--auto] [--mode auto|nfs|fuse] [--keep-junk]
+  modalfs unmount VOLUME|PATH [--now]         commit pending writes, then unmount;
+                                              --now unmounts at once and uploads the rest in the background
+  modalfs sync VOLUME|PATH                    commit pending writes now
+  modalfs forget VOLUME|PATH                  remove a saved mount (the volume is untouched)
+
+Volumes
+  modalfs volume ls      [--account A] [--env E]
+  modalfs volume create  NAME [--account A] [--env E] [--mount]
+  modalfs volume rename  NAME NEWNAME [--account A] [--env E]
+  modalfs volume rm      NAME [--account A] [--env E] [--yes]
+
+Accounts
+  modalfs account add [--label L] [--token-id ID] [--env E]
+  modalfs account import [PROFILE...]
+  modalfs account ls
+  modalfs account rm ACCOUNT
+
+Background process
+  modalfs daemon                              run the daemon in the foreground
+  modalfs quit [--now]                        commit everything, unmount, stop the daemon;
+                                              --now stops at once (pending writes upload at the next mount)
+  modalfs service install|uninstall           start at login (LaunchAgent / systemd user unit)
+
+Without the daemon (scripts, debugging)
+  modalfs run VOLUME MOUNTPOINT [flags]       foreground mount until Ctrl-C
+  modalfs serve VOLUME [flags]                NFS server only; prints the mount command
+```
+
+`--account` takes a label, an account ID or a workspace name. With only one account, you can leave it out.
+
+## Accounts and pinning
+
+People often switch between several Modal workspaces. modalfs is designed so that a mount never silently follows that switch.
+
+- **Own account store.** modalfs keeps tokens in its own list and secrets in the OS keychain. It never reads the Modal CLI's *active* profile. It reads `~/.modal.toml` only when you run `account import`, and then copies the token.
+- **Each mount pins** the account, environment, volume name **and volume ID**.
+  - If the volume is **renamed**, modalfs finds it by ID, updates the name and mounts it.
+  - If the volume was **deleted and a new one reuses the name**, modalfs refuses to mount and asks you to re-pin. It never mounts a different volume under the old name.
+
+## How it works
+
+```
+Finder / editor / agent
+  ├─ macOS NFS client ── NFSv3 on 127.0.0.1 (go-nfs) ┐
+  └─ Linux FUSE (go-fuse) ───────────────────────────┤
+                                                     ▼
+   modalfs daemon ─ vfs: dir cache (TTL) · content-addressed block cache (LRU, shared)
+                    per-file dirty-block overlay + journal · manifest DB · write-back
+                                                     ▼
+   Modal control plane (gRPC): VolumeListFiles2 · GetFile2 · PutFiles2 · CopyFiles2 · RemoveFile2
+   Modal block store: signed GET / PUT URLs
+```
+
+**Volume v2 is content-addressed.** A file is a list of SHA-256 hashes of 8 MiB blocks. `VolumePutFiles2` takes that list and reports only the blocks the server doesn't already have, and this dedup works across files and even across volumes. `VolumeGetFile2` returns one signed URL per block for any byte range. `VolumeCopyFiles2` copies manifests. For example, it copied a 100 GiB file in 2.9 s.
+
+So a partial write works like this: keep the hashes of unchanged blocks, hash the changed ones, send the new manifest, and upload whatever the server says is missing.
+
+**The catch:** the API never returns the hashes of existing blocks. modalfs learns them in three ways:
+
+1. **Local manifest DB** (bbolt). Every full block modalfs reads gets hashed and recorded under `(path, size, mtime)`.
+2. **Sidecars.** For large files modalfs writes (≥ 64 MiB), it stores the block list in `/.modalfs/manifests/<path>.json` inside the volume. Other modalfs clients, or a fresh cache, can then edit those files immediately. A sidecar is trusted only when size and mtime match.
+3. **Fallback.** If neither exists, for example for a big file a Modal container just wrote, the first partial write streams the unseen blocks once to hash them. modalfs doesn't store them on disk.
+
+Other details:
+
+- **Directories.** Modal has no real empty directories, so `mkdir` writes a hidden `.modalfs_keep` marker.
+- **Renames** are copy + remove at the manifest level, so atomic saves from editors work.
+- **Conflicts.** Before each commit, modalfs re-checks the remote file. If someone else changed it while you were editing, your version is saved as `name.conflict-YYYYMMDD-HHMMSS.ext`. You can set the policy to *overwrite* instead.
+- **macOS litter.** `.DS_Store` and `._*` files stay in memory and are never uploaded. This is on by default and can be turned off per mount.
+
+## Performance
+
+Measured from a Linux arm64 sandbox through an HTTP/1.1 proxy with limited bandwidth. Expect better numbers on a normal connection.
+
+| Operation | Result |
+|---|---|
+| Cold 4 KiB read at offset 77 GiB of a 100 GiB file | 1.45 s, then 0 ms from cache |
+| Sequential read, 512 MiB | 40.9 MiB/s (single-block GETs capped at ~7 MB/s by the sandbox) |
+| Change 4 KiB in a 100 GiB file | 8 MiB uploaded, committed in ~3.5 s |
+| Change 4 KiB in a 50 MB file | 1 block uploaded, 2.0 s |
+| Change 5 bytes in a never-seen 20 MB file | 2 blocks streamed to hash + 1 uploaded, 3.7 s |
+| Copy / rename a 100 GiB file | 2.9 s, no data transfer |
+| `kill -9` mid-write, then restart | changes recovered and committed, checksum identical |
+
+## Limitations
+
+- **Volume v2 only.** v1 volumes are listed but can't be mounted.
+- **No locking.** Modal has no compare-and-swap, so with several writers on the same file, the last commit wins. modalfs detects this on a best-effort basis and keeps a conflict copy.
+- **8 MiB granularity.** Small random writes still upload whole 8 MiB blocks.
+- **Metadata.** Modal sets mtime at commit. modalfs accepts chmod, chown and utimes but ignores them. There are no symlinks, hard links or xattrs.
+- **Consistency** is close-to-open plus a 10 s directory cache. Changes from other machines show up within that window. Modal containers need `volume.reload()` to see what you wrote.
+- **Write-back delay.** NFS has no close event, so writes reach Modal about 3 s after a file goes idle, or every 30 s while it keeps changing. After a crash they are recovered. One edge case: if the last second of an append was all zero bytes, those trailing zeros can be dropped.
+- **Unmounting waits for uploads.** Turning a mount off first uploads what's pending, with progress shown; **Unmount now** unmounts at once and finishes uploading in the background (or at the next mount). macOS won't unmount a folder an app has open, and the app says which one.
+- **The daemon must keep running while volumes are mounted**, because the NFS/FUSE server lives inside it. If it dies, the next start cleans up stale mounts.
+- **No menu-bar icon yet.** Wails v2 has no tray support. Use `modalfs ui` to reopen the window.
+- **Undocumented API.** modalfs relies on the RPCs the official SDKs use. If Modal changes them, modalfs may break until it's updated.
+- **macOS status.** The NFS server, daemon, FUSE mounts, crash recovery, rename following and the app's UI have all been tested on Linux, and the macOS app builds as a universal binary. The macOS NFS mount and the macOS app still need wider real-world testing. Bug reports are welcome.
+
+## Security
+
+- **Token secrets** live in the macOS Keychain or the Linux Secret Service. On headless Linux without a keychain, they fall back to `secrets.json` with mode `0600`. They are never written to logs.
+- **The daemon listens on** a Unix socket (`0600`, in your config folder) for the CLI and the app, and on a random `127.0.0.1` port for the browser UI. The link `modalfs ui` opens carries a token that works once and is traded for a cookie; every request also needs a loopback `Host` header and a custom header, which blocks other local web pages and DNS rebinding.
+- **The NFS server** listens on `127.0.0.1` and only answers requests carrying your user's credentials, so other people using the same Mac can't mount your volumes. See [docs/known-issues.md](docs/known-issues.md) for what that doesn't cover.
+- **Destructive actions** (deleting a volume, removing an account) require explicit confirmation. A mounted volume can't be deleted.
+- Please report vulnerabilities privately (see [SECURITY.md](SECURITY.md)) rather than in public issues.
+
+## Files and configuration
+
+| | macOS | Linux |
+|---|---|---|
+| Config, accounts, socket, log | `~/Library/Application Support/modalfs/` | `~/.config/modalfs/` |
+| Block cache | `~/Library/Caches/modalfs/` | `~/.cache/modalfs/` |
+| Default mount folder | `~/ModalVolumes/` | `~/ModalVolumes/` |
+| Start at login | `~/Library/LaunchAgents/dev.modalfs.daemon.plist` | `~/.config/systemd/user/modalfs.service` |
+
+**Cache size.** The block cache holds only data already on Modal, so any size is safe: too small just means downloading blocks again. Settings accepts any whole number of GB from 1, and 2 GB or more is recommended (roughly 2 × concurrent readers × (read-ahead + 1) × 8 MiB, plus 256 MiB). Changes you haven't uploaded yet are kept on disk separately and don't count toward it, so writing a 100 GiB file needs 100 GiB free until it's committed.
+
+Environment variables:
+
+| Variable | Effect |
+|---|---|
+| `MODALFS_HOME` | Put config and cache somewhere else (handy for testing) |
+| `MODALFS_TRANSPORT=http1` | Send gRPC over HTTP/1.1, for proxies that only allow HTTP/1.1 |
+| `MODALFS_NO_KEYCHAIN=1` | Store secrets in `secrets.json` instead of the keychain |
+| `MODALFS_DEBUG=1` | Verbose daemon logging |
+
+## FAQ
+
+**Does mounting cost Modal compute?**
+No. modalfs makes API calls only. Storage and bandwidth are billed by Modal as usual.
+
+**Can a Modal Function use the same volume at the same time?**
+Yes. Call `volume.reload()` in the container to see changes made through modalfs, and avoid having both sides write the same file at once.
+
+**Why NFS on macOS instead of FUSE?**
+macFUSE needs a kernel extension, or a system-settings dance on Apple silicon. The built-in NFS client needs nothing. `--mode fuse` is there if you already use macFUSE.
+
+**Do I have to keep the app open?**
+No. Only the background daemon has to keep running. Turn on **Start at login** and **Mount automatically**, and your volumes are there after every reboot.
+
+**Where did my edit go after a crash?**
+modalfs replays it on the next start and commits it. Check **Activity** for a "recovered" entry, or a conflict copy if the remote file changed in the meantime.
+
+## Development
+
+Tasks run through [just](https://github.com/casey/just); run `just` to list them. The UI needs [Bun](https://bun.sh).
+
+```sh
+just build                                   # CLI/daemon for this machine → dist/modalfs
+just dev-mock                                # the UI with hot reload on sample data: no daemon, no Modal account
+just dev                                     # the UI with hot reload against your running daemon
+just lint                                    # gofmt, go vet, and the UI's typecheck and translations
+just cli                                     # cross-compile CLI/daemon for all platforms
+just app                                     # macOS app (on a Mac)
+just test-e2e                                # real NFS mounts against a fake Modal with a slow network (macOS)
+just fake -up 20M                            # a fake Modal to try modalfs without an account
+MODALFS_TEST_VOLUME=scratch just test-integration   # CREATES AND DELETES files in that volume
+```
+
+The UI is React with Tailwind and shadcn/ui on Base UI, in the style of [Jezo](https://github.com/t41372/Jezo). `just ui` builds it into `internal/webui/dist`, which the daemon and the app embed. The pictures in this README come from `cd web && bun run screenshots`: it builds the UI on the sample data in `web/src/api/mock.ts`, shoots each page in each README language, and lays the see-through window over a painting in `docs/screenshots/backdrops/` (Jezo's).
+
+Layout:
+
+```
+cmd/modalfs        CLI + daemon entry point (pure Go)
+cmd/modalfs-gui    desktop app (Wails v2); can also run the daemon
+internal/modalapi  Modal gRPC client, block upload/download, volume management
+internal/vfs       filesystem core: caches, dirty overlay, journal, conflicts
+internal/nfsfront  NFSv3 frontend (go-nfs)
+internal/fusefront FUSE frontend (go-fuse)
+internal/daemon    mount manager, JSON API, start-at-login
+internal/config    accounts, saved mounts, settings, secrets
+internal/webui     embeds the built UI for the daemon and the app
+web                the UI's source (React, Vite); strings in web/src/i18n
+packaging          icon, macOS app bundle script (`just app`)
+docs/screenshots   the README's pictures, made by web/scripts/screenshots.ts
+```
+
+Contributions are welcome. Testing on real Macs is especially helpful: NFS mounts, the app, Keychain and the LaunchAgent. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, and run `just lint` and, where you can, the integration tests against a scratch volume before you open a PR.
+
+## License
+
+[Apache License 2.0](LICENSE).
+
+Modal is a trademark of Modal Labs, Inc. This project is not affiliated with Modal Labs.

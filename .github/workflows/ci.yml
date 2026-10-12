@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: web/package.json
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: just lint
+      - run: just test
+      - run: just cli
+      - name: Linux desktop app
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+          just linux-gui
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: web/package.json
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: just app
+      - name: End-to-end tests (real NFS mounts, fake Modal)
+        run: just test-e2e
+      - name: Check the bundle
+        run: |
+          lipo -info dist/modalfs.app/Contents/MacOS/modalfs
+          codesign --verify --strict dist/modalfs.app
+          dist/modalfs.app/Contents/Resources/bin/modalfs version

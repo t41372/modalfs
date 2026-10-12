@@ -1,0 +1,30 @@
+name: Bug report
+description: Something doesn't work
+body:
+  - type: textarea
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: modalfs version
+      description: Output of `modalfs version`
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: OS and version
+      placeholder: macOS 15.3 (Apple silicon) / Ubuntu 24.04 x86_64
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: Mount mode
+      options: [NFS, FUSE, Not sure, Not mount-related]
+  - type: textarea
+    attributes:
+      label: Daemon log
+      description: The relevant lines of `daemon.log` (see "Files and configuration" in the README). Check that it contains no token secrets.
+      render: text

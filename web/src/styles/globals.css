@@ -1,0 +1,194 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Tokens follow Jezo's (shadcn names, plus a few of our own).
+ *
+ * In the macOS app the window is glass: the OS material blurs the desktop, --win
+ * adds a faint wash over it, and the content panel (--background) is about half
+ * see-through. Everywhere else (a browser tab, Linux, a screenshot without a
+ * desktop behind it) there's nothing to see through, so [data-glass="off"] makes
+ * the same layers opaque.
+ */
+:root {
+  --win: rgb(242 244 250 / 0.2);
+  --win-border: rgb(255 255 255 / 0.6);
+  --background: rgb(255 255 255 / 0.55);
+  --foreground: oklch(0.22 0.02 265);
+  --card: rgb(255 255 255 / 0.94);
+  --card-foreground: var(--foreground);
+  --card-border: rgb(20 24 60 / 0.07);
+  --popover: oklch(0.99 0.003 265);
+  --popover-foreground: var(--foreground);
+  --primary: oklch(0.22 0.02 265);
+  --primary-foreground: #fff;
+  --secondary: rgb(255 255 255 / 0.7);
+  --secondary-foreground: var(--foreground);
+  --muted: rgb(20 24 60 / 0.05);
+  --muted-foreground: oklch(0.5 0.02 265);
+  --accent: rgb(255 255 255 / 0.85);
+  --accent-foreground: var(--foreground);
+  --destructive: oklch(0.6 0.19 25);
+  --border: oklch(0.9 0.01 265);
+  --input: oklch(0.9 0.01 265);
+  --ring: oklch(0.68 0.13 285);
+  --brand: oklch(0.6 0.17 258);
+  --radius: 0.625rem;
+
+  --ok: oklch(0.62 0.15 155);
+  --warn: oklch(0.7 0.14 70);
+  --warn-ink: oklch(0.5 0.12 70);
+  --ok-ink: oklch(0.45 0.12 155);
+}
+
+.dark {
+  --win: rgb(20 18 34 / 0.1);
+  --win-border: rgb(255 255 255 / 0.12);
+  --background: rgb(30 28 48 / 0.4);
+  --foreground: #eeedf6;
+  --card: rgb(255 255 255 / 0.06);
+  --card-border: rgb(255 255 255 / 0.07);
+  --popover: oklch(0.24 0.03 285);
+  --primary: #eeedf6;
+  --primary-foreground: #17151f;
+  --secondary: rgb(255 255 255 / 0.08);
+  --muted: rgb(255 255 255 / 0.06);
+  --muted-foreground: rgb(238 237 246 / 0.58);
+  --accent: rgb(255 255 255 / 0.1);
+  --border: rgb(255 255 255 / 0.1);
+  --input: rgb(255 255 255 / 0.12);
+  --warn-ink: oklch(0.82 0.12 75);
+  --ok-ink: oklch(0.8 0.13 155);
+}
+
+/* No desktop behind the window: the wash and the panel become solid. */
+[data-glass="off"] {
+  --win: oklch(0.935 0.015 265);
+  --background: oklch(0.985 0.004 265);
+  --card: #fff;
+}
+[data-glass="off"].dark {
+  --win: oklch(0.18 0.025 285);
+  --background: oklch(0.22 0.03 285);
+  --card: rgb(255 255 255 / 0.05);
+}
+
+@theme inline {
+  --font-sans: "Geist Variable", -apple-system, BlinkMacSystemFont, "PingFang TC", "PingFang SC", "Noto Sans CJK TC", "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-win: var(--win);
+  --color-win-border: var(--win-border);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-card-border: var(--card-border);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-brand: var(--brand);
+  --color-ok: var(--ok);
+  --color-ok-ink: var(--ok-ink);
+  --color-warn: var(--warn);
+  --color-warn-ink: var(--warn-ink);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+}
+
+/* Stronger than the built-in curves. Mirrored in lib/motion.ts for Motion. */
+@theme {
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-transparent font-sans text-foreground antialiased;
+    margin: 0;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+    font-feature-settings: "cv11";
+  }
+  [data-glass="off"] body {
+    background: var(--win);
+  }
+  /* Text the user reads or might copy stays selectable. */
+  input,
+  textarea,
+  [data-selectable] {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+/*
+ * Anything you can click shrinks a little while pressed, so the press registers
+ * before the result shows. Reduced motion keeps the colors and drops the shrink.
+ */
+@utility pressable {
+  transition-property: scale, color, background-color, border-color, box-shadow, opacity;
+  transition-duration: 150ms;
+  transition-timing-function: var(--ease-out);
+  &:active:not(:disabled, [aria-disabled="true"], [data-disabled]) {
+    scale: 0.97;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    &:active {
+      scale: none;
+    }
+  }
+}
+
+/*
+ * Parts of the window you can drag it by. Wails reads the --wails-draggable
+ * property; anything clickable opts out below, so a new control inside a drag
+ * region doesn't need to remember to.
+ */
+@utility drag-region {
+  --wails-draggable: drag;
+}
+@layer base {
+  :is(button, a, input, textarea, select, label, summary, [contenteditable], [role="button"], [role="option"], [role="menuitem"], [role="tab"], [role="checkbox"], [role="switch"], [role="slider"], [data-selectable]) {
+    --wails-draggable: no-drag;
+  }
+}
+
+/* Numbers that change in place (traffic counters) don't jiggle. */
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+}

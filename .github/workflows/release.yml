@@ -1,0 +1,114 @@
+# Builds everything for a version tag (v0.3.0) and attaches it to a draft
+# release, for a person to read over and publish. The tag must match Version in
+# internal/daemon/daemon.go, so the app never reports a different version than
+# its download. Run by hand, it builds the same files and keeps them as the
+# run's artifacts, to try before tagging.
+#
+# The Mac app is signed only ad hoc and isn't notarized, so macOS asks before
+# opening it the first time (README, "Install").
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          version=$(sed -n 's/^var Version = "\(.*\)"/\1/p' internal/daemon/daemon.go)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/v* && "${GITHUB_REF_NAME#v}" != "$version" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME doesn't match Version $version in internal/daemon/daemon.go"
+            exit 1
+          fi
+
+  linux:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: web/package.json
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: just lint
+      - run: just test
+      - run: just cli
+      - name: Linux desktop app
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+          just linux-gui
+      - name: Package
+        run: |
+          v=${{ needs.version.outputs.version }}
+          mkdir -p out
+          for t in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64; do
+            d=modalfs-$v-$t
+            mkdir -p $d && cp dist/modalfs-$t $d/modalfs && cp LICENSE README.md $d/
+            tar -czf out/$d.tar.gz $d
+          done
+          d=modalfs-gui-$v-linux-amd64
+          mkdir -p $d && cp dist/modalfs-gui $d/ && cp LICENSE README.md $d/
+          tar -czf out/$d.tar.gz $d
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: out/*
+
+  macos:
+    needs: version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: web/package.json
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - run: just app
+      - name: Package
+        run: |
+          mkdir -p out
+          # ditto keeps the bundle's signature and extended attributes intact.
+          ditto -c -k --sequesterRsrc --keepParent dist/modalfs.app out/modalfs-${{ needs.version.outputs.version }}-macos.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: out/*
+
+  release:
+    needs: [version, linux, macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd out && sha256sum * > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --title "modalfs ${GITHUB_REF_NAME#v}" --generate-notes *
