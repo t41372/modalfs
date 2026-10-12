@@ -223,10 +223,12 @@ The destination folder only ever receives finished files. The local mount sees t
 - **API:**
   - `POST /api/downloads` takes `{account, volume, folder, urls[], tool?, size?, options?}`.
   - `GET /api/downloads` lists jobs, and `GET /api/downloads/{id}` adds events and history.
-  - `POST /api/downloads/{id}/pause|resume|cancel`.
-  - `DELETE /api/downloads/{id}` forgets a finished job.
-  - Live updates go out on the existing event stream.
-- **CLI:** `modalfs download add <volume>[:/folder] <url>… [--tool gopeed|aria2|yt-dlp] [--size small|medium|large] [--cookies file]`, plus `download ls`, `download show <id>` (events and a text sparkline) and `download pause|resume|cancel <id>`.
+  - `POST /api/downloads/{id}/pause|resume|cancel` (cancel takes `{keep}` to keep the partial files).
+  - `DELETE /api/downloads/{id}` forgets a job that isn't running and deletes its records on the volume; finished files stay.
+  - `GET /api/downloads/{id}/live?after=T` returns what the container sent since `T`. While someone polls it, the daemon holds the tunnel connection (this run's history first, then the stream) and closes it 15 s after the last poll. The tunnel's address and token never leave the daemon: the agent answers no CORS preflight, `EventSource` can't send the token header, and the desktop app reaches the daemon only through its socket.
+  - `GET /api/downloads/{id}/log` returns the downloader's log, saved when a run ends.
+  - The list is also in `/api/state` (`downloads`), and state changes go on the existing event feed (`dl_*` codes).
+- **CLI:** `modalfs download add <volume>[:/folder] <url>… [--downloader gopeed|aria2|yt-dlp] [--size small|medium|large] [--cookies file]`, plus `download ls`, `download show <id> [--follow]` (attempts, interruptions and a text sparkline), `download pause|resume|cancel|logs|rm <id>` and `download enable|disable`.
 - **UI:** a Downloads page in the rail.
   - **New download:** links, destination (volume and folder), tool (chosen automatically, can be changed) and size. The estimated cost is shown first.
   - **Each row:** progress, live speed, time left, cost so far and a status chip.

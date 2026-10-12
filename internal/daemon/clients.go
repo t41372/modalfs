@@ -95,6 +95,7 @@ func (d *Daemon) dropClients(accountID string) {
 		}
 	}
 	d.clients.mu.Unlock()
+	d.dl.dropRunners(accountID) // they use the shared clients
 	for _, c := range drop {
 		closeClient(c)
 	}

@@ -56,6 +56,7 @@ type Daemon struct {
 	rtMu sync.Mutex // serializes runtime.json writes
 
 	clients clientCache // shared Modal clients for API calls
+	dl      *dlManager  // remote downloads
 
 	bootID  string
 	auth    *uiAuth
@@ -145,6 +146,9 @@ func Run(log *slog.Logger) error {
 		return err
 	}
 	d := &Daemon{store: store, log: log, cache: cache, running: map[string]*runMount{}, bootID: randomHex(8), quit: make(chan struct{}), now: make(chan struct{})}
+	if d.dl, err = newDLManager(d, config.Dir(), d.quit); err != nil {
+		return err
+	}
 	d.cleanupStale()
 	d.checkService()
 
@@ -174,6 +178,7 @@ func Run(log *slog.Logger) error {
 	defer cancel()
 	go d.watch(ctx)
 	go d.autoMount()
+	d.dl.resume()
 
 	sig := make(chan os.Signal, 2)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
@@ -405,6 +410,7 @@ type StateView struct {
 	Platform  string           `json:"platform"`
 	Accounts  []config.Account `json:"accounts"`
 	Mounts    []MountView      `json:"mounts"`
+	Downloads []DownloadView   `json:"downloads"`
 	Settings  config.Settings  `json:"settings"`
 	Cache     CacheView        `json:"cache"`
 	Service   ServiceView      `json:"service"`
@@ -457,6 +463,7 @@ func (d *Daemon) State() StateView {
 		}
 		return t.Unix()
 	}
+	v.Downloads = d.dl.views()
 	v.Mounts = []MountView{}
 	for _, m := range f.Mounts {
 		mv := MountView{Mount: m, State: StateStopped, AccountLabel: accts[m.AccountID].Label, Workspace: accts[m.AccountID].Workspace}

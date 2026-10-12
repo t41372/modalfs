@@ -81,6 +81,7 @@ test-agent:
     if [ -z "${GOPEED_BIN:-}" ] && [ -x "$tools/gopeed" ]; then export GOPEED_BIN="$tools/gopeed"; fi
     (cd internal/downloads/remote && python3 -m unittest -v test_app)
     go test -race -count=1 -run TestLocalRunner -v ./internal/downloads
+    go test -race -count=1 -run TestDownloadWithTheLocalAgent -v ./internal/daemon
 
 # fetch the gopeed build the agent tests use, for this machine (they skip without it)
 agent-tools:

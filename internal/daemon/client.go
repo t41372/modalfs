@@ -95,6 +95,25 @@ func (c *Client) DoLong(method, path string, in, out any) error {
 	return c.do(&hc, method, path, in, out)
 }
 
+// Raw returns a response's body as it is, for text that isn't JSON.
+func (c *Client) Raw(method, path string) ([]byte, error) {
+	req, _ := http.NewRequest(method, "http://modalfsd"+path, nil)
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		var e struct{ Error string }
+		if json.Unmarshal(raw, &e) == nil && e.Error != "" {
+			return nil, errors.New(e.Error)
+		}
+		return nil, fmt.Errorf("%s %s: %s", method, path, resp.Status)
+	}
+	return raw, nil
+}
+
 func (c *Client) do(hc *http.Client, method, path string, in, out any) error {
 	var body io.Reader
 	if in != nil {

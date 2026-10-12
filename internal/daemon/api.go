@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/t41372/modalfs/internal/config"
+	"github.com/t41372/modalfs/internal/downloads"
 	"github.com/t41372/modalfs/internal/modalapi"
 	"github.com/t41372/modalfs/internal/webui"
 )
@@ -467,13 +468,25 @@ func (d *Daemon) routes() http.Handler {
 
 	// ----- settings / cache / service -----
 	mux.HandleFunc("PATCH /api/settings", func(w http.ResponseWriter, r *http.Request) {
-		var in config.Settings
+		var in struct {
+			config.Settings
+			// A pointer, so false turns it off and leaving it out changes nothing.
+			RemoteDownloads *bool `json:"remote_downloads"`
+		}
 		if err := readJSON(r, &in); err != nil {
 			writeErr(w, err)
 			return
 		}
 		if in.CacheSizeGB < 0 {
 			writeErr(w, errors.New("cache size must be at least 1 GB"))
+			return
+		}
+		if _, ok := downloads.Sizes[in.DownloadSize]; in.DownloadSize != "" && !ok {
+			writeErr(w, fmt.Errorf("unknown download size %q (use small, medium or large)", in.DownloadSize))
+			return
+		}
+		if in.DownloadStallMinutes < 0 {
+			writeErr(w, errors.New("the stall limit must be at least 1 minute"))
 			return
 		}
 		oldTransport := d.store.Snapshot().Settings.Transport
@@ -504,6 +517,15 @@ func (d *Daemon) routes() http.Handler {
 				} else {
 					s.Transport = in.Transport
 				}
+			}
+			if in.RemoteDownloads != nil {
+				s.RemoteDownloads = *in.RemoteDownloads
+			}
+			if in.DownloadSize != "" {
+				s.DownloadSize = in.DownloadSize
+			}
+			if in.DownloadStallMinutes > 0 {
+				s.DownloadStallMinutes = in.DownloadStallMinutes
 			}
 			return nil
 		})
@@ -552,6 +574,7 @@ func (d *Daemon) routes() http.Handler {
 		}
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	})
+	d.downloadRoutes(mux)
 	return mux
 }
 
@@ -647,6 +670,13 @@ func (d *Daemon) RemoveAccount(id string) error {
 	a, ok := d.store.Account(id)
 	if !ok {
 		return errors.New("account not found")
+	}
+	if d.dl != nil {
+		for _, j := range d.dl.store.List() {
+			if j.AccountID == a.ID && !downloads.Ended(j.State) {
+				return fmt.Errorf("a remote download of this account is %s; pause or cancel it first", j.State)
+			}
+		}
 	}
 	err := d.store.Update(func(f *config.File) error {
 		for _, m := range f.Mounts {

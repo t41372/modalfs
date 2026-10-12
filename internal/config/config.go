@@ -59,6 +59,11 @@ type Settings struct {
 	Language    string `json:"language,omitempty"`   // system | zh-Hant | en
 	Appearance  string `json:"appearance,omitempty"` // system | light | dark
 	MountRoot   string `json:"mount_root,omitempty"`
+	// Remote downloads start Modal Functions, billed to the account, so
+	// they're off until the user turns them on.
+	RemoteDownloads      bool   `json:"remote_downloads,omitempty"`
+	DownloadSize         string `json:"download_size,omitempty"`          // small (default), medium, large
+	DownloadStallMinutes int    `json:"download_stall_minutes,omitempty"` // stop after this long without data (default 10)
 }
 
 type File struct {

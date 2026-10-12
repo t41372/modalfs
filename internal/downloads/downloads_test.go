@@ -252,3 +252,16 @@ func sha(b []byte) string {
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
 }
+
+func TestStripCredentials(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://user:pass@example.com/a/b.iso?sig=1#x":       "https://example.com/a/b.iso",
+		"ftp://example.com/c":                                 "ftp://example.com/c",
+		"magnet:?xt=urn:btih:abc&tr=http://t/announce?pk=sec": "magnet:?xt=urn:btih:abc",
+		"magnet:?dn=x": "magnet:",
+	} {
+		if got := StripCredentials(in); got != want {
+			t.Errorf("StripCredentials(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

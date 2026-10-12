@@ -7,7 +7,7 @@ This file is for you, the agent working on modalfs. It's a small project: keep i
 ## Principles
 
 1. **Never lose the user's writes.** A volume holds data people care about. Every write is journaled until Modal has it, survives a crash, and is never silently dropped or overwritten: a conflict keeps both versions unless the user chose otherwise. When modalfs can't do something safely, it fails loudly and says why.
-2. **Zero compute.** modalfs only calls Modal's control-plane API and signed block URLs. Nothing it does may start a Sandbox, Function or container.
+2. **Compute only when asked.** Mounting, browsing and syncing only call Modal's control-plane API and signed block URLs, and never start a Sandbox, Function or container. The one exception is remote downloads: off until the user turns them on, and then a Function (or the short-lived Sandbox that deploys it) starts only for a download the user adds or resumes. It stops when the download ends, pauses or stalls, and is listed where the user can see and stop it.
 3. **A mount never silently changes what it points at.** Each mount is pinned to an account, environment and volume ID. Switching Modal CLI profiles, renaming or recreating a volume must never move a mount somewhere else.
 4. **Explicit over implicit.** No swallowed errors, no fake success, no silent fallback. Show what's happening (pending uploads, conflicts, errors) where the user will see it. A message says what went wrong and what to do about it.
 5. **The app and the CLI are both complete.** Everything goes through the daemon's API, so anything one can do the other can too. The app's window is only a remote control: closing it never unmounts anything.

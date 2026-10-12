@@ -1,6 +1,7 @@
 // modalfs mounts Modal Volumes (v2) as local folders without starting any
 // Modal compute. A background daemon owns the mounts; this CLI and the GUI
-// both drive it.
+// both drive it. The one feature that does start compute, remote downloads,
+// is off until the user turns it on, and runs only for downloads they add.
 package main
 
 import (
@@ -23,7 +24,7 @@ import (
 	"golang.org/x/term"
 )
 
-const usage = `modalfs — Modal Volumes as local folders, no Modal compute involved
+const usage = `modalfs — Modal Volumes as local folders; mounting starts no Modal compute
 
 Everyday:
   modalfs ui [--print]                      open the modalfs window (starts the background daemon);
@@ -41,6 +42,11 @@ Volumes:
   modalfs volume create NAME [--account A] [--env E] [--mount]
   modalfs volume rename NAME NEWNAME [--account A] [--env E]
   modalfs volume rm NAME [--account A] [--env E] [--yes]
+
+Remote downloads (off until enabled; each runs in a Modal Function billed to your account):
+  modalfs download add VOLUME[:/FOLDER] URL...   download into a volume while this computer sleeps
+  modalfs download ls|show|pause|resume|cancel|logs|rm
+  modalfs download help                     everything else, and how to turn them on
 
 Accounts (each mount is pinned to one; the Modal CLI's active profile is never used):
   modalfs account add [--label L] [--token-id ID]   token secret is prompted, stored in the keychain
@@ -99,6 +105,8 @@ func main() {
 		cmdForget(args)
 	case "volume", "volumes", "vol":
 		cmdVolume(args)
+	case "download", "downloads", "dl":
+		cmdDownload(args)
 	case "account", "accounts":
 		cmdAccount(args)
 	case "quit", "stop":

@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"path"
 	"strings"
 	"time"
@@ -55,8 +56,64 @@ type Job struct {
 	Cookies   string   `json:"cookies,omitempty"`
 	Created   int64    `json:"created"`
 	Calls     []string `json:"calls,omitempty"` // Function call IDs, oldest first
-	// Last known state, from the Function's records (see Status).
+	// StallLimit stops a download that has received nothing for this many
+	// seconds (the agent's default when zero).
+	StallLimit int `json:"stall_limit,omitempty"`
+
+	// What the daemon knows of it: preparing, running, pausing,
+	// cancelling, or how it ended (see Ended).
 	State string `json:"state,omitempty"`
+	Error string `json:"error,omitempty"`
+	// Stopping is "pause" or "cancel" while the daemon is stopping the
+	// download's call for the user, so the call's end is read as that and
+	// not as a failure. Keep keeps the partial files of a cancel.
+	Stopping string `json:"stopping,omitempty"`
+	Keep     bool   `json:"keep,omitempty"`
+	// Status is the last status.json read, kept so the list shows where a
+	// download stopped without reading every volume.
+	Status *Status `json:"status,omitempty"`
+	// Before uses status.json only when written after this time (its own
+	// clock): the one there when a run starts is the last run's.
+	Before float64 `json:"status_before,omitempty"`
+}
+
+// The daemon's states for a job, besides those it ends in.
+const (
+	StatePreparing  = "preparing" // deploying the Function, then spawning it
+	StateRunning    = "running"   // a call is running; its status.json says more
+	StatePausing    = "pausing"
+	StateCancelling = "cancelling"
+	StateCancelled  = "cancelled"
+)
+
+// Ended reports whether a job's state is one it rests in: no call runs.
+func Ended(state string) bool {
+	switch state {
+	case "done", "paused", "stalled", "failed", "time limit", StateCancelled:
+		return true
+	}
+	return false
+}
+
+// StripCredentials returns a link without user:password@ and its query
+// string (signed URLs, tracker passkeys), as the agent writes it in
+// job.json. Magnet links keep only their info hash.
+func StripCredentials(link string) string {
+	if strings.HasPrefix(link, "magnet:") {
+		for _, p := range strings.FieldsFunc(strings.TrimPrefix(link, "magnet:"), func(r rune) bool { return r == '?' || r == '&' }) {
+			if strings.HasPrefix(p, "xt=") {
+				return "magnet:?" + p
+			}
+		}
+		return "magnet:"
+	}
+	u, err := url.Parse(link)
+	if err != nil || u.Scheme == "" {
+		s, _, _ := strings.Cut(link, "?")
+		return s
+	}
+	u.User, u.RawQuery, u.ForceQuery, u.Fragment = nil, "", false, ""
+	return u.String()
 }
 
 // NewJob checks a request and makes a job for it.
@@ -123,6 +180,9 @@ func (j Job) args(app string, timeout time.Duration) map[string]any {
 	}
 	if j.Cookies != "" {
 		a["cookies"] = j.Cookies
+	}
+	if j.StallLimit > 0 {
+		a["stall_limit"] = j.StallLimit
 	}
 	return a
 }

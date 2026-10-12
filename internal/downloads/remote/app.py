@@ -288,7 +288,9 @@ class Gopeed(Tool):
         res = (t.get("meta") or {}).get("res") or {}
         total = res.get("size") or sum(f.get("size", 0) for f in res.get("files") or []) or -1
         state = {"pause": "paused", "error": "error", "done": "done"}.get(t["status"], "running")
-        return Progress(state, p.get("downloaded", 0), total, p.get("speed", 0), t.get("name", ""),
+        # a finished task reports its size as its speed
+        speed = 0 if state == "done" else p.get("speed", 0)
+        return Progress(state, p.get("downloaded", 0), total, speed, t.get("name", ""),
                         error=self.last_error() if state == "error" else "")
 
     def logs(self):

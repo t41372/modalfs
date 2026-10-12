@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/t41372/modalfs/internal/modalapi"
@@ -84,6 +85,9 @@ type Sample [3]float64
 type Volume interface {
 	ReadFile(ctx context.Context, path string) ([]byte, error)
 	List(ctx context.Context, dir string) ([]string, error) // file names in dir
+	// Remove deletes a file or a folder and everything in it. A path that
+	// isn't there is not an error.
+	Remove(ctx context.Context, path string) error
 }
 
 const maxRecord = 16 << 20
@@ -119,6 +123,14 @@ func (v ModalVolume) List(ctx context.Context, dir string) ([]string, error) {
 	return names, nil
 }
 
+func (v ModalVolume) Remove(ctx context.Context, p string) error {
+	err := v.Client.Remove(ctx, v.VolumeID, p, true)
+	if modalapi.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
 // DirVolume is a local folder standing in for a volume (the local runner).
 type DirVolume string
 
@@ -138,6 +150,10 @@ func (d DirVolume) List(_ context.Context, dir string) ([]string, error) {
 		}
 	}
 	return names, err
+}
+
+func (d DirVolume) Remove(_ context.Context, p string) error {
+	return os.RemoveAll(filepath.Join(string(d), filepath.FromSlash(p)))
 }
 
 // A file the agent is rewriting can read back torn on a Modal volume (zeros,
@@ -221,8 +237,25 @@ func ReadEvents(ctx context.Context, v Volume, j Job) ([]Event, error) {
 }
 
 // ReadHistory reads the speed history the agent has written so far, in
-// order. Chunks are written once and never changed.
+// order.
 func ReadHistory(ctx context.Context, v Volume, j Job) ([]Sample, error) {
+	return new(History).Read(ctx, v, j)
+}
+
+// History reads one job's speed history and remembers the chunks it has
+// read: they're written once and never changed, so following a download
+// reads only the new ones.
+type History struct {
+	mu     sync.Mutex
+	chunks map[string][]Sample
+}
+
+func (h *History) Read(ctx context.Context, v Volume, j Job) ([]Sample, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.chunks == nil {
+		h.chunks = map[string][]Sample{}
+	}
 	dir := j.Dir() + "/speed"
 	names, err := v.List(ctx, dir)
 	if err != nil {
@@ -234,24 +267,37 @@ func ReadHistory(ctx context.Context, v Volume, j Job) ([]Sample, error) {
 		if !strings.HasSuffix(name, ".jsonl") {
 			continue
 		}
-		b, err := readValid(ctx, v, dir+"/"+name, func(b []byte) error {
-			for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-				if err := checkJSON([]byte(line)); err != nil {
-					return err
-				}
+		rows, ok := h.chunks[name]
+		if !ok {
+			if rows, err = readChunk(ctx, v, dir+"/"+name); err != nil {
+				return nil, err
 			}
-			return nil
-		})
-		if err != nil {
-			return nil, err
+			h.chunks[name] = rows
 		}
-		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-			var s Sample
-			if err := json.Unmarshal([]byte(line), &s); err != nil {
-				return nil, fmt.Errorf("%s: %w", name, err)
-			}
-			out = append(out, s)
-		}
+		out = append(out, rows...)
 	}
 	return out, nil
+}
+
+func readChunk(ctx context.Context, v Volume, p string) ([]Sample, error) {
+	b, err := readValid(ctx, v, p, func(b []byte) error {
+		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+			if err := checkJSON([]byte(line)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	var rows []Sample
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var s Sample
+		if err := json.Unmarshal([]byte(line), &s); err != nil {
+			return nil, fmt.Errorf("%s: %w", p, err)
+		}
+		rows = append(rows, s)
+	}
+	return rows, nil
 }
