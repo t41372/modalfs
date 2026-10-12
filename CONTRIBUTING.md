@@ -40,7 +40,7 @@ just dev                # hot reload against your running daemon (start one with
 
 ## End-to-end tests
 
-`just test-e2e` (macOS) mounts modalfs for real, over NFS, against a fake Modal (`internal/modalfake`) with a slow network, and checks from outside that the mount stays responsive and that what reaches "Modal" is exactly what was written. It needs no account. If you change how files are read, written or committed, add a test there. `just fake` runs the fake on its own, to try modalfs by hand.
+`just test-e2e` (macOS) mounts modalfs for real, over NFS, against a fake Modal (`internal/modalfake`) with a slow network, and checks from outside that the mount stays responsive and that what reaches "Modal" is exactly what was written. It needs no account. `just test-e2e-live <profile>` runs the same tests against real Modal with a profile from `~/.modal.toml`; each test creates a scratch volume in that workspace and deletes it afterwards. If you change how files are read, written or committed, add a test there. `just fake` runs the fake on its own, to try modalfs by hand.
 
 ## Integration tests
 

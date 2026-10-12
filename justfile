@@ -69,6 +69,10 @@ test:
 test-e2e:
     go test -tags e2e -count=1 -timeout 25m ./internal/e2e
 
+# the end-to-end tests against real Modal: each test CREATES AND DELETES a scratch volume in the profile's workspace
+test-e2e-live profile *args:
+    MODALFS_E2E_PROFILE={{profile}} go test -tags e2e -count=1 -timeout 60m ./internal/e2e {{args}}
+
 # run a fake Modal for trying modalfs without an account (prints the variables to set)
 fake *args:
     go run ./cmd/modalfs-fake {{args}}

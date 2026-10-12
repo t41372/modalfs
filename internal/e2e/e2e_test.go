@@ -1,16 +1,17 @@
 //go:build e2e && darwin
 
 // End-to-end tests: a real macOS NFS mount of modalfs, backed by the fake
-// Modal in internal/modalfake with a slow network. They check what a user
-// would see: the mount stays responsive while large files upload, and what
-// lands on "Modal" is exactly what was written.
+// Modal in internal/modalfake with a slow network, or by real Modal (see
+// backend_test.go). They check what a user would see: the mount stays
+// responsive while large files upload, and what lands on "Modal" is exactly
+// what was written.
 //
 //	go test -tags e2e ./internal/e2e    (or: just test-e2e)
 //
 // modalfs runs as its own process (`modalfs run`, built with the race
 // detector), as it does for users: a process must never do file I/O on an
 // NFS mount that it serves itself, or the kernel and the Go runtime can wait
-// on each other forever. The fake runs here; tests check results through it.
+// on each other forever. The tests check results through Modal's API.
 package e2e
 
 import (
@@ -76,15 +77,16 @@ func (e *buildError) Error() string { return e.err.Error() + ": " + e.out }
 
 type env struct {
 	t      *testing.T
-	fake   *modalfake.Server
+	net    network
 	client *modalapi.Client
 	vol    modalapi.VolumeInfo
 	mnt    string
 }
 
-// setup mounts a fresh fake volume with `modalfs run`. before, if set, runs
-// before the mount, to put files on "Modal" first. args are extra flags for
-// modalfs run.
+// setup mounts a fresh volume with `modalfs run`: on the fake, or on real
+// Modal with MODALFS_E2E_PROFILE (see backend_test.go). before, if set,
+// runs before the mount, to put files on "Modal" first. args are extra
+// flags for modalfs run.
 func setup(t *testing.T, opt modalfake.Options, args []string, before ...func(*modalapi.Client, string)) *env {
 	t.Helper()
 	bin := modalfsBinary(t)
@@ -94,25 +96,14 @@ func setup(t *testing.T, opt modalfake.Options, args []string, before ...func(*m
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(root) })
-	fake, err := modalfake.Start(filepath.Join(root, "blocks"), opt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(fake.Close)
-	client, err := modalapi.New(modalapi.Config{ServerURL: fake.URL, TokenID: "ak-fake", TokenSecret: "as-fake"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	vol, err := client.LookupVolume(context.Background(), "e2e", true)
-	if err != nil {
-		t.Fatal(err)
-	}
+	b := startBackend(t, root, opt)
 	for _, f := range before {
-		f(client, vol.ID)
+		f(b.client, b.vol.ID)
 	}
 	mnt := filepath.Join(root, "mnt")
-	cmd := exec.Command(bin, append(append([]string{"run", "-cache-dir", filepath.Join(root, "cache"), "-cache-size", "2G"}, args...), "e2e", mnt)...)
-	cmd.Env = append(os.Environ(), "MODAL_SERVER_URL="+fake.URL, "MODAL_TOKEN_ID=ak-fake", "MODAL_TOKEN_SECRET=as-fake", "MODAL_CONFIG_PATH=/dev/null")
+	flags := append([]string{"run", "-cache-dir", filepath.Join(root, "cache"), "-cache-size", "2G"}, b.flags...)
+	cmd := exec.Command(bin, append(append(flags, args...), b.vol.Name, mnt)...)
+	cmd.Env = append(os.Environ(), b.env...)
 	var logs syncBuffer
 	cmd.Stdout, cmd.Stderr = &logs, &logs
 	if err := cmd.Start(); err != nil {
@@ -147,7 +138,7 @@ func setup(t *testing.T, opt modalfake.Options, args []string, before ...func(*m
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return &env{t: t, fake: fake, client: client, vol: vol, mnt: mnt}
+	return &env{t: t, net: b.net, client: b.client, vol: b.vol, mnt: mnt}
 }
 
 func mounted(mnt string) bool {
@@ -205,7 +196,7 @@ func (e *env) writeFile(name string, data []byte) {
 	}
 }
 
-// remote reads a file straight from the fake, bypassing modalfs's caches.
+// remote reads a file straight from Modal, bypassing modalfs's caches.
 func (e *env) remote(name string) ([]byte, error) {
 	ctx := context.Background()
 	urls, size, err := e.client.BlockURLs(ctx, e.vol.ID, name, 0, 1<<30)
@@ -214,7 +205,7 @@ func (e *env) remote(name string) ([]byte, error) {
 	}
 	var out []byte
 	for i, u := range urls {
-		n := min(size-int64(i)*modalfake.BlockSize, modalfake.BlockSize)
+		n := min(size-int64(i)*modalapi.BlockSize, modalapi.BlockSize)
 		b, err := e.client.Download(ctx, u, int(n))
 		if err != nil {
 			return nil, err
@@ -244,7 +235,7 @@ func (e *env) waitRemote(name string, want []byte, timeout time.Duration) {
 func (e *env) waitUploading(timeout time.Duration) {
 	e.t.Helper()
 	deadline := time.Now().Add(timeout)
-	for e.fake.Received() < modalfake.BlockSize {
+	for e.net.Received() < modalapi.BlockSize {
 		if time.Now().After(deadline) {
 			e.t.Fatalf("no upload started within %v", timeout)
 		}
@@ -352,7 +343,7 @@ func TestDeleteDuringCommit(t *testing.T) {
 	if _, err := e.remote("gone.bin"); err == nil {
 		t.Fatal("a file deleted during its commit is on Modal")
 	}
-	if n := e.fake.Received(); n >= 80*MiB {
+	if n := e.net.Received(); n >= 80*MiB {
 		t.Errorf("the whole deleted file was uploaded anyway (%d MiB)", n/MiB)
 	}
 }
@@ -365,7 +356,7 @@ func TestStreamingRead(t *testing.T) {
 		_, err := c.Put(context.Background(), volID, []modalapi.PutFile{{
 			Path: "movie.mov", Size: int64(len(data)), Hashes: modalapi.HashBlocks(data),
 			Block: func(i int) ([]byte, error) {
-				return data[i*modalfake.BlockSize : min((i+1)*modalfake.BlockSize, len(data))], nil
+				return data[i*modalapi.BlockSize : min((i+1)*modalapi.BlockSize, len(data))], nil
 			},
 		}})
 		if err != nil {
@@ -441,7 +432,7 @@ func TestUploadsWhileWriting(t *testing.T) {
 		}
 		time.Sleep(time.Second)
 	}
-	upBeforeClose := e.fake.Received()
+	upBeforeClose := e.net.Received()
 	f.Close()
 	if upBeforeClose < 8*MiB {
 		t.Errorf("only %d bytes were uploaded while the file was being written", upBeforeClose)
@@ -456,7 +447,7 @@ func putRemote(t *testing.T, c *modalapi.Client, volID, name string, data []byte
 	_, err := c.Put(context.Background(), volID, []modalapi.PutFile{{
 		Path: name, Size: int64(len(data)), Hashes: modalapi.HashBlocks(data),
 		Block: func(i int) ([]byte, error) {
-			return data[i*modalfake.BlockSize : min((i+1)*modalfake.BlockSize, len(data))], nil
+			return data[i*modalapi.BlockSize : min((i+1)*modalapi.BlockSize, len(data))], nil
 		},
 	}})
 	if err != nil {

@@ -18,13 +18,13 @@ import (
 	"github.com/t41372/modalfs/internal/modalfake"
 )
 
-// putFile stores data under name on the fake, bypassing the mount.
+// putFile stores data under name on Modal, bypassing the mount.
 func putFile(t *testing.T, c *modalapi.Client, volID, name string, data []byte) {
 	t.Helper()
 	_, err := c.Put(context.Background(), volID, []modalapi.PutFile{{
 		Path: name, Size: int64(len(data)), Hashes: modalapi.HashBlocks(data),
 		Block: func(i int) ([]byte, error) {
-			return data[i*modalfake.BlockSize : min((i+1)*modalfake.BlockSize, len(data))], nil
+			return data[i*modalapi.BlockSize : min((i+1)*modalapi.BlockSize, len(data))], nil
 		},
 	}})
 	if err != nil {
@@ -38,9 +38,9 @@ func putFile(t *testing.T, c *modalapi.Client, volID, name string, data []byte) 
 // ahead in modalfs must add nothing to that.
 func TestReadAheadBounded(t *testing.T) {
 	const files, blocks = 12, 6
-	base := randomBytes(t, modalfake.BlockSize)
+	base := randomBytes(t, modalapi.BlockSize)
 	content := func(f int) []byte {
-		data := make([]byte, 0, blocks*modalfake.BlockSize)
+		data := make([]byte, 0, blocks*modalapi.BlockSize)
 		for b := 0; b < blocks; b++ {
 			blk := append([]byte(nil), base...)
 			copy(blk, fmt.Sprintf("block %08d", f*blocks+b)) // every block is distinct
@@ -86,9 +86,9 @@ func TestReadAheadBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(3 * time.Second) // let any read-ahead that was started finish
-	served := e.fake.Served()
+	served := e.net.Served()
 	t.Logf("read 64 KiB of %d files of %d MiB: %d MiB downloaded", files, blocks*8, served/MiB)
-	if limit := int64(files) * modalfake.BlockSize * 5 / 2; served > limit {
+	if limit := int64(files) * modalapi.BlockSize * 5 / 2; served > limit {
 		t.Errorf("downloaded %d MiB to read the start of %d files; want at most %d MiB (what the NFS client itself asks for)", served/MiB, files, limit/MiB)
 	}
 }
@@ -153,7 +153,12 @@ func TestNoConflictWhileListing(t *testing.T) {
 // Streaming a large file reads at close to the link's speed and downloads
 // each block once; reading it again comes from the cache, a range at a time.
 func TestStreamingReadThroughput(t *testing.T) {
-	const link = 40 * MiB
+	link := int64(40 * MiB)
+	if live() {
+		// below a home connection to Modal (6-10 MiB/s), so the proxy's
+		// limit is the link and the check means the same as on the fake
+		link = 4 * MiB
+	}
 	data := randomBytes(t, 256*MiB)
 	put := func(c *modalapi.Client, volID string) { putFile(t, c, volID, "movie.mov", data) }
 	e := setup(t, modalfake.Options{DownBytesPerSec: link, Latency: 30 * time.Millisecond}, []string{"-read-ahead", "8"}, put)
@@ -191,19 +196,19 @@ func TestStreamingReadThroughput(t *testing.T) {
 	if h != sum(data) {
 		t.Fatal("first read returned the wrong content")
 	}
-	served := e.fake.Served()
+	served := e.net.Served()
 	h, warm := read(true)
 	if h != sum(data) {
 		t.Fatal("cached read returned the wrong content")
 	}
 	t.Logf("cold %.1f MiB/s over a %d MiB/s link (%d MiB downloaded); cached %.1f MiB/s", cold, link/MiB, served/MiB, warm)
-	if cold < 0.7*link/MiB {
+	if cold < 0.7*float64(link)/MiB {
 		t.Errorf("streaming read ran at %.1f MiB/s, under 70%% of the %d MiB/s link", cold, link/MiB)
 	}
-	if served > int64(len(data))+2*modalfake.BlockSize {
+	if served > int64(len(data))+2*modalapi.BlockSize {
 		t.Errorf("downloaded %d MiB to read a %d MiB file", served/MiB, len(data)/MiB)
 	}
-	if again := e.fake.Served() - served; again > 0 {
+	if again := e.net.Served() - served; again > 0 {
 		t.Errorf("reading a cached file downloaded %d MiB again", again/MiB)
 	}
 	if warm < 100 {
