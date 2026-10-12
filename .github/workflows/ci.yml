@@ -24,6 +24,11 @@ jobs:
           tool: just
       - run: just lint
       - run: just test
+      - name: Remote download agent
+        run: |
+          sudo apt-get install -y aria2
+          just agent-tools
+          just test-agent
       - run: just cli
       - name: Linux desktop app
         run: |

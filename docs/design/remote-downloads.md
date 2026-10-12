@@ -145,7 +145,7 @@ From `modal billing rates` for the workspace:
   - Debian slim with Python;
   - aria2 from Debian;
   - gopeed-web at a pinned version and SHA-256 (updated with modalfs; v2.0.0-beta.3 now);
-  - static ffmpeg and Deno for yt-dlp.
+  - ffmpeg from Debian and Deno (pinned by SHA-256) for yt-dlp.
 
   yt-dlp isn't in the image: each run that needs it installs the latest release first (`pip install -U "yt-dlp[default]"`, a few seconds).
 - **Function settings:**
@@ -257,10 +257,32 @@ The destination folder only ever receives finished files. The local mount sees t
 5. **aria2 and yt-dlp adapters;** self-respawn past 24 h if it holds up.
 6. **Docs:** README in both languages, known issues, and AGENTS.md principle 2.
 
-## Still to verify while building
+## Found while building (steps 1–2)
 
-- Whether gopeed recovers when continued after the `200`-to-range failure (otherwise fall back to aria2 for that link).
-- Self-respawn from inside the Function before 24 h.
-- `sync /vol` cost while a large file is being written.
-- How long `FunctionCall.Get` keeps results.
-- Whether tunnels cost anything.
+Steps 1 and 2 of the plan are built: the agent and its Function (`internal/downloads/remote/app.py`), the Go side (`internal/downloads`), local tests (`just test-agent`) and a live test (`just test-downloads-live <profile>`). The live test passes on real Modal. It covers:
+
+- deploying through a Sandbox;
+- gopeed through a simulated preemption;
+- pause and resume through the tunnel;
+- continuing past the time limit;
+- aria2;
+- yt-dlp.
+
+What the open questions turned out to be:
+
+- **gopeed after a `200` to a range request: continuing it works,** locally (a test server that does it once) and on Modal. On datapacket gopeed hits it again and again, sometimes every few hundred MB, and keeps making progress after each continue.
+  - The agent gives up on gopeed only after 5 errors in a row with less than 64 MiB gained in between. It then falls back to aria2, which starts over, because gopeed's preallocated file can't be resumed by another tool.
+  - A fallback sticks: later runs of the job use aria2 (`state/tool`). Before that fix, a resumed run went back to gopeed and threw away aria2's progress.
+  - **Worth raising upstream:** gopeed fails the whole task when one connection's range request gets a `200`.
+- **Self-respawn before 24 h works.** With a 2-minute limit, the call paused 30 s before it, spawned its successor from inside the container (no token needed) and returned "continued". The successor picked up at 3.13 GB.
+  - **Pitfall:** a call spawned from Python returns its result pickled, which the Go SDK can't read. The function sets `_experimental_restrict_output=True` so results are always CBOR. It's experimental in the Modal client, and the daemon relies on `status.json` anyway, so it can live without results if that flag goes away.
+- **`sync /vol` during a 40–70 MB/s download takes 0.8–1.1 s on average, 2.4 s at most.** `status.json` read from the laptop was typically 2–5 s old, at most about 9 s.
+- **`FunctionCall.Get` still returned results about 45 minutes later,** after the app had been stopped. Longer wasn't tested.
+- **Tunnels have no line of their own in the billing report.** It lists CPU, memory and network egress per app.
+  - **Egress isn't zero for downloads:** it came to about 2% of the bytes downloaded (presumably TCP acknowledgements and TLS), about $0.0008 per GB, roughly half of the compute cost of a fast download.
+- **Other things found:**
+  - gopeed logs to `<storage>/logs/core.log` when given a storage folder, not to stdout. The agent reads errors from there and copies all logs to `log.txt`.
+  - The Go SDK decodes a Python dict as `map[any]any`; `Modal.Result` converts it.
+  - Using the Modal SDK's Function and Sandbox APIs adds its own dependencies (CBOR, JWT, a pickle reader) to go.mod. It's the module modalfs already used for its protos.
+- **Deploying through a Sandbox** took 50 s the first time (building the Sandbox's image) and 6–10 s after that. Checking that the agent is current takes one API call.
+- **ffmpeg comes from Debian's package,** not a static build; yt-dlp only needs it to merge formats.

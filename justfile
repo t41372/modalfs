@@ -73,6 +73,36 @@ test-e2e:
 test-e2e-live profile *args:
     MODALFS_E2E_PROFILE={{profile}} go test -tags e2e -count=1 -timeout 60m ./internal/e2e {{args}}
 
+# the remote download agent's tests: the agent's own (Python) and the Go side driving it, outside Modal
+test-agent:
+    #!/bin/sh
+    set -eu
+    tools="${XDG_CACHE_HOME:-$HOME/.cache}/modalfs/agent-tools"
+    if [ -z "${GOPEED_BIN:-}" ] && [ -x "$tools/gopeed" ]; then export GOPEED_BIN="$tools/gopeed"; fi
+    (cd internal/downloads/remote && python3 -m unittest -v test_app)
+    go test -race -count=1 -run TestLocalRunner -v ./internal/downloads
+
+# fetch the gopeed build the agent tests use, for this machine (they skip without it)
+agent-tools:
+    #!/bin/sh
+    set -eu
+    tools="${XDG_CACHE_HOME:-$HOME/.cache}/modalfs/agent-tools"
+    version=$(sed -n 's/^GOPEED_VERSION = "\(.*\)"/\1/p' internal/downloads/remote/app.py)
+    case "$(uname -s)" in Darwin) os=macos ;; *) os=linux ;; esac
+    case "$(uname -m)" in arm64|aarch64) arch=arm64 ;; *) arch=amd64 ;; esac
+    tmp=$(mktemp -d)
+    curl -fsSL -o "$tmp/g.zip" "https://github.com/GopeedLab/gopeed/releases/download/$version/gopeed-web-$version-$os-$arch.zip"
+    unzip -q "$tmp/g.zip" -d "$tmp"
+    mkdir -p "$tools"
+    mv "$tmp"/gopeed-web-*/gopeed "$tools/gopeed"
+    rm -rf "$tmp"
+    if [ "$os" = macos ]; then xattr -d com.apple.quarantine "$tools/gopeed" 2>/dev/null || true; fi
+    echo "$tools/gopeed ($version)"
+
+# remote downloads against real Modal: CREATES AND DELETES a scratch volume and a test app in the profile's workspace (costs cents)
+test-downloads-live profile *args:
+    MODALFS_E2E_PROFILE={{profile}} go test -tags live -count=1 -timeout 60m -v ./internal/downloads {{args}}
+
 # run a fake Modal for trying modalfs without an account (prints the variables to set)
 fake *args:
     go run ./cmd/modalfs-fake {{args}}

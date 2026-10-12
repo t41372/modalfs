@@ -15,3 +15,6 @@
 /web/node_modules/
 /internal/webui/dist/*
 !/internal/webui/dist/.gitkeep
+
+# Python bytecode from the download agent tests
+__pycache__/
