@@ -34,7 +34,7 @@ Don't add defenses that only protect the owner from themselves.
 ## Testing
 
 - **Test the real thing.** `just test-e2e` mounts modalfs for real (a separate process, race detector on) against the fake Modal in `internal/modalfake` with a slow network, and checks the mount from outside; add a test there for any change to how files are read, written or committed. The fake is no proof of Modal's own behavior: `just test-e2e-live <profile>` runs the same tests against real Modal, each in a scratch volume it creates and deletes, and the integration tests run against a scratch volume you name. The UI's mock API (`just dev-mock`) is for building the UI and for the README's pictures.
-- **Never do file I/O on a mount from the process that serves it.** The kernel and the Go runtime can wait on each other forever; tests run modalfs as its own process.
+- **Never do file I/O on a mount from the process that serves it.** The kernel and the Go runtime can wait on each other forever; tests run modalfs as its own process. Sync files with `fsync.File`, never `os.File.Sync`: on macOS a slow sync with the latter stops every goroutine in the process at the next GC, which deadlocks a test whose fake Modal serves the mount it's syncing, and stalls the whole mount in modalfs.
 - **Look at UI changes.** Run the UI, click through the change in both themes and at a narrow width, and check the console for errors.
 - **Never touch the user's real setup while testing.** Run a daemon with `MODALFS_HOME=$(mktemp -d)` and `MODALFS_NO_KEYCHAIN=1`. Keep that path short: macOS limits Unix socket paths to 104 characters. Don't mount anything you didn't create.
 - Before calling a change done, run `just lint` and `just test`. If you touched the app, also run `just app`.

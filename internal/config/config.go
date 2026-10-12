@@ -19,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/t41372/modalfs/internal/fsync"
 )
 
 type Account struct {
@@ -156,7 +158,7 @@ func WriteAtomic(path string, raw []byte) error {
 	}
 	_, err = f.Write(raw)
 	if err == nil {
-		err = f.Sync()
+		err = fsync.File(f)
 	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
@@ -170,7 +172,7 @@ func WriteAtomic(path string, raw []byte) error {
 	}
 	// Persist the rename too; best effort, not every filesystem allows it.
 	if dir, err := os.Open(filepath.Dir(path)); err == nil {
-		_ = dir.Sync()
+		_ = fsync.File(dir)
 		_ = dir.Close()
 	}
 	return nil

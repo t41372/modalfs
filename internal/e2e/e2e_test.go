@@ -11,7 +11,10 @@
 // modalfs runs as its own process (`modalfs run`, built with the race
 // detector), as it does for users: a process must never do file I/O on an
 // NFS mount that it serves itself, or the kernel and the Go runtime can wait
-// on each other forever. The tests check results through Modal's API.
+// on each other forever. The fake (and the proxy, on live runs) still serve
+// the mount from this process, so syncs here use fsync.File, never
+// os.File.Sync (see internal/fsync). The tests check results through Modal's
+// API.
 package e2e
 
 import (
@@ -20,10 +23,12 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +36,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/t41372/modalfs/internal/fsync"
 	"github.com/t41372/modalfs/internal/modalapi"
 	"github.com/t41372/modalfs/internal/modalfake"
 )
@@ -81,6 +87,7 @@ type env struct {
 	client *modalapi.Client
 	vol    modalapi.VolumeInfo
 	mnt    string
+	proc   *os.Process // modalfs run
 }
 
 // setup mounts a fresh volume with `modalfs run`: on the fake, or on real
@@ -109,6 +116,7 @@ func setup(t *testing.T, opt modalfake.Options, args []string, before ...func(*m
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	watchForStall(t, cmd, &logs, mnt)
 	t.Cleanup(func() {
 		_ = cmd.Process.Signal(syscall.SIGINT) // commits what's pending, unmounts
 		done := make(chan struct{})
@@ -138,7 +146,36 @@ func setup(t *testing.T, opt modalfake.Options, args []string, before ...func(*m
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return &env{t: t, net: b.net, client: b.client, vol: b.vol, mnt: mnt}
+	return &env{t: t, net: b.net, client: b.client, vol: b.vol, mnt: mnt, proc: cmd.Process}
+}
+
+// watchForStall handles a test that hangs in a call on the mount because
+// modalfs stopped answering. go test's own timeout would kill everything
+// without modalfs's side of the story, so after MODALFS_E2E_STALL (default
+// 8m) this saves modalfs's goroutines (SIGQUIT) to a file and forces the
+// mount off, which fails the stuck call. (It can't help if this process
+// itself is frozen; see TestSyncWaitingOnServerDoesNotFreezeTests.)
+func watchForStall(t *testing.T, cmd *exec.Cmd, logs *syncBuffer, mnt string) {
+	after := 8 * time.Minute
+	if v := os.Getenv("MODALFS_E2E_STALL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			t.Fatalf("MODALFS_E2E_STALL: %v", err)
+		}
+		after = d
+	}
+	name := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
+	timer := time.AfterFunc(after, func() {
+		_ = cmd.Process.Signal(syscall.SIGQUIT)
+		time.Sleep(3 * time.Second)
+		dump := filepath.Join(os.TempDir(), fmt.Sprintf("modalfs-stall-%s-%d.log", name, time.Now().Unix()))
+		if err := os.WriteFile(dump, []byte(logs.String()), 0o644); err != nil {
+			dump = err.Error()
+		}
+		_ = exec.Command("/sbin/umount", "-f", mnt).Run()
+		fmt.Fprintf(os.Stderr, "%s: still running after %v; modalfs's goroutines are in %s\n", t.Name(), after, dump)
+	})
+	t.Cleanup(func() { timer.Stop() })
 }
 
 func mounted(mnt string) bool {
@@ -188,7 +225,7 @@ func (e *env) writeFile(name string, data []byte) {
 			e.t.Fatal(err)
 		}
 	}
-	if err := f.Sync(); err != nil {
+	if err := fsync.File(f); err != nil {
 		e.t.Fatal(err)
 	}
 	if err := f.Close(); err != nil {
@@ -312,7 +349,7 @@ func TestWriteDuringCommit(t *testing.T) {
 	if _, err := f.WriteAt(more, int64(len(data))); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Sync(); err != nil {
+	if err := fsync.File(f); err != nil {
 		t.Fatal(err)
 	}
 	f.Close()
@@ -427,7 +464,7 @@ func TestUploadsWhileWriting(t *testing.T) {
 		if _, err := f.Write(chunk); err != nil {
 			t.Fatal(err)
 		}
-		if err := f.Sync(); err != nil {
+		if err := fsync.File(f); err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(time.Second)
@@ -508,7 +545,7 @@ func TestEditOfReplacedFileIsSetAside(t *testing.T) {
 	if _, err := f.WriteAt(randomBytes(t, 8*MiB), 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Sync(); err != nil {
+	if err := fsync.File(f); err != nil {
 		t.Fatal(err)
 	}
 	f.Close()
@@ -528,5 +565,42 @@ func TestEditOfReplacedFileIsSetAside(t *testing.T) {
 	got, err := e.remote("data.bin")
 	if err != nil || sum(got) != sum(replacement) {
 		t.Fatalf("Modal's version was changed (err %v)", err)
+	}
+}
+
+// A sync on the mount that has to wait for the server must not stop this
+// whole process: the fake Modal and the proxy serve the mount from here.
+// os.File.Sync does stop it on macOS (at the next GC, until the sync
+// returns), which hung the suite now and then; tests sync with fsync.File.
+func TestSyncWaitingOnServerDoesNotFreezeTests(t *testing.T) {
+	e := setup(t, modalfake.Options{}, nil)
+	f, err := os.Create(filepath.Join(e.mnt, "s.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.Write(randomBytes(t, MiB)); err != nil {
+		t.Fatal(err)
+	}
+	// Pause modalfs, and resume it from another process: if this one froze,
+	// its own timers would too.
+	resume := exec.Command("/bin/sh", "-c", fmt.Sprintf("sleep 4; kill -CONT %d", e.proc.Pid))
+	if err := resume.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resume.Wait() })
+	if err := e.proc.Signal(syscall.SIGSTOP); err != nil {
+		t.Fatal(err)
+	}
+	synced := make(chan error, 1)
+	go func() { synced <- fsync.File(f) }()
+	time.Sleep(500 * time.Millisecond) // let the sync start waiting
+	t0 := time.Now()
+	runtime.GC()
+	if d := time.Since(t0); d > time.Second {
+		t.Errorf("a GC took %v while a sync waited on the server: the whole process stopped", d.Round(time.Millisecond))
+	}
+	if err := <-synced; err != nil {
+		t.Fatal(err)
 	}
 }

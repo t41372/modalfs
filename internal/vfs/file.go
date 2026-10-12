@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/t41372/modalfs/internal/fsync"
 	"github.com/t41372/modalfs/internal/modalapi"
 )
 
@@ -196,7 +197,7 @@ func (st *fileState) ensureDirtyFromLocked(idx int64, fullCover bool, base []byt
 		// never wrote and no NFS COMMIT covers: make them durable now, or a
 		// power loss could leave a hole that recovery commits as zeros.
 		if err == nil {
-			err = f.Sync()
+			err = fsync.File(f)
 		}
 	}
 	if err == nil {
@@ -961,7 +962,7 @@ func (st *fileState) sync() error {
 		if err != nil {
 			return err
 		}
-		err = f.Sync()
+		err = fsync.File(f)
 		f.Close()
 		if err != nil {
 			return fmt.Errorf("sync %s: %w", st.path, err)
