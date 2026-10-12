@@ -16,7 +16,7 @@
 
 ---
 
-modalfs lets Finder, your editor, `ffmpeg` and AI agents work with a [Modal Volume](https://modal.com/docs/guide/volumes) as an ordinary folder. Reads stream directly from Modal's block store. Writes are committed from your machine, and only the 8 MiB blocks you changed get uploaded. modalfs **never starts a Sandbox, Function or container**, so mounting costs no compute.
+modalfs lets Finder, your editor, `ffmpeg` and AI agents work with a [Modal Volume](https://modal.com/docs/guide/volumes) as an ordinary folder. Reads stream directly from Modal's block store. Writes are committed from your machine, and only the 8 MiB blocks you changed get uploaded. Mounting **never starts a Sandbox, Function or container**, so it costs no compute. The one feature that does, [remote downloads](#remote-downloads), is off until you turn it on.
 
 ```console
 $ modalfs volume create datasets
@@ -36,6 +36,7 @@ datasets  work     mounted  /Users/me/ModalVolumes/datasets  0        0 B / 3 B
 - [Install](#install)
 - [Quick start](#quick-start)
 - [The app](#the-app)
+- [Remote downloads](#remote-downloads)
 - [CLI reference](#cli-reference)
 - [Accounts and pinning](#accounts-and-pinning)
 - [How it works](#how-it-works)
@@ -49,7 +50,7 @@ datasets  work     mounted  /Users/me/ModalVolumes/datasets  0        0 B / 3 B
 
 ## Highlights
 
-- **Zero compute.** modalfs only calls Modal's control-plane API and the signed block-store URLs. Nothing runs on Modal's side.
+- **Compute only when you ask for it.** Mounting, browsing and syncing only call Modal's control-plane API and the signed block-store URLs; nothing runs on Modal's side. The one exception is a remote download you add.
 - **No kernel extension on macOS.** modalfs serves NFSv3 on localhost and macOS's built-in NFS client mounts it. Linux uses FUSE. macFUSE also works if you prefer it.
 - **Lazy, ranged reads.** Opening a 100 GiB file and reading 4 KiB from the middle downloads one 8 MiB block. Sequential reads prefetch in parallel.
 - **Block-level writes.** Volume v2 is content-addressed. Changing 4 KiB inside a 100 GiB file uploads one 8 MiB block and commits a new manifest. Renames and copies change only manifests, with no data transfer.
@@ -57,6 +58,7 @@ datasets  work     mounted  /Users/me/ModalVolumes/datasets  0        0 B / 3 B
 - **Multiple accounts, pinned per mount.** modalfs keeps its own account list and ignores the Modal CLI's active profile, so switching profiles never moves a mount to another workspace.
 - **Crash-safe write-back.** Unsaved edits are journaled locally and committed on the next start, even after `kill -9`. Data an app has saved (closed or fsynced) is on disk before the app hears it's saved, so it survives a power loss too.
 - **Stays usable while it uploads.** A 13 GB copy uploads in the background, in parts as it's written; Finder, reads and other files keep working meanwhile.
+- **Remote downloads.** Paste a link and a Modal Function downloads it into a volume while your computer sleeps or is off, with gopeed, aria2 or yt-dlp. A live speed chart, and it carries on by itself when Modal moves the container. Off until you turn it on.
 - **A small native app**, a matching CLI, start-at-login and auto-mount.
 
 ## Install
@@ -135,8 +137,9 @@ modalfs saves each mount, so `modalfs mount my-data` reuses the same account, en
 | **Mounts** | Mount or unmount with a switch. See pending uploads, traffic, commits and conflicts. Sync now, show in Finder, force unmount. Per-mount options: auto-mount, read-only, filter macOS litter, conflict policy, NFS/FUSE. |
 | **Volumes** | Browse volumes by account and environment. Create, rename, delete (type the name to confirm), mount. |
 | **Accounts** | Add a token, import from `~/.modal.toml`, check that a token still works, remove. |
+| **Downloads** | Remote downloads: add links, pause, resume, cancel. Each one's speed over the whole run (point at the line for the acceleration there), and what happened to it. |
 | **Activity** | Mounts, uploads, conflicts, errors and crash recoveries, grouped by day, with notifications for the important ones. |
-| **Settings** | Language (English / 繁體中文 / 简体中文), light/dark mode, start at login, cache size, read-ahead, default mount folder, connection mode. |
+| **Settings** | Language (English / 繁體中文 / 简体中文), light/dark mode, start at login, cache size, read-ahead, default mount folder, connection mode, remote downloads. |
 
 The window is only a remote control. Mounts live in the background daemon, so **closing the window never unmounts anything**. On macOS the window is glass over your desktop. In a browser (`modalfs ui` without the app), or on a phone-sized window, the same UI moves its tabs to the bottom.
 
@@ -153,9 +156,30 @@ The window is only a remote control. Mounts live in the background daemon, so **
     <td width="50%" valign="top">
       <a href="docs/screenshots/en/settings.jpg"><img src="docs/screenshots/en/settings.jpg" alt="Settings in the dark theme: language, appearance, start at login and the cache"></a>
     </td>
-    <td width="50%" valign="top"></td>
+    <td width="50%" valign="top">
+      <a href="docs/screenshots/en/download.jpg"><img src="docs/screenshots/en/download.jpg" alt="A remote download: its progress, its speed over the whole run with the time Modal moved it to a new container, and what happened"></a>
+    </td>
   </tr>
 </table>
+
+## Remote downloads
+
+Give modalfs a link and a Modal Function in your workspace downloads it straight into a volume. Your computer can sleep, lose its network or be turned off meanwhile; the files appear in the folder you picked when they're complete.
+
+- **Off until you turn it on**, on the Downloads page, in Settings, or with `modalfs download enable`, because it's the one thing in modalfs that runs compute. A Function starts only for a download you add or resume, and stops when it finishes, pauses or stalls.
+- **What it costs:** the smallest size (0.125 CPU, 512 MiB) is about $0.01 an hour while it downloads, plus Modal's network charges (watching the live view adds about 2% of the bytes downloaded). The first download, and the first after modalfs updates, deploys the Function from a short-lived Sandbox: about 10 seconds and $0.0001. You don't need Python.
+- **Downloaders:** gopeed for most links (HTTP, FTP, magnet, torrent), yt-dlp for video sites (the latest version, every run), or aria2 if you pick it. When gopeed keeps failing on a server, aria2 takes over by itself and starts that file over.
+- **Interruptions:** Modal sometimes stops a container to move work around. The downloader's progress is saved on the volume, so the download continues on a new container from where it was, usually within a minute. A Function runs for at most 24 hours; a longer download continues in a new one by itself. Each of these shows on the download's page, on its speed chart and in plain words.
+- **Live speed**, four times a second, while you watch a download in the app; the daemon relays it from the container. The record that survives everything (status, events, the speed history) is kept on the volume in `.modalfs/downloads/`.
+- **Finished files never overwrite anything:** a name already taken gets ` (1)` added.
+
+```console
+$ modalfs download enable
+$ modalfs download add datasets:/raw https://example.org/train-2024.tar
+$ modalfs download show dl-3f2a --follow
+```
+
+See [docs/known-issues.md](docs/known-issues.md) for what remote downloads don't handle well yet, BitTorrent among them.
 
 ## CLI reference
 
@@ -182,6 +206,18 @@ Accounts
   modalfs account import [PROFILE...]
   modalfs account ls
   modalfs account rm ACCOUNT
+
+Remote downloads (off until enabled; each runs in a Modal Function billed to your account)
+  modalfs download enable|disable             turn remote downloads on or off
+  modalfs download add VOLUME[:/FOLDER] URL...
+        [--downloader gopeed|aria2|yt-dlp] [--size small|medium|large] [--cookies FILE]
+        [--account A] [--env E]
+  modalfs download ls
+  modalfs download show ID [--follow]         progress, attempts and interruptions, speed
+  modalfs download pause|resume ID
+  modalfs download cancel ID [--keep]         stop it and delete the partial files
+  modalfs download logs ID                    the downloader's log
+  modalfs download rm ID                      forget it (finished files stay)
 
 Background process
   modalfs daemon                              run the daemon in the foreground
@@ -295,7 +331,7 @@ Environment variables:
 ## FAQ
 
 **Does mounting cost Modal compute?**
-No. modalfs makes API calls only. Storage and bandwidth are billed by Modal as usual.
+No. Mounting makes API calls only. Storage and bandwidth are billed by Modal as usual. Only [remote downloads](#remote-downloads), which are off until you turn them on, run a Function.
 
 **Can a Modal Function use the same volume at the same time?**
 Yes. Call `volume.reload()` in the container to see changes made through modalfs, and avoid having both sides write the same file at once.

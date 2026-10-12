@@ -308,7 +308,7 @@ func TestDownloadLifecycle(t *testing.T) {
 	}
 
 	// Nothing secret leaves the daemon.
-	for _, p := range []string{"/api/downloads", "/api/downloads/" + v.ID, "/api/downloads/" + v.ID + "/live"} {
+	for _, p := range []string{"/api/downloads", "/api/downloads?live=1", "/api/downloads/" + v.ID, "/api/downloads/" + v.ID + "/live"} {
 		_, body := x.do("GET", p, nil, nil)
 		for _, secret := range []string{j.LiveToken, "SECRET-COOKIE", "user:pass", "sig=abc", live.srv.URL, "secret-url"} {
 			if strings.Contains(body, secret) {
@@ -320,6 +320,18 @@ func TestDownloadLifecycle(t *testing.T) {
 	x.do("GET", "/api/downloads/"+v.ID+"?after=100", nil, &detail)
 	if len(detail.Events) != 1 || detail.Events[0].Kind != "start" || len(detail.History) != 1 || detail.History[0][1] != 1000 {
 		t.Fatalf("detail %+v", detail)
+	}
+
+	// The list, while on screen, follows running downloads live too.
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		var list []DownloadView
+		x.do("GET", "/api/downloads?live=1", nil, &list)
+		if len(list) == 1 && list[0].Status != nil && list[0].Status.Done >= 2000 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the list never showed live numbers: %+v", list)
+		}
 	}
 
 	// The live channel: this run's history, then what the container sends.

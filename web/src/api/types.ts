@@ -78,6 +78,11 @@ export interface Settings {
   language?: Language
   appearance?: Appearance
   mount_root?: string
+  /** Remote downloads start Modal Functions, billed to the account: off until turned on. */
+  remote_downloads?: boolean
+  download_size?: DownloadSize
+  /** Stop a download that has received nothing for this long (10 when unset). */
+  download_stall_minutes?: number
 }
 
 export interface State {
@@ -101,6 +106,7 @@ export interface State {
   config_dir: string
   /** modalfs is quitting: unmounting everything. */
   quitting?: boolean
+  downloads?: Download[]
 }
 
 export type EventKind = 'mounted' | 'unmounted' | 'commit' | 'conflict' | 'error' | 'recovered' | 'info'
@@ -143,4 +149,95 @@ export interface Identity {
   workspace_id: string
   workspace_name: string
   username?: string
+}
+
+// Remote downloads (internal/daemon/downloads.go, internal/downloads).
+
+export type DownloadTool = 'gopeed' | 'aria2' | 'yt-dlp'
+export type DownloadSize = 'small' | 'medium' | 'large'
+
+/**
+ * The daemon's state for a download. While a run is going, what its agent last reported:
+ * starting, running, retrying, pausing, finishing, interrupted (Modal stopped its container;
+ * it continues on a new one). It ends done, paused, stalled, failed, time limit or cancelled.
+ */
+export type DownloadState =
+  | 'preparing'
+  | 'starting'
+  | 'running'
+  | 'retrying'
+  | 'pausing'
+  | 'finishing'
+  | 'interrupted'
+  | 'cancelling'
+  | 'done'
+  | 'paused'
+  | 'stalled'
+  | 'failed'
+  | 'time limit'
+  | 'cancelled'
+
+export interface DownloadStatus {
+  state: string
+  tool: string
+  url: string
+  name?: string
+  note?: string
+  error?: string
+  done: number
+  /** -1 when unknown. */
+  total: number
+  /** Bytes per second, over the last 2 s. */
+  speed: number
+  eta?: number
+  attempt?: number
+  files?: { path: string; size: number; sha256?: string }[]
+  log_tail?: string[]
+  /** When the agent wrote it (Unix seconds, the container's clock). */
+  t: number
+}
+
+export interface Download {
+  id: string
+  account_id: string
+  account_label: string
+  environment?: string
+  volume_id: string
+  volume_name: string
+  folder: string
+  /** The link without credentials or query string. */
+  url: string
+  name: string
+  tool: DownloadTool
+  size: DownloadSize
+  created: number
+  state: DownloadState
+  error?: string
+  cookies?: boolean
+  status?: DownloadStatus
+}
+
+/** A line of the download's events.jsonl: what happened to it, and when. */
+export interface DownloadEvent {
+  ev: 'start' | 'interrupted' | 'resumed' | 'signal' | 'error' | 'fallback' | 'stalled' | 'paused' | 'continued' | 'failed' | 'finished'
+  t: number
+  [field: string]: unknown
+}
+
+/** One point of the speed history: time (Unix seconds), bytes done, bytes per second. */
+export type Sample = [number, number, number]
+
+export interface DownloadDetail {
+  download: Download
+  events: DownloadEvent[]
+  history: Sample[]
+  records_error?: string
+}
+
+export interface LiveView {
+  /** Connected to the download's container. */
+  live: boolean
+  status?: DownloadStatus
+  samples: Sample[]
+  error?: string
 }

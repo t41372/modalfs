@@ -22,6 +22,20 @@ A cached block used whole (as the base of a write or a commit) is checked agains
 
 Read-ahead is bounded (it starts after three blocks read in a row and shares a limited number of slots), but a block already being prefetched finishes downloading even if the reader has gone. **Fix:** a context per reader, cancelled when it's been idle for a few seconds. `internal/vfs/vfs.go`.
 
+## Remote downloads
+
+### BitTorrent uploads while it downloads
+
+gopeed and aria2 send pieces to other peers while they download a torrent, even with seeding off (the container exits as soon as the data is complete). Modal's terms (§1.5) forbid peer-to-peer file sharing, so a torrent download risks the account. **Fix:** a download-only client (anacrolix/torrent with `NoUpload`, MPL-2.0), or the container's traffic through a proxy or tunnel such as Cloudflare WARP. `docs/design/remote-downloads.md`.
+
+### gopeed gives up on some servers
+
+When a server answers a range request with the whole file (HTTP 200 instead of 206), gopeed fails the task instead of retrying that connection. The agent continues the task, which usually works, and after 5 errors in a row with nothing gained it switches to aria2, which starts the file over. On datapacket's CDN this happens again and again, so a big file there can lose what gopeed had downloaded. **Fix:** report it upstream; meanwhile, pick aria2 for such servers. `internal/downloads/remote/app.py`.
+
+### YouTube blocks most datacenter addresses
+
+yt-dlp in a Modal container is often refused by YouTube ("Sign in to confirm you're not a bot"). A cookies file from a signed-in browser helps sometimes. **Fix:** none on modalfs's side short of a residential proxy.
+
 ## Operations
 
 ### Auto-mount retries on a timer, not when the network returns

@@ -55,7 +55,7 @@ export function FormDialog({
   }
   return (
     <Dialog open={open} onOpenChange={change}>
-      <DialogContent className="sm:max-w-[440px]" showCloseButton={false}>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain sm:max-w-[440px]" showCloseButton={false}>
         <form onSubmit={submitForm} className="flex flex-col gap-5" autoComplete="off">
           <DialogHeader>
             <DialogTitle>{title}</DialogTitle>

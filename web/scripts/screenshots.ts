@@ -45,6 +45,17 @@ const SHOTS: Shot[] = [
   { name: 'volumes', page: 'volumes', theme: 'dark', backdrop: 'rain' },
   { name: 'activity', page: 'activity', theme: 'light', backdrop: 'sky' },
   { name: 'settings', page: 'settings', theme: 'dark', backdrop: 'rain' },
+  {
+    name: 'download',
+    page: 'downloads',
+    theme: 'light',
+    backdrop: 'sky',
+    // The running download that Modal moved to a new container, once its chart has drawn.
+    show: async (page) => {
+      await page.getByText('train-2024.tar', { exact: true }).first().click()
+      await page.waitForTimeout(2500)
+    },
+  },
 ]
 
 /** The folder name under docs/screenshots, and the language the UI is set to. */

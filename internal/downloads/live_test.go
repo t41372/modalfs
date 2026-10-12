@@ -8,8 +8,11 @@
 package downloads
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -94,6 +97,8 @@ func TestLive(t *testing.T) {
 	}
 	t.Logf("an unchanged agent isn't deployed again (checked in %v)", time.Since(t0).Round(time.Millisecond))
 
+	t.Run("live stream", func(t *testing.T) { l.liveStream(t, "gopeed", hugeURL) })
+	t.Run("live stream aria2", func(t *testing.T) { l.liveStream(t, "aria2", hugeURL) })
 	t.Run("gopeed survives preemption", l.preemption)
 	t.Run("pause and resume", l.pauseResume)
 	t.Run("continues past the time limit", l.respawn)
@@ -206,6 +211,65 @@ func (l *live) preemption(t *testing.T) {
 	t.Logf("the call's result: %v", sum)
 	if h, err := ReadHistory(context.Background(), l.m.Volume(j), j); err != nil || len(h) < 10 {
 		t.Errorf("speed history: %d samples, %v", len(h), err)
+	}
+}
+
+// liveStream reads the container's live channel through its tunnel for 15 s:
+// each sample as it's taken, four a second, with a steady speed.
+func (l *live) liveStream(t *testing.T, tool, url string) {
+	j := l.job(t, url, tool)
+	call := l.start(t, j)
+	s := l.wait(t, j, 5*time.Minute, func(s Status) bool { return s.State == "running" && s.Done > 100e6 })
+	req, err := http.NewRequest("GET", s.LiveURL+"/live", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Modalfs-Token", j.LiveToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []Status
+	t0 := time.Now()
+	sc := bufio.NewScanner(resp.Body)
+	for sc.Scan() && time.Since(t0) < 15*time.Second {
+		if data, ok := strings.CutPrefix(sc.Text(), "data: "); ok {
+			var st Status
+			if err := json.Unmarshal([]byte(data), &st); err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, st)
+		}
+	}
+	resp.Body.Close()
+	var times, dones []string
+	repeats, lo, hi := 0, int64(1<<62), int64(0)
+	for i, st := range got {
+		times = append(times, fmt.Sprintf("%.2f", st.T-got[0].T))
+		dones = append(dones, fmt.Sprintf("%d@%.0f", st.Done/1e6, float64(st.Speed)/1e6))
+		if i > 0 && st.T == got[i-1].T {
+			repeats++
+		}
+		if i >= len(got)/2 {
+			lo, hi = min(lo, st.Speed), max(hi, st.Speed)
+		}
+	}
+	t.Logf("%d samples in 15 s", len(got))
+	t.Logf("sample times %v", times)
+	t.Logf("MB done @ MB/s %v", dones)
+	if len(got) < 45 || repeats > len(got)/10 {
+		t.Errorf("%d samples in 15 s with %d repeated: want about 60, each new", len(got), repeats)
+	}
+	if lo > 0 {
+		t.Logf("speed over the last 2.5 s: %.1f to %.1f MB/s", float64(lo)/1e6, float64(hi)/1e6)
+	}
+	if err := Pause(context.Background(), got[len(got)-1], j); err != nil {
+		t.Fatal(err)
+	}
+	sum := l.result(t, call, 2*time.Minute)
+	t.Logf("paused: %v", sum)
+	if sum["state"] != "paused" || asInt(sum["done"]) < got[len(got)-1].Done {
+		t.Errorf("after pausing at %d bytes: %v", got[len(got)-1].Done, sum)
 	}
 }
 

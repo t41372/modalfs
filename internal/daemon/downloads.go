@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"path"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -700,6 +702,9 @@ func (m *dlManager) view(j downloads.Job, account string) DownloadView {
 		if s, ok := m.cachedStatus(j.ID); ok {
 			st = &s
 		}
+		if s := m.liveStatus(j.ID); s != nil && (st == nil || s.T > st.T) {
+			st = s
+		}
 	}
 	st = withoutLiveURL(st)
 	v := DownloadView{ID: j.ID, AccountID: j.AccountID, AccountLabel: account, Environment: j.Environment,
@@ -854,6 +859,40 @@ type LiveView struct {
 
 // liveIdle is how long a feed stays connected after its last poll.
 var liveIdle = 15 * time.Second
+
+// listLive is how many running downloads the list keeps a live feed open
+// for (GET /api/downloads?live=1), newest first; the rest show what their
+// status.json said, a few seconds behind.
+const listLive = 8
+
+// watchList keeps live feeds open for the running downloads in a list.
+func (m *dlManager) watchList(views []DownloadView) {
+	n := 0
+	for i := len(views) - 1; i >= 0 && n < listLive; i-- { // newest first
+		if downloads.Ended(views[i].State) || views[i].State == downloads.StatePreparing {
+			continue
+		}
+		n++
+		_, _ = m.Live(views[i].ID, math.MaxFloat64)
+	}
+}
+
+// liveStatus is the latest status a live feed received, if one is open.
+func (m *dlManager) liveStatus(id string) *downloads.Status {
+	m.mu.Lock()
+	f := m.live[id]
+	m.mu.Unlock()
+	if f == nil {
+		return nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.running || f.status == nil {
+		return nil
+	}
+	s := *f.status
+	return &s
+}
 
 func (m *dlManager) Live(id string, after float64) (LiveView, error) {
 	j, err := m.job(id)
@@ -1011,8 +1050,15 @@ func (d *Daemon) downloadRoutes(mux *http.ServeMux) {
 		}
 		return true
 	}
+	// ?live=1 (the UI's list, while it's on screen) also keeps a live feed
+	// open for the newest running downloads, so their speed is current.
 	mux.HandleFunc("GET /api/downloads", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, d.dl.views())
+		views := d.dl.views()
+		if d.dl != nil && r.URL.Query().Get("live") == "1" {
+			d.dl.watchList(views)
+			views = d.dl.views()
+		}
+		writeJSON(w, 200, views)
 	})
 	// {account, environment?, volume (name), folder, urls[], tool?, size?, cookies?}
 	mux.HandleFunc("POST /api/downloads", func(w http.ResponseWriter, r *http.Request) {
@@ -1061,6 +1107,30 @@ func (d *Daemon) downloadRoutes(mux *http.ServeMux) {
 			writeErr(w, err)
 			return
 		}
+		writeJSON(w, 200, out)
+	})
+	// The folders in a volume's folder, for picking where a download goes.
+	// ?env=&path= (volume-relative; "" for the top).
+	mux.HandleFunc("GET /api/accounts/{id}/volumes/{vol}/folders", func(w http.ResponseWriter, r *http.Request) {
+		c, _, err := d.clientFor(r.PathValue("id"), r.URL.Query().Get("env"))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		dir := strings.Trim(path.Clean("/"+r.URL.Query().Get("path")), "/")
+		es, err := c.List(r.Context(), r.PathValue("vol"), dir, false)
+		if err != nil {
+			writeErr(w, friendly(err))
+			return
+		}
+		out := []string{}
+		for _, e := range es {
+			name := path.Base(e.Path)
+			if e.IsDir && !(dir == "" && name == ".modalfs") {
+				out = append(out, name)
+			}
+		}
+		sort.Strings(out)
 		writeJSON(w, 200, out)
 	})
 	mux.HandleFunc("GET /api/downloads/{id}/log", func(w http.ResponseWriter, r *http.Request) {

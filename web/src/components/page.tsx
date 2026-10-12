@@ -2,13 +2,27 @@ import { cn } from 'cn'
 import type { ReactNode } from 'react'
 
 /** A page: a centered column with a title, a line under it, and actions on the right. */
-export function Page({ title, sub, actions, children }: { title: string; sub?: string; actions?: ReactNode; children: ReactNode }) {
+export function Page({
+  title,
+  sub,
+  actions,
+  back,
+  children,
+}: {
+  title: string
+  sub?: ReactNode
+  actions?: ReactNode
+  /** A way back above the title, for a page inside another. */
+  back?: ReactNode
+  children: ReactNode
+}) {
   return (
     <div className="mx-auto w-full max-w-[760px] px-5 pt-8 pb-16 sm:px-10 sm:pt-12">
+      {back && <div className="-mt-2 mb-3 -ml-2.5 sm:-mt-4">{back}</div>}
       <header className="mb-7 flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
         <div className="min-w-0">
-          <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.02em] text-balance">{title}</h1>
-          {sub && <p className="mt-1.5 max-w-[52ch] text-[14px] leading-relaxed text-pretty text-muted-foreground">{sub}</p>}
+          <h1 className="text-[28px] leading-tight font-semibold tracking-[-0.02em] text-balance break-words">{title}</h1>
+          {sub && <div className="mt-1.5 max-w-[52ch] text-[14px] leading-relaxed text-pretty text-muted-foreground">{sub}</div>}
         </div>
         {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
       </header>

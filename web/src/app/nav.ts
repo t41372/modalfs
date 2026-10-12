@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react'
 
-export const PAGES = ['mounts', 'volumes', 'accounts', 'activity', 'settings'] as const
+export const PAGES = ['mounts', 'volumes', 'downloads', 'accounts', 'activity', 'settings'] as const
 export type PageId = (typeof PAGES)[number]
 
 const KEY = 'modalfs-page'

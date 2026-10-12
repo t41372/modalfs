@@ -165,7 +165,7 @@ One Python file. It needs only the standard library and the Modal client, which 
    - aria2's `.aria2` control files next to the data;
    - yt-dlp's `.part` files.
 4. **Records progress:**
-   - every second in memory (the live stream sends it 4× a second);
+   - 4 times a second in memory, each sample sent on the live stream as it's taken. The speed is what arrived over the last 2 s, measured between the polls that saw the byte count change (gopeed updates it about every 350 ms, so measuring between any two polls made it jitter by ±10%), with a light exponential average on top (±3% on a steady 4 MiB/s, about 0.6 s of lag). The same measure for every downloader; the stall watchdog uses it too;
    - `status.json` every 5 s, then `sync /vol`;
    - the speed history as new chunk files every 30 s (`speed/NNNNNN.jsonl`, one `[t, bytes, speed]` line per second), never rewritten.
 5. **On SIGINT (preemption):** pauses the downloader, saves its state, writes `status.json` as "interrupted", records the event, runs `sync`, and returns. The 30 s grace period is enough. Modal reruns the input, and the next attempt continues.
@@ -194,7 +194,7 @@ The destination folder only ever receives finished files. The local mount sees t
 
 ### Control
 
-- **Live view:** while the UI shows a download, the daemon connects to the tunnel and passes the stream on to the UI over the existing event stream. It's fast (4 updates a second), and nothing reaches the volume.
+- **Live view:** while the UI shows a download, the daemon connects to the tunnel and the UI polls the daemon for what arrived (4 updates a second); nothing reaches the volume. The list keeps a live feed open for the newest 8 running downloads while it's on screen, so its numbers are current too.
 - **Pause:** `POST /pause` on the tunnel, with the token. The agent pauses, saves and returns "paused", so nothing is billed while paused. If the tunnel doesn't answer within 30 s, the daemon cancels the call.
 - **Resume:** spawn a new call for the same job. The downloader continues from its state on the volume.
 - **Cancel:** pause, then delete `work/` and `state/`, unless the user keeps the partial files.
@@ -210,26 +210,29 @@ The destination folder only ever receives finished files. The local mount sees t
 
 ### Speed history and the chart
 
-- **The whole run's history is kept:** one point per second, about 1–2 MB for 24 h. The UI downsamples it for drawing (largest-triangle-three-buckets) and appends live points from the tunnel.
+- **The whole run's history is kept:** one point per second, about 1–2 MB for 24 h. The UI reads it once, then only what's new, and appends the live points (4 a second). For drawing it averages the points into about 600 slices of the window, fixed in time so the older part of the line doesn't shimmer as samples arrive. Where no run was going, the line drops to zero.
 - **Chart: [Liveline](https://benji.org/liveline)** (`liveline` 0.0.7, MIT, React, one canvas, no dependencies).
   - It's built for exactly this: a live line with smooth interpolation, scrubbing, and light and dark themes.
-  - `onHover` reports the point and its x/y, so an SVG layer on top can draw the **tangent line** and show the **acceleration** at the cursor.
-  - The acceleration is the derivative of a smoothed speed (a centred difference over a few seconds, so it isn't noise), in MB/s².
-  - The x/y scale for the tangent comes from pairs of hover points. If that proves unreliable, the fallback is a Recharts chart through the shadcn chart component we already have the setup for, where the scales are known exactly.
+  - `onHover` reports the point and its x/y, so an SVG layer on top draws the **tangent line** and the readout under the chart shows the **acceleration** at the cursor.
+  - The acceleration is a least-squares slope over the drawn points within a few seconds of the cursor (a sixtieth of the window either side, at least 2 s), so it's the trend there rather than the step between two samples. "Steady" when it changes the speed by under 3% across that span.
+  - The layer works out Liveline's layout the way liveline 0.0.7 does: the padding is set by us, the time window is ours, the window's right edge comes exactly from the hover point, and the value range is the visible values and zero (a reference line at zero, so speeds read against it) with Liveline's 12% margin. Checked by eye at several points on running and finished downloads: the tangent lies along the line.
+  - Liveline puts "now" at the right edge. A running download's samples keep their time (shifted only if the container's clock is off by more than 3 s); a finished one's are shifted so its last sample is "now", and the chart is paused.
+  - The times no run was going (Modal moving the container, a lost container, a pause, the 24 h hand-over) are shaded bands with a label, and a fallback to aria2 or a stall stop is a marked line.
 - **Liveline is pre-1.0 and has one author.** It's a small, isolated component; if it goes stale, swapping it out touches one file.
 
 ### API, CLI, UI
 
 - **API:**
   - `POST /api/downloads` takes `{account, volume, folder, urls[], tool?, size?, options?}`.
-  - `GET /api/downloads` lists jobs, and `GET /api/downloads/{id}` adds events and history.
+  - `GET /api/downloads` lists jobs, and `GET /api/downloads/{id}` adds events and history. `?live=1` on the list keeps live feeds open for the newest running downloads (the UI's list sends it while on screen).
+  - `GET /api/accounts/{id}/volumes/{vol}/folders?env=&path=` lists the folders in a volume's folder, for picking the destination.
   - `POST /api/downloads/{id}/pause|resume|cancel` (cancel takes `{keep}` to keep the partial files).
   - `DELETE /api/downloads/{id}` forgets a job that isn't running and deletes its records on the volume; finished files stay.
   - `GET /api/downloads/{id}/live?after=T` returns what the container sent since `T`. While someone polls it, the daemon holds the tunnel connection (this run's history first, then the stream) and closes it 15 s after the last poll. The tunnel's address and token never leave the daemon: the agent answers no CORS preflight, `EventSource` can't send the token header, and the desktop app reaches the daemon only through its socket.
   - `GET /api/downloads/{id}/log` returns the downloader's log, saved when a run ends.
   - The list is also in `/api/state` (`downloads`), and state changes go on the existing event feed (`dl_*` codes).
 - **CLI:** `modalfs download add <volume>[:/folder] <url>… [--downloader gopeed|aria2|yt-dlp] [--size small|medium|large] [--cookies file]`, plus `download ls`, `download show <id> [--follow]` (attempts, interruptions and a text sparkline), `download pause|resume|cancel|logs|rm <id>` and `download enable|disable`.
-- **UI:** a Downloads page in the rail.
+- **UI:** a Downloads page in the rail: the list (live numbers, pause and resume), a page per download (stats, the speed chart over 1 min, 10 min or the whole run, what happened in plain sentences, details, the log), and the add dialog (links, volume, a folder picked in it, the downloader, the size and what it costs an hour). Settings has the switch, the size and the stall limit.
   - **New download:** links, destination (volume and folder), tool (chosen automatically, can be changed) and size. The estimated cost is shown first.
   - **Each row:** progress, live speed, time left, cost so far and a status chip.
   - **The detail view:** the speed chart, the timeline of attempts and interruptions, the files and the log tail.

@@ -48,6 +48,10 @@ DENO_SHA256 = "c6527f24f4b16031d3ae4fa9f658d5f11534c8d84ce7dc8502420280919c3490"
 SCHEMA = 1
 STATUS_EVERY = 5.0  # seconds between status.json writes (each followed by sync)
 SPEED_CHUNK = 30.0  # seconds of speed history per chunk file
+SAMPLE_EVERY = 0.25  # seconds between samples of the downloader: the live channel's rate
+SPEED_WINDOW = 2.0  # seconds of progress the speed is measured over
+SPEED_SMOOTHING = 0.35  # weight of each new measurement in the shown speed
+HISTORY_EVERY = 1.0  # seconds between rows of the speed history
 KICK_AFTER = 60.0  # seconds without progress before the downloader is restarted
 RETRIES = 5  # times a failed download is continued before giving up on the tool
 PROGRESS_RESETS_RETRIES = 64 << 20  # bytes downloaded after an error that make it a fresh start
@@ -506,6 +510,9 @@ class Record:
                        "url": strip_credentials(job["url"]), "done": 0, "total": -1, "speed": 0,
                        "t": now()}
         self.history = []  # [t, done, speed] once a second, this run
+        self.recent = []  # [t, done] over the last SPEED_WINDOW, to measure the speed
+        self.speed = 0
+        self.changed = threading.Condition(self.lock)
         self.flushed = 0  # how much of history is in chunk files
         os.makedirs(os.path.join(jobdir, "speed"), exist_ok=True)
         self.chunk = len(os.listdir(os.path.join(jobdir, "speed")))
@@ -538,18 +545,61 @@ class Record:
 
     def update(self, **fields):
         with self.lock:
-            self.status.update(fields, t=now())
+            self.status.update(fields, t=round(now(), 2))
+            self.changed.notify_all()
 
     def sample(self, p: Progress):
-        t = round(now(), 1)
-        eta = int((p.total - p.done) / p.speed) if p.speed > 0 and p.total > 0 else None
+        """Records a poll of the downloader, 4 times a second. The speed is
+        what arrived over the last SPEED_WINDOW: steady enough to read, and
+        measured the same way for every downloader (gopeed and yt-dlp report
+        theirs once a second or in jumps). Returns that speed."""
+        t = now()
         with self.lock:
-            self.history.append([t, p.done, p.speed])
-            self.status.update(done=p.done, total=p.total, speed=p.speed, eta=eta, t=t)
+            if p.state == "error" and not p.done:
+                # a downloader that exited reports nothing: keep what it had
+                p.done, p.total = self.status["done"], self.status["total"]
+            # Only polls that saw the count change are kept: gopeed updates
+            # it every 350 ms or so, and measuring between polls that fall
+            # either side of an update would make the speed jitter.
+            recent = self.recent
+            if recent and p.done < recent[-1][1]:
+                recent.clear()  # yt-dlp moved on to the next file
+            if not recent or p.done != recent[-1][1]:
+                recent.append([t, p.done])
+            while len(recent) > 2 and recent[1][0] <= t - SPEED_WINDOW:
+                recent.pop(0)
+            first, last = recent[0], recent[-1]
+            if t - last[0] > 1.0:
+                last = [t, p.done]  # nothing new for a while: the speed falls
+            span = last[0] - first[0]
+            if p.state != "running" or t - recent[-1][0] >= SPEED_WINDOW:
+                speed = 0
+            elif span >= 0.5:
+                speed = int((last[1] - first[1]) / span)
+            else:
+                speed = p.speed  # just started: the downloader's own figure
+            # a light exponential average on top takes out what's left of
+            # the jitter without making the figure lag much (about 0.6 s)
+            if speed and self.speed:
+                speed = int(self.speed + SPEED_SMOOTHING * (speed - self.speed))
+            self.speed = speed
+            eta = int((p.total - p.done) / speed) if speed > 0 and p.total > 0 else None
+            t = round(t, 2)
+            if not self.history or t - self.history[-1][0] >= HISTORY_EVERY - SAMPLE_EVERY / 2:
+                self.history.append([round(t, 1), p.done, speed])
+            self.status.update(done=p.done, total=p.total, speed=speed, eta=eta, t=t)
             if p.name:
                 self.status["name"] = p.name
             if p.note:
                 self.status["note"] = p.note
+            self.changed.notify_all()
+        return speed
+
+    def wait_newer(self, t, timeout):
+        """The status once it's newer than t, or as it is after timeout."""
+        with self.changed:
+            self.changed.wait_for(lambda: self.status["t"] != t, timeout)
+            return dict(self.status)
 
     def snapshot(self):
         with self.lock:
@@ -599,7 +649,7 @@ class Record:
 
 
 class Live:
-    """GET /live: server-sent events, 4 a second. GET /history: this run's
+    """GET /live: server-sent events, each sample as it's taken (4 a second). GET /history: this run's
     speed history. POST /pause: pause and end the run. All need the job's
     token in the X-Modalfs-Token header."""
 
@@ -635,13 +685,15 @@ class Live:
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 try:
+                    s = record.snapshot()
                     while True:
-                        s = record.snapshot()
                         self.wfile.write(f"data: {json.dumps(s)}\n\n".encode())
                         self.wfile.flush()
                         if s["state"] not in ("starting", "running", "retrying", "pausing", "finishing"):
                             return
-                        time.sleep(0.25)
+                        # each new sample as it's taken; the same one again
+                        # after a second keeps the connection known to be alive
+                        s = record.wait_newer(s["t"], 1.0)
                 except (BrokenPipeError, ConnectionResetError):
                     return
 
@@ -708,6 +760,7 @@ class Agent:
         # off the volume while the tools write to it; copied to log.txt at the end
         self.log = os.path.join(tempfile.mkdtemp(prefix="modalfs-agent-"), "tools.log")
         self.signalled = threading.Event()
+        self.sampling_done = threading.Event()
         self.pause_requested = threading.Event()
         timeout = float(job.get("timeout", 24 * 3600))
         self.deadline = now() + timeout - min(600.0, timeout * 0.25)
@@ -760,15 +813,20 @@ class Agent:
         tool = self.make_tool(name)
         self.tool = tool
         retries, stalled_since, kicked, done_at_error = 0, None, False, 0
+        backoff_until = 0.0  # after continuing a failed download, errors wait until then
         stall_limit = float(job.get("stall_limit", 600))
         kick_after = float(job.get("kick_after", KICK_AFTER))
         try:
             tool.start()
             rec.update(state="running", tool=name)
+            self.sampler = threading.Thread(target=self.sample_loop, daemon=True)
+            self.sampler.start()
             while True:
                 p = tool.poll()
-                rec.sample(p)
+                speed = rec.speed
                 if p.state == "done":
+                    self.stop_sampling()
+                    rec.sample(p)
                     return self.finish(tool)
                 if self.signalled.is_set():
                     return self.save_and_end(tool, "interrupted")
@@ -776,13 +834,16 @@ class Agent:
                     return self.save_and_end(tool, "paused")
                 if now() >= self.deadline:
                     return self.time_limit(tool)
+                if p.state == "error" and now() < backoff_until:
+                    time.sleep(SAMPLE_EVERY)
+                    continue
                 if p.state == "error":
                     retries += 1
                     done_at_error = p.done
                     rec.event("error", tool=tool.name, message=p.error, retry=retries)
                     if retries <= RETRIES and tool.retry():
                         rec.update(state="retrying", error=p.error)
-                        time.sleep(2 * retries)
+                        backoff_until = now() + 2 * retries
                         continue
                     if tool.name == "gopeed" and job["url"].startswith(("http://", "https://")):
                         rec.event("fallback", tool="aria2", reason=p.error)
@@ -801,7 +862,7 @@ class Agent:
                     if p.done - done_at_error >= PROGRESS_RESETS_RETRIES:
                         retries = 0
                 # Stall watchdog: reopen connections once, then stop paying for a dead server.
-                if p.state == "running" and p.speed == 0:
+                if p.state == "running" and speed == 0:
                     stalled_since = stalled_since or now()
                     idle = now() - stalled_since
                     if idle >= kick_after and not kicked:
@@ -814,14 +875,33 @@ class Agent:
                         raise Stop("stalled", f"no data for {int(idle)} s")
                 else:
                     stalled_since, kicked = None, False
-                time.sleep(1)
+                time.sleep(SAMPLE_EVERY)
         except Stop as e:
             return self.end(tool, e.state, e.message)
         except Exception as e:  # report it on the volume, then let Modal see the failure
             self.end(tool, "failed", f"{type(e).__name__}: {e}")
             raise
 
+    def sample_loop(self):
+        """Samples the downloader 4 times a second for the record and the
+        live view, apart from the loop that acts on what it sees: continuing
+        a failed download, or writing an event (a `sync`), can take seconds."""
+        while not self.sampling_done.wait(SAMPLE_EVERY):
+            try:
+                self.record.sample(self.tool.poll())
+            except Exception:  # between downloaders, or one stopping
+                pass
+
+    def stop_sampling(self):
+        """Stops the sampler before the downloader stops: a stopped one has
+        nothing to report."""
+        self.sampling_done.set()
+        sampler = getattr(self, "sampler", None)
+        if sampler and sampler is not threading.current_thread():
+            sampler.join(10)
+
     def save_and_end(self, tool, state):
+        self.stop_sampling()
         self.record.update(state="pausing")
         self.pause_tool(tool)
         self.record.event("signal" if state == "interrupted" else "paused", done=self.record.snapshot()["done"])
@@ -831,6 +911,7 @@ class Agent:
         return summary
 
     def time_limit(self, tool):
+        self.stop_sampling()
         self.pause_tool(tool)
         if self.job.get("respawn", True):
             try:
@@ -844,11 +925,13 @@ class Agent:
     def pause_tool(self, tool):
         try:
             tool.pause()
+            self.record.sample(tool.poll())  # where it paused
         except Exception as e:  # its saved state is whatever it last wrote
             self.record.event("error", message=f"couldn't pause {tool.name} cleanly: {e}")
         tool.stop()
 
     def end(self, tool, state, message="", **fields):
+        self.stop_sampling()
         if tool is not None:
             with contextlib.suppress(Exception):
                 tool.stop()

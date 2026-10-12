@@ -14,6 +14,7 @@ import { Segmented } from '@/components/Segmented'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
+import { HOURLY } from '@/lib/downloads'
 import { bytes, homeOf, tilde, untilde } from '@/lib/format'
 
 // The cache holds clean 8 MiB blocks only (unsaved writes live elsewhere), so any size is safe;
@@ -24,6 +25,7 @@ export const CACHE_MIN_GB = 1
 export const CACHE_RECOMMENDED_GB = 2
 const CUSTOM = 'custom'
 const READ_AHEAD = [2, 4, 8, 16, 32]
+const STALL = [5, 10, 20, 30, 60]
 
 export function SettingsPage() {
   const { t } = useTranslation()
@@ -163,6 +165,32 @@ export function SettingsPage() {
             <Button variant="outline" onClick={() => setEditingRoot(true)}>
               {t('settings.change')}
             </Button>
+          </Row>
+        </Card>
+      </Section>
+
+      <Section label={t('settings.downloads')}>
+        <Card>
+          <Row title={t('settings.remoteDownloads')} desc={t('settings.remoteDownloadsD')} wrap={false}>
+            <Switch checked={!!s.remote_downloads} onCheckedChange={(v) => set.mutate({ remote_downloads: v })} aria-label={t('settings.remoteDownloads')} />
+          </Row>
+          <Row title={t('settings.downloadSize')} desc={t('settings.downloadSizeD')}>
+            <Choice
+              label={t('settings.downloadSize')}
+              className="min-w-40"
+              value={s.download_size || 'small'}
+              onChange={(v) => set.mutate({ download_size: v })}
+              options={(['small', 'medium', 'large'] as const).map((z) => ({ value: z, label: t(`downloads.sizes.${z}`), hint: t('downloads.perHour', { price: HOURLY[z].toFixed(4) }) }))}
+            />
+          </Row>
+          <Row title={t('settings.stall')} desc={t('settings.stallD')}>
+            <Choice
+              label={t('settings.stall')}
+              className="min-w-28"
+              value={String(s.download_stall_minutes || 10)}
+              onChange={(v) => set.mutate({ download_stall_minutes: Number(v) })}
+              options={STALL.map((m) => ({ value: String(m), label: t('time.min', { n: m }) }))}
+            />
           </Row>
         </Card>
       </Section>

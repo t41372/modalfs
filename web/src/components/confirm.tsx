@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore } from 'react'
+import { type ReactNode, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   AlertDialog,
@@ -15,6 +15,8 @@ import { Spinner } from './Spinner'
 interface Ask {
   title: string
   desc?: string
+  /** A control under the text, such as a checkbox for an option. */
+  extra?: ReactNode
   action: string
   danger?: boolean
   /** Runs when confirmed; the dialog stays open, busy, until it settles. */
@@ -46,6 +48,7 @@ export function Confirmer() {
           <AlertDialogTitle>{ask?.title}</AlertDialogTitle>
           {ask?.desc && <AlertDialogDescription>{ask.desc}</AlertDialogDescription>}
         </AlertDialogHeader>
+        {ask?.extra}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={busy}>{t('form.cancel')}</AlertDialogCancel>
           <Button

@@ -15,6 +15,7 @@ import { easeOut } from '@/lib/motion'
 import { trafficLights } from '@/lib/platform'
 import { Accounts } from '@/pages/Accounts'
 import { ActivityPage } from '@/pages/Activity'
+import { Downloads } from '@/pages/Downloads'
 import { Mounts } from '@/pages/Mounts'
 import { SettingsPage } from '@/pages/Settings'
 import { Volumes } from '@/pages/Volumes'
@@ -28,6 +29,7 @@ import { useLook } from './theme'
 const PAGES: Record<PageId, () => React.ReactNode> = {
   mounts: Mounts,
   volumes: Volumes,
+  downloads: Downloads,
   accounts: Accounts,
   activity: ActivityPage,
   settings: SettingsPage,

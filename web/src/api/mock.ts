@@ -6,7 +6,7 @@
 // URL parameters set what the screenshots need: ?lang=en|zh-Hant|zh-Hans and
 // ?theme=light|dark.
 
-import type { Account, DaemonEvent, Environment, Identity, Mount, Profile, State, Volume } from './types'
+import type { Account, DaemonEvent, Download, DownloadEvent, Environment, Identity, Mount, Profile, Sample, State, Volume } from './types'
 
 const HOME = '/Users/you'
 const ROOT = `${HOME}/ModalVolumes`
@@ -134,6 +134,7 @@ const state: State = {
     language: lang === 'en' || lang === 'zh-Hant' || lang === 'zh-Hans' ? lang : 'system',
     appearance: params.get('theme') === 'dark' ? 'dark' : params.get('theme') === 'light' ? 'light' : 'system',
     mount_root: ROOT,
+    remote_downloads: params.get('downloads') !== 'off',
   },
   cache: { blocks: 612, bytes: 4.6 * GiB, max: 20 * GiB },
   service: { supported: true, installed: true },
@@ -224,6 +225,291 @@ function syncVolumeFlags() {
 
 type Body = Record<string, unknown>
 
+// ─── Remote downloads ───
+//
+// A few downloads in every state the page shows, with speed histories that
+// look like real ones (a ramp up, waves, dips) and the events that go with
+// them. The running ones keep going: four samples a second, as the daemon
+// relays them from the container.
+
+/** A seeded random number generator (mulberry32), so the histories look the same in every screenshot. */
+function rng(seed: number) {
+  return () => {
+    seed |= 0
+    seed = (seed + 0x6d2b79f5) | 0
+    let x = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+    x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+/** Bytes per second at `s` seconds into a run averaging `mean`: a ramp up, slow waves, quick wobble and noise. */
+function profile(mean: number, seed: number) {
+  const r = rng(seed)
+  const phase = r() * 100
+  return (s: number) => {
+    const ramp = Math.min(1, s / 4)
+    const wave = 1 + 0.16 * Math.sin((s + phase) / 23) + 0.06 * Math.sin((s + phase) / 3.7)
+    return Math.max(0, mean * ramp * wave * (0.95 + r() * 0.1))
+  }
+}
+
+interface MockDownload {
+  d: Download
+  events: DownloadEvent[]
+  /** The durable history, one sample a second (or coarser for long runs). */
+  history: Sample[]
+  /** While running: this run's samples, then four a second. */
+  live?: Sample[]
+  speedAt?: (s: number) => number
+  runStart?: number
+  log: string
+}
+
+const mockDownloads: MockDownload[] = []
+
+/** Samples of a run from `from` to `to`, every `step` seconds, starting at `done` bytes; returns the bytes done at the end. */
+function run(rows: Sample[], from: number, to: number, done: number, speedAt: (s: number) => number, step = 1) {
+  for (let t = from; t <= to; t += step) {
+    const v = speedAt(t - from)
+    done += v * step
+    rows.push([t, Math.round(done), Math.round(v)])
+  }
+  return done
+}
+
+function addMockDownload(o: { id: string; url: string; name: string; tool: Download['tool']; folder: string; volume: string; created: number; state: Download['state'] }) {
+  const d: Download = {
+    id: o.id,
+    account_id: 'acc-research',
+    account_label: 'research',
+    environment: 'main',
+    volume_id: volumes['acc-research'].find((v) => v.name === o.volume)!.id,
+    volume_name: o.volume,
+    folder: o.folder,
+    url: o.url,
+    name: o.name,
+    tool: o.tool,
+    size: 'small',
+    created: o.created,
+    state: o.state,
+  }
+  const m: MockDownload = { d, events: [], history: [], log: '' }
+  mockDownloads.push(m)
+  return m
+}
+
+{
+  const t0 = now()
+  const GB = 1e9
+  const status = (m: MockDownload, o: Partial<NonNullable<Download['status']>>) => {
+    m.d.status = { state: m.d.state, tool: m.d.tool, url: m.d.url, name: m.d.name, done: 0, total: -1, speed: 0, t: now(), ...o }
+  }
+
+  // Running, in its second attempt: Modal stopped the first container (a preemption) 34 s before it went on.
+  {
+    const m = addMockDownload({ id: 'dl-train', url: 'https://data.example.org/vision/train-2024.tar', name: 'train-2024.tar', tool: 'gopeed', folder: 'datasets/raw', volume: 'datasets', created: t0 - 905, state: 'running' })
+    const a = profile(40e6, 1)
+    const b = profile(42e6, 2)
+    const s1 = t0 - 900
+    const e1 = t0 - 560
+    let done = run(m.history, s1, e1, 0, a)
+    const saved = done
+    const s2 = e1 + 34
+    m.events.push({ ev: 'start', t: s1, attempt: 1 }, { ev: 'signal', t: e1 + 0.4, done: saved }, { ev: 'start', t: s2, attempt: 2 }, { ev: 'resumed', t: s2 + 0.1, gap: 34, done: saved })
+    m.live = []
+    done = run(m.live, s2, t0, done, b)
+    m.speedAt = b
+    m.runStart = s2
+    status(m, { state: 'running', done, total: 48 * GB, speed: m.live[m.live.length - 1][2], attempt: 2 })
+  }
+
+  // Running, just started, with aria2.
+  {
+    const m = addMockDownload({ id: 'dl-coco', url: 'https://datasets.example.com/coco/train2017.zip', name: 'train2017.zip', tool: 'aria2', folder: 'datasets/coco', volume: 'datasets', created: t0 - 97, state: 'running' })
+    const a = profile(68e6, 3)
+    m.events.push({ ev: 'start', t: t0 - 95, attempt: 1 })
+    m.live = []
+    const done = run(m.live, t0 - 95, t0, 0, a)
+    m.speedAt = a
+    m.runStart = t0 - 95
+    status(m, { state: 'running', done, total: 18.1 * GB, speed: m.live[m.live.length - 1][2], attempt: 1 })
+  }
+
+  // Paused by the user.
+  {
+    const m = addMockDownload({ id: 'dl-weights', url: 'https://files.example.net/models/weights-7b.safetensors', name: 'weights-7b.safetensors', tool: 'gopeed', folder: 'models', volume: 'checkpoints', created: t0 - 7300, state: 'paused' })
+    const s1 = t0 - 7200
+    const done = run(m.history, s1, s1 + 180, 0, profile(31e6, 4))
+    m.events.push({ ev: 'start', t: s1, attempt: 1 }, { ev: 'paused', t: s1 + 181, done })
+    status(m, { state: 'paused', done, total: 13.5 * GB, attempt: 1, t: s1 + 182 })
+  }
+
+  // Done after more than a day: a slow server, and the Function's 24-hour limit in the middle.
+  {
+    const m = addMockDownload({ id: 'dl-crawl', url: 'https://archive.example.org/crawl/segment-0042.warc.gz', name: 'segment-0042.warc.gz', tool: 'gopeed', folder: 'crawl', volume: 'datasets', created: t0 - 30 * 3600 - 60, state: 'done' })
+    const s1 = t0 - 30 * 3600
+    const e1 = s1 + 24 * 3600 - 600
+    const slow = profile(1.05e6, 5)
+    let done = run(m.history, s1, e1, 0, slow, 2)
+    m.events.push({ ev: 'start', t: s1, attempt: 1 }, { ev: 'continued', t: e1 + 1, call: 'fc-0000next' }, { ev: 'start', t: e1 + 9, attempt: 2 })
+    done = run(m.history, e1 + 9, t0 - 3 * 3600, done, profile(1.1e6, 6), 2)
+    const path = 'crawl/segment-0042.warc.gz'
+    m.events.push({ ev: 'finished', t: t0 - 3 * 3600 + 2, files: [{ path, size: Math.round(done) }] })
+    status(m, { state: 'done', done, total: done, attempt: 2, t: t0 - 3 * 3600 + 3, files: [{ path, size: Math.round(done), sha256: '9f1c2e4b7a0d33c58e6f1a2b4c6d8e0f1a3b5c7d9e1f2a4b6c8d0e2f4a6b8c0d' }] })
+  }
+
+  // Done: gopeed kept failing on this server, so aria2 took over and started the file over.
+  {
+    const m = addMockDownload({ id: 'dl-bin', url: 'https://cdn.example.com/test/10GB.bin', name: '10GB.bin', tool: 'gopeed', folder: 'scratch', volume: 'eval-runs', created: t0 - 5 * 3600, state: 'done' })
+    const s1 = t0 - 5 * 3600 + 5
+    run(m.history, s1, s1 + 14, 0, profile(55e6, 7))
+    for (let i = 0; i < 26; i++) m.history.push([s1 + 15 + i, m.history[m.history.length - 1][1], 0])
+    const msg = 'connection 3 failed: server ignored HTTP range request: expected 206 Partial Content, got 200 OK'
+    m.events.push({ ev: 'start', t: s1, attempt: 1 })
+    for (let i = 1; i <= 6; i++) m.events.push({ ev: 'error', t: s1 + 14 + i * 4, tool: 'gopeed', message: msg, retry: i })
+    m.events.push({ ev: 'fallback', t: s1 + 41, tool: 'aria2', reason: msg })
+    const done = run(m.history, s1 + 42, s1 + 42 + 125, 0, profile(80e6, 8))
+    const path = 'scratch/10GB.bin'
+    m.events.push({ ev: 'finished', t: s1 + 170, files: [{ path, size: 10e9 }] })
+    status(m, { state: 'done', tool: 'aria2', done: Math.min(done, 10e9), total: 10e9, attempt: 1, t: s1 + 171, files: [{ path, size: 10e9, sha256: 'e5b844cc57f57094ea4585e235f36c78c1cd222262bb89d53c94dcb4d6b3e55d' }] })
+    m.log = `--- tools.log\n[gopeed] task created\n[gopeed] ${msg}\n[agent] continuing (1 of 5)\n[gopeed] ${msg}\n[agent] continuing (2 of 5)\n[gopeed] ${msg}\n[agent] falling back to aria2\n[aria2] Download complete: /vol/.modalfs/downloads/dl-bin/work/10GB.bin\n`
+  }
+
+  // Failed: the link is gone.
+  {
+    const m = addMockDownload({ id: 'dl-tool', url: 'https://downloads.example.org/releases/tool-1.4.2.tar.zst', name: 'tool-1.4.2.tar.zst', tool: 'gopeed', folder: '', volume: 'hf-cache', created: t0 - 26 * 3600, state: 'failed' })
+    const s1 = t0 - 26 * 3600 + 4
+    m.events.push({ ev: 'start', t: s1, attempt: 1 }, { ev: 'failed', t: s1 + 2, message: 'HTTP 404 Not Found' })
+    m.d.error = 'HTTP 404 Not Found'
+    status(m, { state: 'failed', error: 'HTTP 404 Not Found', attempt: 1, t: s1 + 2, log_tail: ['resolve https://downloads.example.org/releases/tool-1.4.2.tar.zst', 'error="HTTP 404 Not Found"'] })
+  }
+}
+
+/** The running downloads go on: a sample every 250 ms, as the agent takes them. */
+let ticking = false
+function tickDownloads() {
+  if (ticking) return
+  ticking = true
+  setInterval(() => {
+    const t = Date.now() / 1000
+    for (const m of mockDownloads) {
+      const s = m.d.status
+      if (m.d.state !== 'running' || !s || !m.live || !m.speedAt) continue
+      const last = m.live[m.live.length - 1]
+      const v = m.speedAt(t - m.runStart!)
+      const done = Math.min(s.total, last[1] + v * (t - last[0]))
+      m.live.push([t, Math.round(done), Math.round(v)])
+      Object.assign(s, { done, speed: Math.round(v), eta: v > 0 ? Math.round((s.total - done) / v) : undefined, t })
+      if (done >= s.total) finishMock(m)
+    }
+  }, 250)
+}
+
+function finishMock(m: MockDownload) {
+  const s = m.d.status!
+  m.history.push(...(m.live ?? []).filter((r) => r[0] > (m.history[m.history.length - 1]?.[0] ?? 0)))
+  m.live = undefined
+  m.d.state = 'done'
+  const path = `${m.d.folder ? m.d.folder + '/' : ''}${m.d.name}`
+  Object.assign(s, { state: 'done', speed: 0, eta: undefined, files: [{ path, size: s.total }] })
+  m.events.push({ ev: 'finished', t: now(), files: [{ path, size: s.total }] })
+  emit('info', m.d.volume_name, 'dl_done', [m.d.name, `${m.d.volume_name}:/${m.d.folder}`])
+}
+
+/** Oldest first, as the daemon lists them. */
+const listed = () => mockDownloads.map((x) => x.d).sort((a, b) => a.created - b.created)
+
+function findDownload(id: string) {
+  return mockDownloads.find((m) => m.d.id === id) ?? fail(`no download ${id}`)
+}
+
+const ENDED_MOCK = new Set(['done', 'paused', 'stalled', 'failed', 'time limit', 'cancelled'])
+
+async function downloadsRoute(method: string, p: string, url: URL, body: Body): Promise<unknown> {
+  tickDownloads()
+  let m: RegExpMatchArray | null
+  if (method === 'GET' && p === '/downloads') return clone(listed())
+  if (method === 'POST' && p === '/downloads') {
+    if (!state.settings.remote_downloads) fail('remote downloads are off; turn them on in Settings first')
+    const urls = (body.urls as string[]) || []
+    const added = urls.map((u, i) => {
+      const name = u.replace(/[?#].*$/, '').split('/').filter(Boolean).pop() || 'download'
+      const x = addMockDownload({ id: `dl-new${mockDownloads.length}${i}`, url: u, name, tool: (body.tool as Download['tool']) || 'gopeed', folder: String(body.folder || ''), volume: String(body.volume), created: now(), state: 'preparing' })
+      setTimeout(() => startMock(x, 1), 1500)
+      return clone(x.d)
+    })
+    return added
+  }
+  if ((m = p.match(/^\/downloads\/([^/]+)$/))) {
+    const x = findDownload(m[1])
+    if (method === 'DELETE') {
+      if (!ENDED_MOCK.has(x.d.state)) fail(`download ${x.d.id} is ${x.d.state}; pause or cancel it first`)
+      mockDownloads.splice(mockDownloads.indexOf(x), 1)
+      return ok
+    }
+    const after = Number(url.searchParams.get('after') || 0)
+    return clone({ download: x.d, events: x.events, history: x.history.filter((r) => r[0] > after) })
+  }
+  if ((m = p.match(/^\/downloads\/([^/]+)\/live$/))) {
+    const x = findDownload(m[1])
+    const after = Number(url.searchParams.get('after') || 0)
+    if (!x.live) return { live: false, status: clone(x.d.status), samples: [] }
+    return { live: true, status: clone(x.d.status), samples: x.live.filter((r) => r[0] > after) }
+  }
+  if ((m = p.match(/^\/downloads\/([^/]+)\/log$/))) {
+    const x = findDownload(m[1])
+    if (!x.log) fail("there's no log yet: it's saved when a run ends (the status shows the latest errors meanwhile)")
+    return x.log
+  }
+  if ((m = p.match(/^\/downloads\/([^/]+)\/(pause|resume|cancel)$/))) {
+    const x = findDownload(m[1])
+    const s = x.d.status
+    if (m[2] === 'resume') {
+      if (!['paused', 'stalled', 'failed', 'time limit'].includes(x.d.state)) fail(`download ${x.d.id} is ${x.d.state} already`)
+      x.d.state = 'preparing'
+      x.d.error = undefined
+      setTimeout(() => startMock(x, (s?.attempt ?? 0) + 1), 1200)
+    } else {
+      if (ENDED_MOCK.has(x.d.state)) {
+        if (m[2] === 'cancel') x.d.state = 'cancelled'
+        else fail(`download ${x.d.id} isn't running (it's ${x.d.state})`)
+        return clone(x.d)
+      }
+      x.d.state = m[2] === 'pause' ? 'pausing' : 'cancelling'
+      setTimeout(() => {
+        x.history.push(...(x.live ?? []).filter((r) => r[0] > (x.history[x.history.length - 1]?.[0] ?? 0)))
+        x.live = undefined
+        x.events.push({ ev: 'paused', t: now(), done: s?.done ?? 0 })
+        x.d.state = m![2] === 'pause' ? 'paused' : 'cancelled'
+        if (s) Object.assign(s, { state: x.d.state, speed: 0, eta: undefined })
+        emit('info', x.d.volume_name, m![2] === 'pause' ? 'dl_paused' : 'dl_cancelled', [x.d.name])
+      }, 1500)
+    }
+    return clone(x.d)
+  }
+  if ((m = p.match(/^\/accounts\/([^/]+)\/volumes\/([^/]+)\/folders$/))) {
+    const path = url.searchParams.get('path') || ''
+    const tree: Record<string, string[]> = { '': ['datasets', 'models', 'scratch'], datasets: ['coco', 'raw'], models: [] }
+    if (!(path in tree)) fail('not found')
+    return tree[path]
+  }
+  return undefined
+}
+
+function startMock(x: MockDownload, attempt: number) {
+  const t = now()
+  x.events.push({ ev: 'start', t, attempt })
+  x.speedAt = profile(45e6, attempt * 13 + x.d.id.length)
+  x.runStart = t
+  const done = x.d.status?.done ?? 0
+  x.live = [[t, done, 0]]
+  x.d.state = 'running'
+  x.d.status = { state: 'running', tool: x.d.tool, url: x.d.url, name: x.d.name, done, total: x.d.status?.total ?? 6.4e9, speed: 0, attempt, t }
+  emit('info', x.d.volume_name, 'dl_started', [x.d.name, `${x.d.volume_name}:/${x.d.folder}`])
+}
+
+
 export async function mockRequest(method: string, path: string, raw?: unknown): Promise<unknown> {
   await wait(method === 'GET' ? 60 : 280)
   const body = (raw ?? {}) as Body
@@ -234,7 +520,12 @@ export async function mockRequest(method: string, path: string, raw?: unknown): 
 
   if (route === 'GET /state') {
     syncVolumeFlags()
-    return clone(state)
+    tickDownloads()
+    return clone({ ...state, downloads: listed() })
+  }
+  if (p.startsWith('/downloads') || p.endsWith('/folders')) {
+    const r = await downloadsRoute(method, p, url, body)
+    if (r !== undefined) return r
   }
   if (route === 'GET /events') {
     const after = Number(url.searchParams.get('after') || 0)

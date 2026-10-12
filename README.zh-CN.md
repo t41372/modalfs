@@ -16,7 +16,7 @@
 
 ---
 
-有了 modalfs，访达、编辑器、`ffmpeg` 和 AI agent 都能把 [Modal Volume](https://modal.com/docs/guide/volumes) 当成普通文件夹来用。读取直接从 Modal 的块存储流式获取；写入从你的电脑提交，只上传你改过的 8 MiB 块。modalfs **从不启动 Sandbox、Function 或容器**，所以挂载不花计算费用。
+有了 modalfs，访达、编辑器、`ffmpeg` 和 AI agent 都能把 [Modal Volume](https://modal.com/docs/guide/volumes) 当成普通文件夹来用。读取直接从 Modal 的块存储流式获取；写入从你的电脑提交，只上传你改过的 8 MiB 块。挂载**从不启动 Sandbox、Function 或容器**，所以不花计算费用。唯一会启动的功能是[远程下载](#远程下载)，你打开之前它一直是关着的。
 
 ```console
 $ modalfs volume create datasets
@@ -36,6 +36,7 @@ datasets  work     mounted  /Users/me/ModalVolumes/datasets  0        0 B / 3 B
 - [安装](#安装)
 - [快速上手](#快速上手)
 - [应用](#应用)
+- [远程下载](#远程下载)
 - [命令行参考](#命令行参考)
 - [账号与绑定](#账号与绑定)
 - [工作原理](#工作原理)
@@ -49,7 +50,7 @@ datasets  work     mounted  /Users/me/ModalVolumes/datasets  0        0 B / 3 B
 
 ## 特点
 
-- **零计算。** modalfs 只调用 Modal 的控制面 API 和签名的块存储 URL，Modal 那边什么都不运行。
+- **只在你要求时才用计算。** 挂载、浏览和同步只调用 Modal 的控制面 API 和签名的块存储 URL，Modal 那边什么都不运行。唯一的例外是你添加的远程下载。
 - **macOS 上不需要内核扩展。** modalfs 在本机提供 NFSv3 服务，由 macOS 自带的 NFS 客户端挂载。Linux 用 FUSE。如果你更喜欢 macFUSE，也可以用。
 - **按需、按范围读取。** 打开一个 100 GiB 的文件、从中间读 4 KiB，只会下载一个 8 MiB 块。顺序读取会并行预读。
 - **块级写入。** Volume v2 按内容寻址。改动 100 GiB 文件里的 4 KiB，只上传一个 8 MiB 块并提交新的清单。重命名和复制只改清单，不传数据。
@@ -57,6 +58,7 @@ datasets  work     mounted  /Users/me/ModalVolumes/datasets  0        0 B / 3 B
 - **多账号，每个挂载各自绑定。** modalfs 有自己的账号列表，不理会 Modal CLI 当前启用的 profile，所以切换 profile 不会把挂载换到别的工作区。
 - **崩溃也不丢的回写。** 没上传的修改会记在本地日志里，下次启动时提交，即使经历了 `kill -9`。应用保存（关闭或 fsync）的数据，在应用收到“已保存”之前就已写入磁盘，所以断电也不会丢。
 - **上传时照常可用。** 13 GB 的文件会在后台上传，边写边传；上传期间访达、读取和其他文件都照常工作。
+- **远程下载。** 粘贴一个链接，Modal Function 就会把它下载到 volume 里，你的电脑睡眠或关机时也照样进行，可用 gopeed、aria2 或 yt-dlp。有实时速度图，Modal 换容器时会自己接着下载。打开之前一直是关着的。
 - **一个小巧的原生应用**，配套的命令行，登录时启动和自动挂载。
 
 ## 安装
@@ -135,8 +137,9 @@ modalfs 会记住每个挂载，所以下次 `modalfs mount my-data` 会沿用�
 | **挂载** | 用开关挂载或卸载。查看待上传文件、流量、提交次数和冲突。立即同步、在访达中显示、强制卸载。每个挂载的选项：自动挂载、只读、过滤 macOS 临时文件、冲突策略、NFS/FUSE。 |
 | **Volumes** | 按账号和环境浏览 volume。创建、重命名、删除（要输入名称确认）、挂载。 |
 | **账号** | 添加 token、从 `~/.modal.toml` 导入、检查 token 是否仍然有效、移除。 |
+| **下载** | 远程下载：添加链接、暂停、继续、取消。每个下载全程的速度（把光标移到线上可以看那一点的加速度），以及它经历了什么。 |
 | **动态** | 挂载、上传、冲突、错误和崩溃恢复，按天分组，重要的会发通知。 |
-| **设置** | 语言（English / 繁體中文 / 简体中文）、浅色/深色、登录时启动、缓存大小、预读、默认挂载位置、连接方式。 |
+| **设置** | 语言（English / 繁體中文 / 简体中文）、浅色/深色、登录时启动、缓存大小、预读、默认挂载位置、连接方式、远程下载。 |
 
 窗口只是个遥控器。挂载都在后台进程里，所以**关掉窗口不会卸载任何东西**。在 macOS 上，窗口是一层透出桌面的玻璃。在浏览器里（没装应用时的 `modalfs ui`）或手机大小的窗口里，同一个界面会把标签移到底部。
 
@@ -153,9 +156,30 @@ modalfs 会记住每个挂载，所以下次 `modalfs mount my-data` 会沿用�
     <td width="50%" valign="top">
       <a href="docs/screenshots/zh-CN/settings.jpg"><img src="docs/screenshots/zh-CN/settings.jpg" alt="深色主题的设置页：语言、外观、登录时启动和缓存"></a>
     </td>
-    <td width="50%" valign="top"></td>
+    <td width="50%" valign="top">
+      <a href="docs/screenshots/zh-CN/download.jpg"><img src="docs/screenshots/zh-CN/download.jpg" alt="一个远程下载：进度、全程速度图（标出了 Modal 把它换到新容器的那段时间）以及经过"></a>
+    </td>
   </tr>
 </table>
+
+## 远程下载
+
+给 modalfs 一个链接，你工作区里的一个 Modal Function 就会把它直接下载到 volume 里。这段时间你的电脑可以睡眠、断网甚至关机；文件下载完成后才会出现在你选的文件夹里。
+
+- **打开之前一直是关着的**：在“下载”页、设置里，或用 `modalfs download enable` 打开，因为这是 modalfs 里唯一会运行计算的功能。只有你添加或继续一个下载时才会启动 Function，下载完成、暂停或卡住时就停止。
+- **费用**：最小规格（0.125 CPU、512 MiB）下载期间每小时约 0.01 美元，另加 Modal 的网络费用（看实时速度会多出约下载量 2% 的流量）。第一次下载，以及 modalfs 更新后的第一次，会用一个短命的 Sandbox 部署 Function：大约 10 秒、0.0001 美元。不需要安装 Python。
+- **下载工具**：大多数链接用 gopeed（HTTP、FTP、magnet、torrent），视频网站用 yt-dlp（每次都用最新版），也可以自己选 aria2。gopeed 在某个服务器上一直失败时，aria2 会自动接手，从头下载那个文件。
+- **中断**：Modal 有时会停掉容器来调度资源。下载工具的进度存在 volume 上，所以会在新容器上从原来的地方接着下载，通常一分钟内。一个 Function 最多运行 24 小时，更久的下载会自己换到新的 Function 继续。这些都会显示在下载的页面上，在速度图上标出来，也会用文字说明。
+- **实时速度**：在应用里看一个下载时每秒更新四次，由后台进程从容器转发。无论发生什么都留得下来的记录（状态、事件、速度历史）存在 volume 的 `.modalfs/downloads/` 里。
+- **下载好的文件从不覆盖任何东西**：名字已被占用时会加上 ` (1)`。
+
+```console
+$ modalfs download enable
+$ modalfs download add datasets:/raw https://example.org/train-2024.tar
+$ modalfs download show dl-3f2a --follow
+```
+
+远程下载目前还处理得不好的地方（包括 BitTorrent）见 [docs/known-issues.md](docs/known-issues.md)。
 
 ## 命令行参考
 
@@ -182,6 +206,18 @@ Volumes
   modalfs account import [PROFILE...]
   modalfs account ls
   modalfs account rm ACCOUNT
+
+远程下载（打开之前是关着的；每个下载都在 Modal Function 里运行，向你的账号计费）
+  modalfs download enable|disable             打开或关闭远程下载
+  modalfs download add VOLUME[:/FOLDER] URL...
+        [--downloader gopeed|aria2|yt-dlp] [--size small|medium|large] [--cookies FILE]
+        [--account A] [--env E]
+  modalfs download ls
+  modalfs download show ID [--follow]         进度、执行次数和中断、速度
+  modalfs download pause|resume ID
+  modalfs download cancel ID [--keep]         停止并删除下载了一半的文件
+  modalfs download logs ID                    下载工具的日志
+  modalfs download rm ID                      从列表移除（下载好的文件保留）
 
 后台进程
   modalfs daemon                              在前台运行后台进程
@@ -295,7 +331,7 @@ Volumes
 ## 常见问题
 
 **挂载会花 Modal 的计算费用吗？**
-不会。modalfs 只调用 API。存储和流量照常由 Modal 计费。
+不会。挂载只调用 API。存储和流量照常由 Modal 计费。只有[远程下载](#远程下载)会运行 Function，而它在你打开之前一直是关着的。
 
 **Modal Function 能同时使用同一个 volume 吗？**
 可以。在容器里调用 `volume.reload()` 就能看到通过 modalfs 做的改动。避免两边同时写同一个文件。

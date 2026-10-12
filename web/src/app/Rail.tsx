@@ -1,5 +1,5 @@
 import { cn } from 'cn'
-import { Activity, Boxes, HardDrive, KeyRound, type LucideIcon, Moon, Settings, Sun } from 'lucide-react'
+import { Activity, ArrowDownToLine, Boxes, HardDrive, KeyRound, type LucideIcon, Moon, Settings, Sun } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useTranslation } from 'react-i18next'
 import { useFeed } from '@/api/events'
@@ -10,6 +10,7 @@ import { navigate, type PageId, usePage } from './nav'
 const TOP: { id: PageId; icon: LucideIcon }[] = [
   { id: 'mounts', icon: HardDrive },
   { id: 'volumes', icon: Boxes },
+  { id: 'downloads', icon: ArrowDownToLine },
   { id: 'accounts', icon: KeyRound },
   { id: 'activity', icon: Activity },
 ]

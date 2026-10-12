@@ -273,15 +273,15 @@ class GopeedTest(AgentTest):
         p = self.start(job)
         s = self.wait_status(lambda s: s.get("live_url") and s.get("state") == "running")
         req = urllib.request.Request(s["live_url"] + "/live", headers={"X-Modalfs-Token": job["live_token"]})
-        events, t0 = 0, time.time()
+        times, t0 = [], time.time()
         with urllib.request.urlopen(req, timeout=10) as r:
             for line in r:
                 if line.startswith(b"data: "):
-                    json.loads(line[6:])
-                    events += 1
+                    times.append(json.loads(line[6:])["t"])
                 if time.time() - t0 > 2:
                     break
-        self.assertGreaterEqual(events, 6, "the live stream should send about 4 updates a second")
+        self.assertGreaterEqual(len(times), 6, "the live stream should send about 4 updates a second")
+        self.assertEqual(len(set(times)), len(times), f"the live stream repeated a sample: {times}")
         self.finish(p)
 
     def test_stall_watchdog(self):
@@ -308,6 +308,14 @@ class GopeedTest(AgentTest):
         errors = [e.get("message") for e in self.events() if e["ev"] == "error"]
         print(f"\n  after a 200 to a range: {kinds} {errors}", file=sys.stderr)
         self.assertNotIn("gopeed reported an error without a message", errors)
+        # waiting before continuing doesn't stop the sampling (the live view)
+        rows = []
+        speed = os.path.join(self.jobdir(), "speed")
+        for name in sorted(os.listdir(speed)):
+            with open(os.path.join(speed, name)) as f:
+                rows += [json.loads(line) for line in f]
+        gaps = [b[0] - a[0] for a, b in zip(rows, rows[1:])]
+        self.assertLess(max(gaps), 2, f"the speed history has a {max(gaps):.1f} s gap")
 
 
 @unittest.skipUnless(ARIA2, "aria2c isn't installed")
@@ -331,6 +339,45 @@ class Aria2Test(AgentTest):
         self.assertEqual(summary["state"], "done")
         self.assertEqual(self.status()["tool"], "aria2")
         self.check_file(origin)
+
+
+class SpeedTest(unittest.TestCase):
+    """The speed the agent shows, from a downloader that updates its count
+    every 350 ms (as gopeed does) polled every 250 ms."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.clock, self.done, self.next_update = 1000.0, 0, 1000.0
+        real = app.now
+        app.now = lambda: self.clock
+        self.addCleanup(setattr, app, "now", real)
+        self.rec = app.Record(self.dir, app.LocalEnv(), {"id": "j1", "url": "https://x/y", "status_every": 3600})
+        self.addCleanup(self.rec.closed.set)
+
+    def poll(self, seconds, rate):
+        """Polls for seconds while the count moves by rate (0: stalled)."""
+        speeds = []
+        for _ in range(int(seconds / 0.25)):
+            self.clock += 0.25
+            while rate and self.clock >= self.next_update:
+                self.done += int(0.35 * rate)
+                self.next_update += 0.35
+            speeds.append(self.rec.sample(app.Progress("running", self.done, 1 << 40, 0)))
+        return speeds
+
+    def test_steady_and_stalled(self):
+        rate = 50 * MiB
+        speeds = self.poll(10, rate)
+        for s in speeds[12:]:  # after 3 s
+            self.assertAlmostEqual(s / rate, 1, delta=0.04, msg=f"speed {s / MiB:.1f} MiB/s for {rate / MiB:.0f}")
+        stalled = self.poll(4, 0)
+        self.assertEqual(stalled[-1], 0, "a stalled download should show no speed")
+        rows = self.rec.history_since()
+        self.assertTrue(13 <= len(rows) <= 15, f"{len(rows)} history rows for 14 s: one a second")
+        status = self.rec.snapshot()
+        self.assertEqual(status["speed"], 0)
+        self.assertIsNone(status["eta"])
 
 
 class PathTest(unittest.TestCase):

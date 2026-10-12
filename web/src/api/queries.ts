@@ -1,7 +1,8 @@
 import { QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { api } from './client'
-import type { Environment, Mount, Settings, State, Volume } from './types'
+import type { Download, DownloadDetail, Environment, LiveView, Mount, Sample, Settings, State, Volume } from './types'
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -104,3 +105,85 @@ export function useAction<V = void>(
 
 export const patchMount = (id: string, body: Partial<Mount>) => api('PATCH', `/mounts/${id}`, body)
 export const patchSettings = (body: Settings | { transport: string }) => api('PATCH', '/settings', body)
+
+/** The downloads, with live numbers for the running ones, while the Downloads page shows them. */
+export function useDownloads(enabled: boolean) {
+  return useQuery({
+    queryKey: ['downloads'],
+    queryFn: () => api<Download[]>('GET', '/downloads?live=1'),
+    enabled,
+    refetchInterval: 1000,
+  })
+}
+
+/**
+ * A download's events and its durable speed history (one sample a second,
+ * from the volume). The history is read whole once, then only what's new.
+ */
+export function useDownloadRecords(id: string, running: boolean) {
+  const [records, setRecords] = useState<{ detail?: DownloadDetail; history: Sample[]; error?: string }>({ history: [] })
+  useEffect(() => {
+    let stop = false
+    let timer: ReturnType<typeof setTimeout>
+    let history: Sample[] = []
+    const load = async () => {
+      const after = history.length ? history[history.length - 1][0] : 0
+      try {
+        const d = await api<DownloadDetail>('GET', `/downloads/${id}${after ? `?after=${after}` : ''}`)
+        if (stop) return
+        history = after ? history.concat(d.history) : d.history
+        setRecords({ detail: d, history })
+      } catch (e) {
+        if (!stop) setRecords((r) => ({ ...r, error: e instanceof Error ? e.message : String(e) }))
+      }
+      if (!stop && running) timer = setTimeout(load, 10_000)
+    }
+    load()
+    return () => {
+      stop = true
+      clearTimeout(timer)
+    }
+  }, [id, running])
+  return records
+}
+
+/** Most live samples kept: a day at four a second. */
+const LIVE_MAX = 4 * 86400
+
+/**
+ * What a running download's container sends, four times a second, relayed by
+ * the daemon: this run's samples so far, then each new one.
+ */
+export function useLive(id: string, active: boolean) {
+  const [live, setLive] = useState<{ samples: Sample[]; view?: LiveView }>({ samples: [] })
+  useEffect(() => {
+    if (!active) return
+    let stop = false
+    let timer: ReturnType<typeof setTimeout>
+    let samples: Sample[] = []
+    const poll = async () => {
+      const after = samples.length ? samples[samples.length - 1][0] : 0
+      const started = Date.now()
+      try {
+        const v = await api<LiveView>('GET', `/downloads/${id}/live?after=${after}`)
+        if (stop) return
+        if (v.samples.length) {
+          samples = samples.concat(v.samples)
+          if (samples.length > LIVE_MAX) samples = samples.slice(-LIVE_MAX)
+        }
+        setLive({ samples, view: v })
+      } catch {
+        // the daemon is down for a moment; the shell says so
+      }
+      if (!stop) timer = setTimeout(poll, Math.max(0, 250 - (Date.now() - started)))
+    }
+    poll()
+    return () => {
+      stop = true
+      clearTimeout(timer)
+    }
+  }, [id, active])
+  return live
+}
+
+export const refreshDownloads = () => queryClient.invalidateQueries({ queryKey: ['downloads'] })
