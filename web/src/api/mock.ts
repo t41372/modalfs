@@ -14,6 +14,7 @@ const ROOT = `${HOME}/ModalVolumes`
 const MiB = 1 << 20
 const GiB = 1 << 30
 const now = () => Math.floor(Date.now() / 1000)
+const trafficFrom = now() - 3600
 const params = new URLSearchParams(location.search)
 
 const accounts: Account[] = [
@@ -805,16 +806,16 @@ function insight(method: string, mt: Mount, what: string, body: Body): unknown {
   }
   if (what === 'traffic') {
     if (mt.state !== 'mounted' && mt.state !== 'stopping') return []
+    // The same totals on every call, from an hour before the mock started, so asking `since` works.
     const out: TrafficSample[] = []
     const r = rng(mt.id.length * 31)
-    const t0 = now() - 3600
     let up = 0
     let down = 0
-    for (let t = t0; t <= now(); t += 10) {
-      const k = (t - t0) / 3600
-      up += Math.max(0, (k > 0.7 ? 9e6 : 0.6e6) * (0.4 + r()) * (Math.sin(k * 9) > 0.2 ? 1 : 0.15))
-      down += Math.max(0, 4e6 * (0.3 + r()) * (Math.sin(k * 5 + 1) > -0.3 ? 1 : 0.1))
-      out.push([t, Math.round(up), Math.round(down)])
+    for (let t = trafficFrom; t <= now(); t++) {
+      const k = (t - trafficFrom) / 3600
+      up += (k > 0.7 ? 9e6 : 0.6e6) * (0.85 + 0.3 * r() + 0.2 * Math.sin(k * 140)) * (Math.sin(k * 9) > 0.2 ? 1 : 0.15)
+      down += 4e6 * (0.8 + 0.4 * r() + 0.3 * Math.sin(k * 90 + 1)) * (Math.sin(k * 5 + 1) > -0.3 ? 1 : 0.1)
+      if (t > Number(body.since ?? 0) && t >= now() - 3600) out.push([t, Math.round(up), Math.round(down)])
     }
     return out
   }
@@ -1026,7 +1027,7 @@ export async function mockRequest(method: string, path: string, raw?: unknown): 
 
   // a volume's page
   if ((m = p.match(/^\/mounts\/([^/]+)\/(usage|traffic|pending|conflicts|conflicts\/clear)$/))) {
-    const r = insight(method, findMount(m[1]), m[2], body)
+    const r = insight(method, findMount(m[1]), m[2], { ...body, since: url.searchParams.get('since') ?? undefined })
     if (r !== undefined) return r
   }
 

@@ -146,14 +146,8 @@
     "conflictsP": "你在这里编辑时，Modal 上的文件也被修改了。Modal 的版本保留原文件名，你的版本是旁边的副本。留下你要的版本后，标为已处理。",
     "waitingFiles": "等待上传",
     "moreFiles_other": "还有 {{count}} 个",
-    "lastHour": "最近一小时",
     "uploads": "上传",
     "reads": "读取",
-    "hourAgo": "1 小时前",
-    "now": "现在",
-    "peak": "最高 {{speed}}/秒",
-    "trafficSoon": "大约一分钟后开始显示图表。",
-    "trafficLabel": "最近一小时的上传和读取，最高 {{peak}}/秒",
     "byFolder": "各文件夹",
     "everythingElse": "其他",
     "folderFiles_other": "{{count}} 个文件",
@@ -178,7 +172,10 @@
     "labelPlaceholder": "给 {{name}} 取个标签",
     "labelTitle": "{{name}} 的标签",
     "labelReadOnly": "以只读方式挂载：modalfs 不会写入这个 Volume，标签也一样。",
-    "modalName": "它在 Modal 上的名称"
+    "modalName": "它在 Modal 上的名称",
+    "speedOver": "速度",
+    "rangeHour": "1 小时",
+    "peaks": "最高 ↑ {{up}} ↓ {{down}}"
   },
   "opts": {
     "title": "{{name}} 的挂载选项",

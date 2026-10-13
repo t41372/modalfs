@@ -67,7 +67,7 @@ function Chart({ points, running, value, range, happenings, dark }: Props) {
   const { t, i18n } = useTranslation()
   const box = useRef<HTMLDivElement>(null)
   const size = useSize(box)
-  const color = useMemo(brandColor, [])
+  const color = useMemo(() => tokenColor('--brand'), []) // the same in both themes
   const [hover] = useState(hoverStore)
 
   // The display clock. A finished download's last sample is put at the moment
@@ -268,7 +268,7 @@ function Readout({ g, hover, fmtTime, points }: { g: Geometry; hover: HoverStore
 }
 
 /** Time labels: with seconds for short windows, with the date for long ones. Liveline's times are shifted by `offset`. */
-function timeFormat(window: number, offset: number, lang: string) {
+export function timeFormat(window: number, offset: number, lang: string) {
   const o: Intl.DateTimeFormatOptions = window <= 600 ? { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false } : { hour: '2-digit', minute: '2-digit', hour12: false }
   if (window > 86400) Object.assign(o, { month: 'short', day: 'numeric' })
   const f = new Intl.DateTimeFormat(intlTag(lang), o)
@@ -304,11 +304,16 @@ function useSize(ref: React.RefObject<HTMLElement | null>) {
   return size
 }
 
-/** The brand color as rgb(): Liveline reads only hex and rgb, and the token is oklch (the same in both themes). */
-function brandColor() {
-  const css = getComputedStyle(document.documentElement).getPropertyValue('--brand').trim()
+/** A color token as rgb(): Liveline reads only hex and rgb, and the tokens are oklch. A translucent one is mixed onto the `under` tokens, painted in order. */
+export function tokenColor(name: string, ...under: string[]) {
+  const style = getComputedStyle(document.documentElement)
+  const css = style.getPropertyValue(name).trim()
   const ctx = document.createElement('canvas').getContext('2d', { willReadFrequently: true })
   if (!ctx || !css) return '#3b82f6'
+  for (const u of under) {
+    ctx.fillStyle = style.getPropertyValue(u).trim()
+    ctx.fillRect(0, 0, 1, 1)
+  }
   ctx.fillStyle = css
   ctx.fillRect(0, 0, 1, 1)
   const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data

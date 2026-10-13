@@ -161,14 +161,8 @@
     "waitingFiles": "Waiting to upload",
     "moreFiles_one": "and {{count}} more",
     "moreFiles_other": "and {{count}} more",
-    "lastHour": "Last hour",
     "uploads": "Uploads",
     "reads": "Reads",
-    "hourAgo": "1 h ago",
-    "now": "now",
-    "peak": "peak {{speed}}/s",
-    "trafficSoon": "The chart starts after a minute or so.",
-    "trafficLabel": "Uploads and reads over the last hour, peaking at {{peak}}/s",
     "byFolder": "By folder",
     "everythingElse": "everything else",
     "folderFiles_one": "{{count}} file",
@@ -194,7 +188,10 @@
     "labelPlaceholder": "A label for {{name}}",
     "labelTitle": "Label for {{name}}",
     "labelReadOnly": "Mounted read-only: modalfs doesn't write to this volume, its label included.",
-    "modalName": "Its name on Modal"
+    "modalName": "Its name on Modal",
+    "speedOver": "Speed",
+    "rangeHour": "1 hour",
+    "peaks": "Peak ↑ {{up}} ↓ {{down}}"
   },
   "opts": {
     "title": "Mount options of {{name}}",

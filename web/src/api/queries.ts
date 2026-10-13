@@ -224,13 +224,23 @@ export function useUsage(mountId: string) {
 }
 export const refreshUsage = (mountId: string) => queryClient.invalidateQueries({ queryKey: ['usage', mountId] })
 
-/** The mount's upload and read totals every 10 s for the last hour. */
+/** The mount's upload and read totals each second for the last hour: all of them once, then only the new ones. */
 export function useTraffic(mountId: string, enabled: boolean) {
+  const key = ['traffic', mountId]
   return useQuery({
-    queryKey: ['traffic', mountId],
-    queryFn: () => api<TrafficSample[]>('GET', `/mounts/${mountId}/traffic`),
+    queryKey: key,
+    queryFn: async () => {
+      const have = queryClient.getQueryData<TrafficSample[]>(key) ?? []
+      const last = have.at(-1)
+      const fresh = await api<TrafficSample[]>('GET', `/mounts/${mountId}/traffic${last ? `?since=${last[0]}` : ''}`)
+      // The totals start again at zero with each mount: the old samples would make a negative rate.
+      const restarted = last && fresh.length > 0 && (fresh[0][1] < last[1] || fresh[0][2] < last[2])
+      const all = restarted ? fresh : [...have, ...fresh]
+      const from = (all.at(-1)?.[0] ?? 0) - 3600
+      return all.slice(all.findIndex((s) => s[0] >= from))
+    },
     enabled,
-    refetchInterval: 10_000,
+    refetchInterval: 1000,
     retry: false,
   })
 }

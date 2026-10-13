@@ -1,50 +1,86 @@
+import { Liveline } from 'liveline'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TrafficSample } from '@/api/types'
-import { bytes } from '@/lib/format'
+import { timeFormat, tokenColor } from '@/components/SpeedChart'
+import { downsample } from '@/lib/downloads'
+import { speed } from '@/lib/format'
 
-/**
- * What a mount uploaded and read over the last hour: the rate between each
- * sample the daemon took (every 10 s), as two lines over the same scale.
- */
-export function TrafficChart({ samples }: { samples: TrafficSample[] }) {
-  const { t } = useTranslation()
-  const { up, down, peak, from, to } = useMemo(() => {
-    const up: [number, number][] = []
-    const down: [number, number][] = []
+// A mount's upload and read speed, drawn like a download's (Liveline, scrolling
+// live) with the two as separate lines. The daemon samples the totals each
+// second; the speeds are the rates between samples.
+
+export type TrafficRange = 'minute' | 'tenMinutes' | 'hour'
+const RANGE_SECS: Record<TrafficRange, number> = { minute: 60, tenMinutes: 600, hour: 3600 }
+const PAD = { top: 18, bottom: 28, left: 12, right: 84 }
+
+type Point = { t: number; v: number }
+
+export function TrafficChart({ samples, range, dark }: { samples: TrafficSample[]; range: TrafficRange; dark: boolean }) {
+  const { t, i18n } = useTranslation()
+  const window = RANGE_SECS[range]
+
+  const { up, down } = useMemo(() => {
+    const up: Point[] = []
+    const down: Point[] = []
     for (let i = 1; i < samples.length; i++) {
       const [t0, u0, d0] = samples[i - 1]
       const [t1, u1, d1] = samples[i]
       const dt = Math.max(1, t1 - t0)
-      up.push([t1, Math.max(0, (u1 - u0) / dt)])
-      down.push([t1, Math.max(0, (d1 - d0) / dt)])
+      up.push({ t: t1, v: Math.max(0, (u1 - u0) / dt) })
+      down.push({ t: t1, v: Math.max(0, (d1 - d0) / dt) })
     }
-    const peak = Math.max(1, ...up.map((p) => p[1]), ...down.map((p) => p[1]))
-    const to = samples.at(-1)?.[0] ?? Date.now() / 1000
-    return { up, down, peak, from: to - 3600, to }
+    return { up, down }
   }, [samples])
 
-  const W = 700
-  const H = 96
-  const x = (ts: number) => ((ts - from) / (to - from)) * W
-  const y = (v: number) => H - 4 - (v / peak) * (H - 12)
-  const line = (pts: [number, number][]) => pts.map(([ts, v], i) => `${i ? 'L' : 'M'}${x(ts).toFixed(1)} ${y(v).toFixed(1)}`).join(' ')
-  const area = (pts: [number, number][]) => (pts.length ? `${line(pts)} L${x(pts.at(-1)![0]).toFixed(1)} ${H} L${x(pts[0][0]).toFixed(1)} ${H} Z` : '')
+  const brand = useMemo(() => tokenColor('--brand'), [])
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- the token changes with the theme
+  const muted = useMemo(() => tokenColor('--muted-foreground', '--popover'), [dark])
+  const series = useMemo(() => {
+    const from = Date.now() / 1000 - window * 1.1
+    const shown = (pts: Point[]) => downsample(pts.filter((p) => p.t >= from), window).map((p) => ({ time: p.t, value: p.v }))
+    return [
+      { id: 'up', label: t('vol.uploads'), color: brand, data: shown(up), value: up.at(-1)?.v ?? 0 },
+      { id: 'down', label: t('vol.reads'), color: muted, data: shown(down), value: down.at(-1)?.v ?? 0 },
+    ]
+  }, [up, down, window, brand, muted, t])
+  const fmtTime = useMemo(() => timeFormat(window, 0, i18n.language), [window, i18n.language])
 
-  if (up.length < 2) return <div className="px-5 py-8 text-center text-[12.5px] text-muted-foreground">{t('vol.trafficSoon')}</div>
   return (
-    <div className="px-4 pt-3 pb-2">
-      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="block h-24 w-full" role="img" aria-label={t('vol.trafficLabel', { peak: bytes(peak) })}>
-        <line x1="0" x2={W} y1={H - 0.5} y2={H - 0.5} stroke="currentColor" strokeOpacity="0.1" />
-        <path d={area(up)} fill="var(--brand)" fillOpacity="0.1" />
-        <path d={line(down)} fill="none" stroke="currentColor" strokeOpacity="0.4" strokeWidth="1.5" strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />
-        <path d={line(up)} fill="none" stroke="var(--brand)" strokeWidth="1.8" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-      </svg>
-      <div className="mt-1 flex justify-between text-[11px] text-muted-foreground tabular">
-        <span>{t('vol.hourAgo')}</span>
-        <span>{t('vol.peak', { speed: bytes(peak) })}</span>
-        <span>{t('vol.now')}</span>
+    <div>
+      {/* Liveline puts its toggles for the two lines above the chart, which takes the rest. */}
+      <div className="relative flex h-64 flex-col pt-3 max-[520px]:h-52">
+        <Liveline
+          data={series[0].data}
+          value={series[0].value}
+          series={series}
+          theme={dark ? 'dark' : 'light'}
+          window={window}
+          grid
+          pulse
+          loading={up.length < 2}
+          emptyText={t('downloads.chart.empty')}
+          formatValue={speed}
+          formatTime={fmtTime}
+          padding={PAD}
+          referenceLine={{ value: 0 }}
+          style={{ height: 'auto', flex: 1, minHeight: 0 }}
+        />
       </div>
+      <Readout up={up} down={down} window={window} />
+    </div>
+  )
+}
+
+/** Under the chart: the speeds now and their peaks in the window. Liveline shows the ones at the cursor. */
+function Readout({ up, down, window }: { up: Point[]; down: Point[]; window: number }) {
+  const { t } = useTranslation()
+  const from = (up.at(-1)?.t ?? 0) - window
+  const peak = (pts: Point[]) => pts.reduce((m, x) => (x.t >= from ? Math.max(m, x.v) : m), 0)
+  return (
+    <div className="flex min-h-9 flex-wrap items-center gap-x-4 gap-y-1 border-t border-card-border px-4 py-2 text-[12px] text-muted-foreground tabular">
+      <span className="font-medium text-foreground">{t('vol.speedNow', { up: speed(up.at(-1)?.v ?? 0), down: speed(down.at(-1)?.v ?? 0) })}</span>
+      <span>{t('vol.peaks', { up: speed(peak(up)), down: speed(peak(down)) })}</span>
     </div>
   )
 }

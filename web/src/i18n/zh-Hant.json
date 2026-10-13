@@ -146,14 +146,8 @@
     "conflictsP": "你在這裡編輯時，Modal 上的檔案也被修改了。Modal 的版本保留原檔名，你的版本是旁邊的副本。留下你要的版本後，標為已處理。",
     "waitingFiles": "等待上傳",
     "moreFiles_other": "還有 {{count}} 個",
-    "lastHour": "最近一小時",
     "uploads": "上傳",
     "reads": "讀取",
-    "hourAgo": "1 小時前",
-    "now": "現在",
-    "peak": "最高 {{speed}}/秒",
-    "trafficSoon": "大約一分鐘後開始顯示圖表。",
-    "trafficLabel": "最近一小時的上傳和讀取，最高 {{peak}}/秒",
     "byFolder": "各資料夾",
     "everythingElse": "其他",
     "folderFiles_other": "{{count}} 個檔案",
@@ -178,7 +172,10 @@
     "labelPlaceholder": "幫 {{name}} 取個標籤",
     "labelTitle": "{{name}} 的標籤",
     "labelReadOnly": "以唯讀掛載：modalfs 不會寫入這個 Volume，標籤也一樣。",
-    "modalName": "它在 Modal 上的名稱"
+    "modalName": "它在 Modal 上的名稱",
+    "speedOver": "速度",
+    "rangeHour": "1 小時",
+    "peaks": "最高 ↑ {{up}} ↓ {{down}}"
   },
   "opts": {
     "title": "{{name}} 的掛載選項",

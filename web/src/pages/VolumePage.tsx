@@ -7,12 +7,14 @@ import { api } from '@/api/client'
 import { patchMount, refreshState, refreshUsage, useAction, useConflicts, useLoadedState, usePending, useTraffic, useUsage, useVolumes } from '@/api/queries'
 import type { Mount } from '@/api/types'
 import { navigate } from '@/app/nav'
+import { useIsDark } from '@/app/theme'
 import { AccountMark, Bar, Chip, glyphOf, Hint, Tile } from '@/components/bits'
 import { confirm } from '@/components/confirm'
 import { Card, Mono, Page, Row, Section } from '@/components/page'
+import { Segmented } from '@/components/Segmented'
 import { Spinner } from '@/components/Spinner'
 import { duration, StopProgress } from '@/components/StopProgress'
-import { TrafficChart } from '@/components/TrafficChart'
+import { TrafficChart, type TrafficRange } from '@/components/TrafficChart'
 import { askUnmount, useVolumeMenu } from '@/components/VolumeMenu'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -44,6 +46,7 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
   const lang = i18n.language
   const st = useLoadedState()
   const home = homeOf(st.settings.mount_root)
+  const dark = useIsDark(st.settings.appearance)
   const l = look(m)
   const mounted = m.state === 'mounted'
   const s = m.status
@@ -56,6 +59,7 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
   const info = vols.data?.find((v) => (m.volume_id ? v.id === m.volume_id : v.name === m.volume_name))
   const usage = useUsage(m.id)
   const traffic = useTraffic(m.id, mounted || m.state === 'stopping')
+  const [range, setRange] = useState<TrafficRange>('tenMinutes')
   const pending = usePending(m.id, (s?.pending_files ?? 0) > 0)
   const conflicts = useConflicts(m.id, m.open_conflicts ?? 0)
 
@@ -327,22 +331,22 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
 
       {(mounted || m.state === 'stopping') && (
         <Section
-          label={t('vol.lastHour')}
+          label={t('vol.speedOver')}
           aside={
-            <span className="flex items-center gap-3 text-[12px] text-muted-foreground">
-              <span className="flex items-center gap-1.5">
-                <span className="h-0.5 w-3 rounded-full bg-brand" />
-                {t('vol.uploads')}
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="h-0 w-3 border-t-[1.5px] border-dashed border-foreground/40" />
-                {t('vol.reads')}
-              </span>
-            </span>
+            <Segmented<TrafficRange>
+              label={t('vol.speedOver')}
+              value={range}
+              onChange={setRange}
+              options={[
+                { value: 'minute', label: t('downloads.range.minute') },
+                { value: 'tenMinutes', label: t('downloads.range.tenMinutes') },
+                { value: 'hour', label: t('vol.rangeHour') },
+              ]}
+            />
           }
         >
           <Card>
-            <TrafficChart samples={traffic.data ?? []} />
+            <TrafficChart samples={traffic.data ?? []} range={range} dark={dark} />
           </Card>
         </Section>
       )}
