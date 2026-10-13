@@ -1,15 +1,16 @@
-import { Check, Plus, Search } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { Check, Plus, Search, UserPlus } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { api } from '@/api/client'
 import { refreshState, refreshVolumes, useEnvironments, useLoadedState, useVolumes } from '@/api/queries'
 import type { Mount } from '@/api/types'
-import { AccountMark } from '@/components/bits'
+import { AccountMark, Hint } from '@/components/bits'
 import { Choice } from '@/components/Choice'
 import { Spinner } from '@/components/Spinner'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { ConnectDialog } from '@/dialogs/Connect'
 import { CreateVolumeDialog } from '@/dialogs/Volume'
 import { date } from '@/lib/format'
 
@@ -27,12 +28,24 @@ export function AddVolumeDialog({ open, onOpenChange }: { open: boolean; onOpenC
   const [added, setAdded] = useState<string[]>([])
   const [busy, setBusy] = useState('')
   const [creating, setCreating] = useState(false)
+  const [connecting, setConnecting] = useState(false)
+  const known = useRef<string[]>([])
   useEffect(() => {
     if (!open) return
     setAccount((a) => (st.accounts.some((x) => x.id === a) ? a : st.accounts[0]?.id || ''))
     setQuery('')
     setAdded([])
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
+  // An account connected from here is the one the user wants to search next.
+  useEffect(() => {
+    const ids = st.accounts.map((a) => a.id)
+    const fresh = ids.find((id) => !known.current.includes(id))
+    if (open && fresh && known.current.length) {
+      setAccount(fresh)
+      setEnv(DEFAULT)
+    }
+    known.current = ids
+  }, [st.accounts, open])
 
   const envName = env === DEFAULT ? '' : env
   const envs = useEnvironments(open ? account : undefined)
@@ -87,18 +100,25 @@ export function AddVolumeDialog({ open, onOpenChange }: { open: boolean; onOpenC
                 className="min-w-0 flex-1 bg-transparent text-[13.5px] outline-none placeholder:text-muted-foreground"
               />
             </div>
-            {st.accounts.length > 1 && (
-              <Choice
-                label={t('form.account')}
-                className="h-9 min-w-0"
-                value={account}
-                onChange={(v) => {
-                  setAccount(v)
-                  setEnv(DEFAULT)
-                }}
-                options={st.accounts.map((a) => ({ value: a.id, label: a.label, icon: <AccountMark id={a.id} label={a.label} size={16} /> }))}
-              />
-            )}
+            <div className="flex min-w-0 gap-1">
+              {st.accounts.length > 1 && (
+                <Choice
+                  label={t('form.account')}
+                  className="h-9 min-w-0"
+                  value={account}
+                  onChange={(v) => {
+                    setAccount(v)
+                    setEnv(DEFAULT)
+                  }}
+                  options={st.accounts.map((a) => ({ value: a.id, label: a.label, icon: <AccountMark id={a.id} label={a.label} size={16} /> }))}
+                />
+              )}
+              <Hint text={t('addVol.connect')}>
+                <Button variant="outline" size="icon" className="size-9" aria-label={t('addVol.connect')} onClick={() => setConnecting(true)}>
+                  <UserPlus />
+                </Button>
+              </Hint>
+            </div>
             {(envs.data?.length ?? 0) > 1 && (
               <Choice
                 label={t('form.environment')}
@@ -165,6 +185,7 @@ export function AddVolumeDialog({ open, onOpenChange }: { open: boolean; onOpenC
         </DialogContent>
       </Dialog>
       <CreateVolumeDialog open={creating} onOpenChange={setCreating} account={account} env={envName} />
+      <ConnectDialog open={connecting} onOpenChange={setConnecting} />
     </>
   )
 }

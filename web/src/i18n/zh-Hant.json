@@ -185,6 +185,7 @@
     "title": "加入 Volume",
     "desc": "從你的 Modal 帳號選一個 Volume 交給 modalfs 管理，它會掛載到你的掛載位置。",
     "search": "依名稱搜尋",
+    "connect": "連接其他 Modal 帳號",
     "defaultEnv": "預設環境",
     "add": "加入",
     "added": "已加入",

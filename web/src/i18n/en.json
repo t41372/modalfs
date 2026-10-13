@@ -201,6 +201,7 @@
     "title": "Add a volume",
     "desc": "Pick a volume from your Modal account for modalfs to manage. It's mounted in your mount location.",
     "search": "Search by name",
+    "connect": "Connect another Modal account",
     "defaultEnv": "Default environment",
     "add": "Add",
     "added": "Added",
