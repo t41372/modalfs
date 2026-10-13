@@ -59,7 +59,7 @@ datasets  work     mounted  /Users/me/ModalVolumes/datasets  0        0 B / 3 B
 
 **你在 Modal 上的任务看到的是同一批文件。** 挂载同一个 volume 的 Function 能读到你保存的内容，它提交的修改几秒内就会出现在你的文件夹里。
 
-**直接下载到 volume 里。** 粘贴一个链接，Modal 就会把它下载到 volume 里，你的 Mac 睡眠时也照样进行：网页文件、种子、YouTube 和其他视频网站都行，还有实时速度图。这是可选功能，打开之前一直是关着的，因为它是唯一会在 Modal 上运行计算的功能。
+**直接下载到 volume 里。** 粘贴一个链接，Modal 就会用 gopeed、aria2 或 yt-dlp 把它下载到 volume 里，你的 Mac 睡眠时也照样进行，还有实时速度图。这是可选功能，打开之前一直是关着的，因为它是唯一会在 Modal 上运行计算的功能。
 
 **什么都不会丢。** 修改会记在日志里，直到 Modal 收到为止，崩溃和断电也不例外。同一个文件两边都改过时，两个版本都会保留。
 
@@ -174,10 +174,10 @@ modalfs 会记住每个挂载，所以下次 `modalfs mount my-data` 会沿用�
 
 - **打开之前一直是关着的**：在“远程下载”页、设置里，或用 `modalfs download enable` 打开，因为这是 modalfs 里唯一会运行计算的功能。只有你添加或继续一个下载时才会启动 Function，下载完成、暂停或卡住时就停止。
 - **费用**：最小规格（0.125 CPU、512 MiB）下载期间每小时约 0.01 美元，另加 Modal 的网络费用（看实时速度会多出约下载量 2% 的流量）。第一次下载，以及 modalfs 更新后的第一次，会用一个短命的 Sandbox 部署 Function：大约 10 秒、0.0001 美元。不需要安装 Python。
-- **下载工具**：大多数链接用 gopeed（HTTP、FTP、magnet、torrent），视频网站用 yt-dlp（每次都用最新版），也可以自己选 aria2。gopeed 在某个服务器上一直失败时，aria2 会自动接手，从头下载那个文件。
+- **下载工具**：gopeed、aria2 和 yt-dlp（每次都用最新版）。modalfs 会为每个链接选一个，你也可以自己选。gopeed 在某个服务器上一直失败时，aria2 会自动接手，从头下载那个文件。
 - **中断**：Modal 有时会停掉容器来调度资源。下载工具的进度存在 volume 上，所以会在新容器上从原来的地方接着下载，通常一分钟内。一个 Function 最多运行 24 小时，更久的下载会自己换到新的 Function 继续。这些都会显示在下载的页面上，在速度图上标出来，也会用文字说明。
 - **实时速度**：在应用里看一个下载时每秒更新四次，由后台进程从容器转发。无论发生什么都留得下来的记录（状态、事件、速度历史）存在 volume 的 `.modalfs/downloads/` 里。
-- **Cloudflare WARP**：下载可以经由 Cloudflare WARP，适合会拒绝云服务器的网站；YouTube 链接默认就会经由它，除非你选“直连”。速度会慢一些，而且下载工具除了它什么都连不到：连不上 WARP 时下载会停下，而不是改成直连，你可以选择不经 WARP 重试。种子不能用它：BitTorrent 会直接连接其他用户。
+- **Cloudflare WARP**：下载可以经由 Cloudflare WARP，适合会拒绝云服务器的网站。速度会慢一些，而且下载工具除了它什么都连不到：连不上 WARP 时下载会停下，而不是改成直连，你可以选择不经 WARP 重试。
 - **下载好的文件从不覆盖任何东西**：名字已被占用时会加上 ` (1)`。
 - **费用**：“远程下载”页（以及 `modalfs download spend`）显示工作区和它的下载本月花了多少钱。Modal 的 API 不提供剩余额度和支出上限，所以这两项会链接到 Modal 的 Usage & Billing 页面。Modal 拒绝启动或停止了一个下载时，下载的页面会说明：如果 Modal 说是支出上限或额度的问题，就直接说；否则会说 Modal 没有给出原因，并提示支出上限是其中一个要检查的可能。
 
@@ -187,7 +187,7 @@ $ modalfs download add datasets:/raw https://example.org/train-2024.tar
 $ modalfs download show dl-3f2a --follow
 ```
 
-远程下载目前还处理得不好的地方（包括 BitTorrent）见 [docs/known-issues.md](docs/known-issues.md)。
+远程下载目前还处理得不好的地方见 [docs/known-issues.md](docs/known-issues.md)。
 
 ## 命令行参考
 

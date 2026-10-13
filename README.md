@@ -59,7 +59,7 @@ datasets  work     mounted  /Users/me/ModalVolumes/datasets  0        0 B / 3 B
 
 **Your Modal jobs see the same files.** A Function that mounts the volume reads what you saved, and what it commits shows up in your folder within seconds.
 
-**Download straight into a volume.** Paste a link and Modal downloads it into a volume while your Mac sleeps: web files, torrents, YouTube and other video sites, with a live speed chart. Optional, and off until you turn it on, since it's the one feature that runs compute on Modal.
+**Download straight into a volume.** Paste a link and Modal downloads it into a volume while your Mac sleeps, with gopeed, aria2 or yt-dlp, and a live speed chart. Optional, and off until you turn it on, since it's the one feature that runs compute on Modal.
 
 **Nothing gets lost.** Edits are journaled until Modal has them, through crashes and power loss. When a file changed on both sides, both versions are kept.
 
@@ -174,10 +174,10 @@ Give modalfs a link and a Modal Function in your workspace downloads it straight
 
 - **Off until you turn it on**, on the Remote downloads page, in Settings, or with `modalfs download enable`, because it's the one thing in modalfs that runs compute. A Function starts only for a download you add or resume, and stops when it finishes, pauses or stalls.
 - **What it costs:** the smallest size (0.125 CPU, 512 MiB) is about $0.01 an hour while it downloads, plus Modal's network charges (watching the live view adds about 2% of the bytes downloaded). The first download, and the first after modalfs updates, deploys the Function from a short-lived Sandbox: about 10 seconds and $0.0001. You don't need Python.
-- **Downloaders:** gopeed for most links (HTTP, FTP, magnet, torrent), yt-dlp for video sites (the latest version, every run), or aria2 if you pick it. When gopeed keeps failing on a server, aria2 takes over by itself and starts that file over.
+- **Downloaders:** gopeed, aria2 and yt-dlp (the latest version, every run). modalfs picks one for each link, or you choose. When gopeed keeps failing on a server, aria2 takes over by itself and starts that file over.
 - **Interruptions:** Modal sometimes stops a container to move work around. The downloader's progress is saved on the volume, so the download continues on a new container from where it was, usually within a minute. A Function runs for at most 24 hours; a longer download continues in a new one by itself. Each of these shows on the download's page, on its speed chart and in plain words.
 - **Live speed**, four times a second, while you watch a download in the app; the daemon relays it from the container. The record that survives everything (status, events, the speed history) is kept on the volume in `.modalfs/downloads/`.
-- **Cloudflare WARP:** a download can go through Cloudflare WARP, for sites that refuse cloud servers; YouTube links do unless you pick Direct. It's slower, and the downloader can reach nothing else: if WARP can't be reached, the download stops instead of going direct, and you can retry it without WARP. Torrents can't use it: BitTorrent connects to its peers directly.
+- **Cloudflare WARP:** a download can go through Cloudflare WARP, for sites that refuse cloud servers. It's slower, and the downloader can reach nothing else: if WARP can't be reached, the download stops instead of going direct, and you can retry it without WARP.
 - **Finished files never overwrite anything:** a name already taken gets ` (1)` added.
 - **Money:** the Remote downloads page (and `modalfs download spend`) shows what the workspace and its downloads have spent this month. Modal's API doesn't tell the credit left or the spend limit, so for those it links to Modal's Usage & Billing page. When Modal refuses to start a download or stops one, the download's page says so; if Modal names the spend limit or credit, it says that, and otherwise it says Modal gave no reason and that the spend limit is one cause to check.
 
@@ -187,7 +187,7 @@ $ modalfs download add datasets:/raw https://example.org/train-2024.tar
 $ modalfs download show dl-3f2a --follow
 ```
 
-See [docs/known-issues.md](docs/known-issues.md) for what remote downloads don't handle well yet, BitTorrent among them.
+See [docs/known-issues.md](docs/known-issues.md) for what remote downloads don't handle well yet.
 
 ## CLI reference
 
