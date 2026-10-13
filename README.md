@@ -145,7 +145,7 @@ modalfs saves each mount, so `modalfs mount my-data` reuses the same account, en
 
 | Page | What you can do |
 |---|---|
-| **Volumes** | The volumes modalfs manages, each with its state at a glance (synced, uploading, a conflict, not mounted), its folder and its size. Add another volume from your account by searching for it, even among hundreds. A volume's page shows its size and largest folders, what's still waiting to upload, the last hour's uploads and reads, and its conflicts with both versions a click away in Finder. Mount, unmount (it says what's still uploading first), change its options, give it a label, remove it from modalfs, rename it on Modal or delete it. |
+| **Volumes** | The volumes modalfs manages, each with its state at a glance (synced, uploading, can't upload, a conflict, not mounted), its folder and its size. Add another volume from your account by searching for it, even among hundreds. A volume's page shows its size and largest folders, what's still waiting to upload, its upload and read speed over the last minute, ten minutes or hour, and its conflicts with both versions a click away in Finder. Mount, unmount (it says what's still uploading first), change its options, give it a label, remove it from modalfs, rename it on Modal or delete it. |
 | **Remote downloads** | Add links, pause, resume, delete. What's running, how fast in all and what it costs now; each one's speed over the whole run (point at the line for the acceleration there), and what happened to it. |
 | **Activity** | Mounts, uploads, conflicts, errors and crash recoveries, grouped by day, with notifications for the important ones. |
 | **Settings** | Your Modal accounts (connect, check or replace a token, rename, default environment, disconnect), start at login, mount location, light/dark mode, language (English / 繁體中文 / 简体中文), remote downloads, and under Advanced the cache, read-ahead and connection mode. |
@@ -157,7 +157,7 @@ The window is only a remote control. Mounts live in the background daemon, so **
 <table>
   <tr>
     <td width="50%" valign="top">
-      <a href="docs/screenshots/en/volume.jpg"><img src="docs/screenshots/en/volume.jpg" alt="A volume's page in the dark theme: where it's mounted, its size by folder, what it uploaded and read in the last hour, and its mount options"></a>
+      <a href="docs/screenshots/en/volume.jpg"><img src="docs/screenshots/en/volume.jpg" alt="A volume's page in the dark theme: where it's mounted, its size by folder, its upload and read speed, and its mount options"></a>
     </td>
     <td width="50%" valign="top">
       <a href="docs/screenshots/en/activity.jpg"><img src="docs/screenshots/en/activity.jpg" alt="Activity: uploads, mounts and a recovery, grouped by day"></a>
@@ -340,7 +340,7 @@ Measured from a Linux arm64 sandbox through an HTTP/1.1 proxy with limited bandw
 - **8 MiB granularity.** Small random writes still upload whole 8 MiB blocks.
 - **Metadata.** Modal sets mtime at commit. modalfs accepts chmod, chown and utimes but ignores them. There are no symlinks, hard links or xattrs.
 - **Consistency** is close-to-open plus a 10 s directory cache. Changes from other machines show up within that window. Modal containers need `volume.reload()` to see what you wrote.
-- **Write-back delay.** NFS has no close event, so writes reach Modal about 3 s after a file goes idle, or every 30 s while it keeps changing. After a crash they are recovered. One edge case: if the last second of an append was all zero bytes, those trailing zeros can be dropped.
+- **Write-back delay.** NFS has no close event, so writes reach Modal about 3 s after a file goes idle, or every 30 s while it keeps changing (sooner during a long copy, which uploads in batches). After a crash they are recovered. One edge case: if the last second of an append was all zero bytes, those trailing zeros can be dropped.
 - **Unmounting waits for uploads.** Turning a mount off first uploads what's pending, with progress shown; **Unmount now** unmounts at once and finishes uploading in the background (or at the next mount). macOS won't unmount a folder an app has open, and the app says which one.
 - **The daemon must keep running while volumes are mounted**, because the NFS/FUSE server lives inside it. If it dies, the next start cleans up stale mounts.
 - **The menu bar icon is macOS-only.** On Linux, use `modalfs ui` to reopen the window.
@@ -364,7 +364,11 @@ Measured from a Linux arm64 sandbox through an HTTP/1.1 proxy with limited bandw
 | Default mount folder | `~/ModalVolumes/` | `~/ModalVolumes/` |
 | Start at login | `~/Library/LaunchAgents/dev.modalfs.daemon.plist` | `~/.config/systemd/user/modalfs.service` |
 
-**Cache size.** The block cache holds only data already on Modal, so any size is safe: too small just means downloading blocks again. Settings accepts any whole number of GB from 1, and 2 GB or more is recommended (roughly 2 × concurrent readers × (read-ahead + 1) × 8 MiB, plus 256 MiB). Changes you haven't uploaded yet are kept on disk separately and don't count toward it, so writing a 100 GiB file needs 100 GiB free until it's committed.
+**Cache size.** This is all the disk modalfs uses: blocks read from Modal, shared by every volume, plus changes that aren't on Modal yet. Changes come first, and cached blocks make way for them. When changes fill the limit (all of it but a quarter, at most 1 GiB, kept for reading), new writes wait for uploads to make room. A copy larger than the limit still works, at the speed of your upload, and modalfs never fills your disk. A long copy uploads in batches as it goes, and each batch leaves the disk once it's on Modal, so a write waits for about one batch at most. Writes also wait while less than 1 GiB is free on the disk, or fail at once, with an error in Activity, if nothing waiting to upload could free it.
+
+If Modal can't be reached, apps writing to a volume wait; on macOS they give up after a few minutes, like with a network drive that went away. What they already wrote stays on this computer and uploads later, and the app says it can't upload and why.
+
+Settings accepts any whole number of GB from 1. The default is 20 GB, and 2 GB or more is recommended (roughly 2 × concurrent readers × (read-ahead + 1) × 8 MiB, plus 256 MiB).
 
 Environment variables:
 

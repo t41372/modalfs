@@ -2,7 +2,6 @@ package vfs
 
 import (
 	"encoding/json"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -31,7 +30,7 @@ func TestRecoverSkipsShortBlock(t *testing.T) {
 	write("0", 0)
 	write("1", blockSize)
 	write("1.tmp", 100)
-	fs := &FS{log: slog.New(slog.DiscardHandler), files: map[string]*fileState{}}
+	fs := testFS(t, t.TempDir())
 	fs.recover(root)
 	st := fs.files["a"]
 	if st == nil {

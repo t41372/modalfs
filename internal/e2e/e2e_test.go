@@ -87,7 +87,10 @@ type env struct {
 	client *modalapi.Client
 	vol    modalapi.VolumeInfo
 	mnt    string
+	cache  string      // modalfs's cache directory: blocks, and changes not uploaded yet
 	proc   *os.Process // modalfs run
+
+	argv, cmdEnv []string // how to start modalfs run again (see launch)
 }
 
 // setup mounts a fresh volume with `modalfs run`: on the fake, or on real
@@ -108,9 +111,22 @@ func setup(t *testing.T, opt modalfake.Options, args []string, before ...func(*m
 		f(b.client, b.vol.ID)
 	}
 	mnt := filepath.Join(root, "mnt")
-	flags := append([]string{"run", "-cache-dir", filepath.Join(root, "cache"), "-cache-size", "2G"}, b.flags...)
-	cmd := exec.Command(bin, append(append(flags, args...), b.vol.Name, mnt)...)
-	cmd.Env = append(os.Environ(), b.env...)
+	cache := filepath.Join(root, "cache")
+	flags := append([]string{"run", "-cache-dir", cache, "-cache-size", "2G"}, b.flags...)
+	e := &env{t: t, net: b.net, client: b.client, vol: b.vol, mnt: mnt, cache: cache,
+		argv: append([]string{bin}, append(append(flags, args...), b.vol.Name, mnt)...), cmdEnv: append(os.Environ(), b.env...)}
+	e.launch()
+	return e
+}
+
+// launch starts modalfs run and waits for the mount. It's stopped (SIGINT,
+// which commits what's pending) when the test ends.
+func (e *env) launch() {
+	t := e.t
+	t.Helper()
+	mnt := e.mnt
+	cmd := exec.Command(e.argv[0], e.argv[1:]...)
+	cmd.Env = e.cmdEnv
 	var logs syncBuffer
 	cmd.Stdout, cmd.Stderr = &logs, &logs
 	if err := cmd.Start(); err != nil {
@@ -146,7 +162,7 @@ func setup(t *testing.T, opt modalfake.Options, args []string, before ...func(*m
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return &env{t: t, net: b.net, client: b.client, vol: b.vol, mnt: mnt, proc: cmd.Process}
+	e.proc = cmd.Process
 }
 
 // watchForStall handles a test that hangs in a call on the mount because

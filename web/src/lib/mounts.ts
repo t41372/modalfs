@@ -14,6 +14,7 @@ export const live = (m: Mount) => m.state === 'mounted' || m.state === 'starting
 export type Look =
   | 'error' // couldn't mount
   | 'conflict' // mounted, with conflicts to look at
+  | 'stalled' // mounted, with changes Modal isn't taking now (offline, a rejected token)
   | 'busy' // mounted, but an unmount failed because apps use it
   | 'starting'
   | 'stopping'
@@ -29,6 +30,7 @@ export function look(m: Mount): Look {
   if (m.state === 'error') return 'error'
   if (m.state !== 'mounted') return 'off'
   if ((m.open_conflicts ?? 0) > 0) return 'conflict'
+  if (m.status?.upload_error && (m.status.pending_files ?? 0) > 0) return 'stalled'
   if (m.unmount_error) return 'busy'
   if ((m.status?.pending_files ?? 0) > 0) return 'uploading'
   return 'synced'
@@ -37,6 +39,7 @@ export function look(m: Mount): Look {
 export const toneOf: Record<Look, Tone> = {
   error: 'bad',
   conflict: 'bad',
+  stalled: 'bad',
   busy: 'up',
   starting: 'busy',
   stopping: 'up',
@@ -51,7 +54,7 @@ export function summary(mounts: Mount[]) {
   const on = mounts.filter(live)
   const pending = on.reduce((n, m) => n + (m.status?.pending_bytes ?? 0), 0)
   const files = on.reduce((n, m) => n + (m.status?.pending_files ?? 0), 0)
-  const problems = mounts.filter((m) => look(m) === 'error' || look(m) === 'conflict').length
+  const problems = mounts.filter((m) => ['error', 'conflict', 'stalled'].includes(look(m))).length
   const moving = on.some((m) => m.state === 'starting' || m.state === 'stopping')
   const tone: Tone = problems ? 'bad' : files > 0 || moving ? 'up' : on.length ? 'ok' : 'off'
   // What's moving between this computer and Modal: now, and since each was mounted.

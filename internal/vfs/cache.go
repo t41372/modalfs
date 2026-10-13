@@ -14,6 +14,11 @@ import (
 // blockCache is an on-disk, content-addressed (sha256) cache of 8 MiB blocks
 // with LRU eviction. Because Modal blocks are content addressed too, a block
 // cached for one file is reused for every file (or version) sharing it.
+//
+// Its limit is all the disk modalfs uses, for every mount sharing it: the
+// cached blocks and the changes not on Modal yet (pending). Pending changes
+// come first: cached blocks are evicted to make room for them, and writes
+// wait for uploads once pending takes all but a share kept for reading.
 type blockCache struct {
 	dir     string
 	max     int64
@@ -22,8 +27,18 @@ type blockCache struct {
 	lru     *list.List // front = most recent; values are hex keys
 	entries map[string]*cacheEnt
 
+	pending int64         // bytes of changes not on Modal yet, kept on disk by every mount
+	freed   chan struct{} // closed, and replaced, when pending shrinks
+
 	prefetching int64 // read-ahead downloads in flight, for every mount
 }
+
+// readRoom is the share of the limit pending changes leave to cached blocks,
+// so reads keep working while writes wait.
+func readRoom(max int64) int64 { return min(max/4, 1<<30) }
+
+// minFree is the free space writes leave on the disk modalfs keeps its data on.
+const minFree = 1 << 30
 
 // maxPrefetch caps the read-ahead downloads in flight across all mounts
 // sharing the cache (each holds an 8 MiB buffer). A small cache gets fewer,
@@ -37,7 +52,7 @@ type cacheEnt struct {
 }
 
 func newBlockCache(dir string, max int64) (*blockCache, error) {
-	c := &blockCache{dir: dir, max: max, lru: list.New(), entries: map[string]*cacheEnt{}}
+	c := &blockCache{dir: dir, max: max, lru: list.New(), entries: map[string]*cacheEnt{}, freed: make(chan struct{})}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
@@ -259,11 +274,53 @@ func (c *blockCache) removeLocked(key string) {
 }
 
 func (c *blockCache) evictLocked() {
-	for c.size > c.max && c.lru.Len() > 0 {
+	for c.size+c.pending > c.max && c.lru.Len() > 0 {
 		e := c.lru.Back().Value.(*cacheEnt)
 		_ = os.Remove(c.path(e.key))
 		c.removeLocked(e.key)
 	}
+}
+
+// addPending changes the bytes pending changes keep on disk. Growth evicts
+// cached blocks to make room; shrinking wakes the writes waiting for room.
+func (c *blockCache) addPending(delta int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pending += delta
+	if delta < 0 {
+		close(c.freed)
+		c.freed = make(chan struct{})
+	} else {
+		c.evictLocked()
+	}
+}
+
+// room reports whether need more bytes of pending changes fit. If not,
+// freed is closed when some are uploaded, and stuck says nothing pending is
+// left to upload, so waiting can't help.
+func (c *blockCache) room(need int64) (ok bool, freed <-chan struct{}, stuck bool) {
+	free := diskFree(c.dir)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ok = (c.max <= 0 || c.pending+need <= c.max-readRoom(c.max)) && (free < 0 || free-need >= minFree)
+	return ok, c.freed, c.pending == 0
+}
+
+// pendingMax is how much pending changes may take, or 0 for no limit.
+func (c *blockCache) pendingMax() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.max <= 0 {
+		return 0
+	}
+	return c.max - readRoom(c.max)
+}
+
+// Pending returns the bytes pending changes keep on disk, for every mount.
+func (c *blockCache) Pending() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.pending
 }
 
 func (c *blockCache) Stats() (int, int64) {

@@ -198,6 +198,19 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
           )}
         </Notice>
       )}
+      {l === 'stalled' && s && (
+        <Notice tone="bad" title={t('vol.stalledTitle')}>
+          <div className="text-[13px]">
+            {mountError(s.upload_error, t).known ? `${mountError(s.upload_error, t).text} ` : ''}
+            {t('vol.stalledKept', { size: bytes(s.pending_bytes) })}
+            {s.waiting_for_room && ` ${t('vol.stalledFull')}`}
+          </div>
+          <Mono className="mt-1 block text-[11.5px] text-muted-foreground">
+            {s.upload_error}
+            {s.upload_error_at ? ` · ${t('vol.stalledSince', { time: duration(Math.max(1, nowSec - s.upload_error_at), t) })}` : ''}
+          </Mono>
+        </Notice>
+      )}
       {m.state === 'starting' && (
         <Notice tone="busy" title={t(`vol.step.${m.step ?? 'connect'}`)}>
           {m.started_at && nowSec - m.started_at >= 3 && <span className="text-[12px] text-muted-foreground tabular">{duration(nowSec - m.started_at, t)}</span>}
@@ -271,7 +284,7 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
           hint={live(m) && s?.last_commit_at ? t('vol.lastUpload', { ago: ago(s.last_commit_at, lang, t('time.justNow')) }) : undefined}
         >
           <div className="mt-1 truncate text-[12px] text-muted-foreground">
-            {!live(m) || !s ? ' ' : s.pending_files > 0 ? t('vol.filesWaiting', { count: s.pending_files }) : t('vol.allOnModal')}
+            {!live(m) || !s ? ' ' : s.waiting_for_room ? t('vol.waitingRoom') : s.pending_files > 0 ? t('vol.filesWaiting', { count: s.pending_files }) : t('vol.allOnModal')}
           </div>
         </Tile>
       </div>

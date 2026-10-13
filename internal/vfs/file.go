@@ -84,8 +84,13 @@ type fileState struct {
 	// commitMu serializes commits of this file. Reads and writes never take
 	// it, so they carry on while a commit uploads.
 	commitMu   sync.Mutex
-	snap       *snapshot // the commit in flight, if any
-	prehashing bool      // prehashBase started for this state
+	snap       *snapshot     // the commit in flight, if any
+	snapDone   chan struct{} // closed when that commit ends
+	prehashing bool          // prehashBase started for this state
+
+	// held is the disk this file's pending changes take, as counted in the
+	// shared cache's pending bytes (see accountLocked).
+	held int64
 
 	// last journal written (crash recovery)
 	jSize, jFloor int64
@@ -149,6 +154,37 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return os.Rename(tmp, dst)
+}
+
+// accountLocked brings the shared count of pending bytes up to date with
+// the block files this file keeps: its dirty blocks and the copies set
+// aside for the commit in flight. Every change to them ends with it. Once
+// the mount closes, what's left is the next mount's to count.
+func (st *fileState) accountLocked() {
+	var n int64
+	if !st.removed && !st.fs.closed.Load() {
+		n = int64(len(st.dirty))
+		if st.snap != nil {
+			n += int64(len(st.snap.saved))
+		}
+		n *= st.fs.chunkSize()
+	}
+	if d := n - st.held; d != 0 {
+		st.held = n
+		st.fs.cache.addPending(d)
+	}
+}
+
+// unsnappedLocked is the changed data the commit in flight doesn't carry:
+// what the next commit will upload.
+func (st *fileState) unsnappedLocked() int64 {
+	n := int64(0)
+	for i := range st.dirty {
+		if st.snap == nil || !st.snap.dirty[i] || st.snap.saved[i] {
+			n++
+		}
+	}
+	return n * st.fs.chunkSize()
 }
 
 func (st *fileState) baseBlocks() int64 { return int64(st.fs.numBlocks(st.baseSize)) }
@@ -231,6 +267,7 @@ func (st *fileState) dropIfUnchangedLocked() {
 	}
 	st.removed = true
 	_ = os.RemoveAll(st.dir)
+	st.accountLocked()
 	st.fs.mu.Lock()
 	if st.fs.files[st.path] == st {
 		delete(st.fs.files, st.path)
@@ -396,6 +433,7 @@ func (st *fileState) writeAt(data []byte, off int64) (n int, err error) {
 	if st.removed {
 		return 0, errDetached
 	}
+	defer st.accountLocked()
 	if ver != [2]int64{st.baseSize, st.baseMtime} {
 		pre = nil
 	}
@@ -450,6 +488,12 @@ func (st *fileState) writeAt(data []byte, off int64) (n int, err error) {
 	}
 	st.changedLocked()
 	st.writeJournalLocked(false)
+	// A long write is committed in batches, each about commitTarget of
+	// uploading, so the disk it takes stays bounded and a write that waits
+	// for room (waitRoom) waits for one batch at most.
+	if st.fs.opt.MaxPending >= 0 && st.snap == nil && st.unsnappedLocked() >= st.fs.commitBatch() {
+		st.scheduleLocked(0)
+	}
 	return n, nil
 }
 
@@ -477,6 +521,7 @@ func (st *fileState) truncate(newSize int64) (err error) {
 	if st.removed {
 		return errDetached
 	}
+	defer st.accountLocked()
 	defer func() {
 		if err != nil {
 			st.dropIfUnchangedLocked()
@@ -562,6 +607,7 @@ func (st *fileState) scheduleLocked(d time.Duration) {
 			retry := st.backoff
 			st.mu.Unlock()
 			st.fs.log.Error("commit failed; will retry", "path", st.path, "err", err, "retry_in", retry)
+			st.fs.uploadFailed(err)
 			st.fs.event("error", st.path, err.Error())
 			st.schedule(retry)
 		}
@@ -578,6 +624,7 @@ func (st *fileState) discard() bool {
 	}
 	st.removed, st.deleted = true, true
 	_ = os.RemoveAll(st.dir)
+	st.accountLocked()
 	return st.baseExists || st.flushedGen != 0 || st.snap != nil
 }
 
@@ -622,16 +669,21 @@ func (st *fileState) flush() error {
 		sn.dirty[i] = true
 	}
 	st.snap = sn
+	done := make(chan struct{})
+	st.snapDone = done
 	path := st.path
 	st.mu.Unlock()
 
 	committed := false
 	defer func() {
-		if committed {
-			return
-		}
 		st.mu.Lock()
-		st.dropSnapshotLocked()
+		if !committed {
+			st.dropSnapshotLocked()
+		}
+		if st.snapDone == done {
+			st.snapDone = nil
+		}
+		close(done)
 		st.mu.Unlock()
 	}()
 
@@ -693,7 +745,9 @@ func (st *fileState) flush() error {
 			Block: func(i int) ([]byte, error) { return st.readSnapshotBlock(sn, int64(i)) },
 		}}, check)
 	}
+	putAt := time.Now()
 	uploaded, err := put(target, recheck)
+	fs.noteUpload(uploaded, time.Since(putAt))
 	if errors.Is(err, errLateConflict) {
 		target = fs.conflictName(path)
 		fs.log.Warn("remote file changed while uploading; saving local version as conflict copy", "path", path, "copy", target)
@@ -898,6 +952,7 @@ func (st *fileState) dropSnapshotLocked() {
 		}
 	}
 	st.snap = nil
+	st.accountLocked()
 }
 
 // finishCommitLocked records a finished commit. If nothing changed during
@@ -908,6 +963,7 @@ func (st *fileState) finishCommitLocked(sn *snapshot, target string, mtime int64
 	st.snap = nil
 	st.flushedGen = sn.gen
 	st.backoff = 0
+	defer st.accountLocked()
 	if st.deleted {
 		return
 	}
@@ -945,9 +1001,65 @@ func (st *fileState) finishCommitLocked(sn *snapshot, target string, mtime int64
 		// file didn't touch are identical to it, so they may stay dirty.
 		st.baseExists, st.baseSize, st.baseMtime = true, sn.size, mtime
 		st.truncFloor = min(sn.size, sn.floor)
-		st.writeJournalLocked(true)
+		st.releaseCommittedLocked(sn, hashes)
 	}
 	st.dirtySince = time.Now()
+	if fs.opt.MaxPending >= 0 && st.unsnappedLocked() >= fs.commitBatch() {
+		st.scheduleLocked(0) // the next batch is ready
+	}
+}
+
+// releaseCommittedLocked lets go of the blocks a commit made while the file
+// was still being written put on Modal: those the live file hasn't changed
+// since are part of the new base now, so they become clean (moved into the
+// cache) and stop taking pending room. A long copy then keeps only what
+// isn't uploaded yet, not the whole file.
+//
+// The journal must name the new base on disk first: recovery fills a clean
+// block from the base it finds there, so a released block with the old base
+// in the journal would come back as the old content.
+func (st *fileState) releaseCommittedLocked(sn *snapshot, hashes [][]byte) {
+	fs := st.fs
+	var done []int64
+	for i := range sn.dirty {
+		// whole blocks inside the new base only: its partial last block, and
+		// any block a truncate cut through since, must stay dirty
+		if !sn.saved[i] && st.dirty[i] && (i+1)*fs.chunkSize() <= st.truncFloor && int(i) < len(hashes) {
+			done = append(done, i)
+		}
+	}
+	if err := st.syncJournalLocked(); err != nil {
+		fs.log.Warn("couldn't save the journal; committed blocks stay on disk until the file is done", "path", st.path, "err", err)
+		return
+	}
+	for _, i := range done {
+		if !fs.cache.Adopt(hashes[i], st.blockFile(i), int64(fs.blockLen(sn.size, i))) {
+			_ = os.Remove(st.blockFile(i))
+		}
+		delete(st.dirty, i)
+		delete(st.hashes, i)
+		delete(st.unsynced, i)
+	}
+}
+
+// syncJournalLocked writes the journal and makes it durable.
+func (st *fileState) syncJournalLocked() error {
+	if err := st.writeJournalLocked(true); err != nil {
+		return err
+	}
+	st.journalUnsynced = false
+	for _, p := range []string{filepath.Join(st.dir, journalName), st.dir} {
+		f, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		err = fsync.File(f)
+		f.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // sync makes the file's written data durable: the blocks written since the
@@ -1055,6 +1167,7 @@ meta.json describes the file. The file was %d bytes long.
 `, st.path, why, fs.chunkSize(), fs.chunkSize(), strings.Join(blocks, "\n"), st.size)
 	_ = os.WriteFile(filepath.Join(dest, "README.txt"), []byte(note), 0o600)
 	st.removed = true
+	st.accountLocked()
 	if st.timer != nil {
 		st.timer.Stop()
 	}

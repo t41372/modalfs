@@ -295,7 +295,7 @@ const state: State = {
     mount_root: ROOT,
     remote_downloads: params.get('downloads') !== 'off',
   },
-  cache: { blocks: 612, bytes: 4.6 * GiB, max: 20 * GiB },
+  cache: { blocks: 612, bytes: 4.6 * GiB, pending: 1.2 * GiB, max: 20 * GiB },
   service: { supported: true, installed: true },
   last_seq: 0,
   boot_id: 'mock',

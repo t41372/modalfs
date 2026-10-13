@@ -16,6 +16,12 @@ const KINDS: [RegExp, string][] = [
   [/shutting down/i, 'quitting'],
 ]
 
+/** Why uploads fail, in a few words: for a row that has little room. */
+export function uploadProblem(err: string | undefined, t: TFunction): string {
+  const kind = KINDS.find(([re]) => re.test(err ?? ''))?.[1]
+  return t(kind === 'offline' ? 'vol.stall.offline' : kind === 'token' ? 'vol.stall.token' : 'vol.stall.other')
+}
+
 /** The plain sentence for a mount's error, or the error itself when it isn't one modalfs knows. */
 export function mountError(err: string | undefined, t: TFunction): { text: string; known: boolean } {
   if (!err) return { text: '', known: false }

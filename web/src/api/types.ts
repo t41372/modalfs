@@ -31,6 +31,11 @@ export interface MountStatus {
   last_error_at?: number
   last_commit_at?: number
   local_only_files: number
+  /** Writes are waiting for uploads to free room on this computer. */
+  waiting_for_room?: boolean
+  /** Why commits keep failing (they're retried), since upload_error_at. */
+  upload_error?: string
+  upload_error_at?: number
 }
 
 export interface Mount {
@@ -148,7 +153,8 @@ export interface State {
   accounts: Account[]
   mounts: Mount[]
   settings: Settings
-  cache: { blocks: number; bytes: number; max: number }
+  /** The disk modalfs uses here: cached blocks, and changes not on Modal yet (pending), within max. */
+  cache: { blocks: number; bytes: number; pending: number; max: number }
   service: {
     supported: boolean
     installed: boolean

@@ -89,7 +89,8 @@
       "starting": "Mounting",
       "error": "Couldn't mount",
       "off": "Not mounted",
-      "locked": "Locked"
+      "locked": "Locked",
+      "stalled": "Mounted at"
     },
     "state": {
       "synced": "Mounted · everything is on Modal",
@@ -101,7 +102,8 @@
       "stopping": "Unmounting",
       "error": "Couldn't mount",
       "off": "Not mounted",
-      "locked": "Locked"
+      "locked": "Locked",
+      "stalled": "Mounted · {{why}} · {{size}} waiting to upload"
     },
     "step": {
       "connect": "Connecting to Modal…",
@@ -191,7 +193,17 @@
     "modalName": "Its name on Modal",
     "speedOver": "Speed",
     "rangeHour": "1 hour",
-    "peaks": "Peak ↑ {{up}} ↓ {{down}}"
+    "peaks": "Peak ↑ {{up}} ↓ {{down}}",
+    "stall": {
+      "offline": "Can't reach Modal",
+      "token": "Token rejected",
+      "other": "Uploads failing"
+    },
+    "stalledTitle": "Can't upload to Modal",
+    "stalledKept": "{{size}} of changes wait on this computer and upload by themselves once Modal takes them again.",
+    "stalledFull": "Until then, writes here wait, and on macOS fail after a few minutes: waiting changes have filled the cache size.",
+    "stalledSince": "for {{time}}",
+    "waitingRoom": "writes wait for uploads to make room"
   },
   "opts": {
     "title": "Mount options of {{name}}",
@@ -577,12 +589,12 @@
     "afterMin": "{{n}} min",
     "advanced": "Advanced",
     "cache": "Local cache",
-    "cacheD": "Blocks read from Modal, shared by every volume. Unsaved changes are kept apart and aren't counted.",
+    "cacheD": "All the disk modalfs uses on this computer: blocks read from Modal, shared by every volume, and changes not on Modal yet.",
     "cacheUsed": "{{used}} of {{max}} used",
     "cacheSize": "Cache size",
     "custom": "Custom…",
     "cacheSmall": "Below {{n}} GB, read-ahead and files you reopen are often downloaded again.",
-    "cacheSizeD": "Any whole number of GB from {{min}}. We recommend at least {{n}} GB, and more if you read many large files at once. Unsaved writes are kept on disk separately and don't count toward this.",
+    "cacheSizeD": "Any whole number of GB from {{min}}. It's all the disk modalfs uses, changes not uploaded yet included: when they fill it, writes wait for uploads, so a bigger copy runs at the speed of your upload. If Modal can't be reached, apps writing to a volume wait, and on macOS give up after a few minutes. We recommend at least {{n}} GB, and more if you read many large files at once.",
     "cacheSizeBad": "Enter a whole number of at least {{min}}.",
     "clearCache": "Clear cache",
     "clearQ": "Clear the local cache?",
@@ -597,7 +609,8 @@
     "open": "Open",
     "openLogs": "Log",
     "quitButton": "Unmount all and quit…",
-    "quitD": "Closing the window doesn't unmount anything; this does, and stops modalfs."
+    "quitD": "Closing the window doesn't unmount anything; this does, and stops modalfs.",
+    "cacheUsedPending": "{{used}} of {{max}} used, {{pending}} of it not uploaded yet"
   },
   "time": {
     "s": "{{n}} s",

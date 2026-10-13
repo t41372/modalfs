@@ -435,17 +435,20 @@ type StateView struct {
 	ConfigDir string           `json:"config_dir"`
 }
 
+// CacheView is the disk modalfs uses on this computer: cached blocks
+// (Blocks, Bytes) and changes not on Modal yet (Pending), within Max.
 type CacheView struct {
-	Blocks int   `json:"blocks"`
-	Bytes  int64 `json:"bytes"`
-	Max    int64 `json:"max"`
+	Blocks  int   `json:"blocks"`
+	Bytes   int64 `json:"bytes"`
+	Pending int64 `json:"pending"`
+	Max     int64 `json:"max"`
 }
 
 func (d *Daemon) State() StateView {
 	f := d.store.Snapshot()
 	n, sz := d.cache.Stats()
 	v := StateView{Version: Version, Build: Build, Platform: platform(), Accounts: f.Accounts, Settings: f.Settings, BootID: d.bootID,
-		Cache: CacheView{Blocks: n, Bytes: sz, Max: d.cache.Max()}, Service: serviceStatus(), ConfigDir: config.Dir()}
+		Cache: CacheView{Blocks: n, Bytes: sz, Pending: d.cache.Pending(), Max: d.cache.Max()}, Service: serviceStatus(), ConfigDir: config.Dir()}
 	if v.Accounts == nil {
 		v.Accounts = []config.Account{}
 	}

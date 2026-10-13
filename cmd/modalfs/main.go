@@ -279,6 +279,12 @@ func cmdStatus() {
 		if m.State == daemon.StateError {
 			state = "error: " + m.Error
 		}
+		if s := m.Status; s != nil && s.UploadError != "" {
+			state += ", can't upload: " + s.UploadError
+		}
+		if s := m.Status; s != nil && s.WaitingForRoom {
+			state += ", writes waiting for uploads to free room"
+		}
 		label := m.Label
 		if label == "" {
 			label = "-"
@@ -286,7 +292,7 @@ func cmdStatus() {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", m.VolumeName, label, m.AccountLabel, state, m.Mountpoint, pending, traffic)
 	}
 	_ = w.Flush()
-	fmt.Printf("\ncache %s of %s\n", human(st.Cache.Bytes), human(st.Cache.Max))
+	fmt.Printf("\non this computer: %s cached + %s not uploaded yet, of %s\n", human(st.Cache.Bytes), human(st.Cache.Pending), human(st.Cache.Max))
 }
 
 func cmdMount(args []string) {

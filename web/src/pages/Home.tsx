@@ -20,7 +20,7 @@ import { EncryptedMark, UnlockDialog } from '@/dialogs/Encryption'
 import { ago, bytes, homeOf, speed, tilde } from '@/lib/format'
 import { look, type Look, nameOf, summary, toneOf } from '@/lib/mounts'
 import { isMac } from '@/lib/platform'
-import { mountError } from '@/lib/mountError'
+import { mountError, uploadProblem } from '@/lib/mountError'
 
 /** The volumes modalfs manages: each one's state at a glance, and the one thing to do next. */
 export function Home() {
@@ -108,6 +108,8 @@ export function stateText(m: Mount, l: Look, t: TFunction) {
       return t('vol.state.uploading', { size: bytes(m.status?.pending_bytes ?? 0), count: m.status?.pending_files ?? 0 })
     case 'conflict':
       return t('vol.state.conflict', { count: m.open_conflicts ?? 0 })
+    case 'stalled':
+      return t('vol.state.stalled', { why: uploadProblem(m.status?.upload_error, t), size: bytes(m.status?.pending_bytes ?? 0) })
     case 'busy':
       return t('vol.state.busy')
     case 'starting':
@@ -166,6 +168,8 @@ function VolumeRow({ m, biggest, showAccount }: { m: Mount; biggest: number; sho
         {l === 'conflict' && <span className="shrink-0 text-destructive">{t('vol.conflicts', { count: m.open_conflicts ?? 0 })}</span>}
         {l === 'conflict' && pending > 0 && <span className="shrink-0 text-warn-ink tabular">↑ {bytes(pending)}</span>}
         {l === 'busy' && <span className="shrink-0 text-warn-ink">{t('vol.state.busy')}</span>}
+        {l === 'stalled' && <span className="shrink-0 text-destructive">{uploadProblem(m.status?.upload_error, t)}</span>}
+        {l === 'stalled' && <span className="shrink-0 text-warn-ink tabular">↑ {bytes(pending)}</span>}
         {/* Too narrow for them: the total is at the top. */}
         {!!m.up_speed && <span className="shrink-0 text-warn-ink tabular max-sm:hidden">↑ {speed(m.up_speed)}</span>}
         {!!m.down_speed && <span className="shrink-0 tabular max-sm:hidden">↓ {speed(m.down_speed)}</span>}

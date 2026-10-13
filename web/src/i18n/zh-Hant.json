@@ -83,7 +83,8 @@
       "starting": "正在掛載",
       "error": "無法掛載",
       "off": "未掛載",
-      "locked": "已鎖定"
+      "locked": "已鎖定",
+      "stalled": "已掛載於"
     },
     "state": {
       "synced": "已掛載 · 全部都在 Modal 上",
@@ -93,7 +94,8 @@
       "stopping": "正在卸載",
       "error": "無法掛載",
       "off": "未掛載",
-      "locked": "已鎖定"
+      "locked": "已鎖定",
+      "stalled": "已掛載 · {{why}} · {{size}} 等待上傳"
     },
     "step": {
       "connect": "正在連線到 Modal…",
@@ -175,7 +177,17 @@
     "modalName": "它在 Modal 上的名稱",
     "speedOver": "速度",
     "rangeHour": "1 小時",
-    "peaks": "最高 ↑ {{up}} ↓ {{down}}"
+    "peaks": "最高 ↑ {{up}} ↓ {{down}}",
+    "stall": {
+      "offline": "連不上 Modal",
+      "token": "Token 被拒絕",
+      "other": "上傳失敗"
+    },
+    "stalledTitle": "無法上傳到 Modal",
+    "stalledKept": "{{size}} 的修改保存在這台電腦上，等 Modal 能接收時會自動上傳。",
+    "stalledFull": "在那之前，寫入會等待，在 macOS 上幾分鐘後會失敗：等待上傳的修改已佔滿快取大小。",
+    "stalledSince": "已持續 {{time}}",
+    "waitingRoom": "寫入正在等上傳騰出空間"
   },
   "opts": {
     "title": "{{name}} 的掛載選項",
@@ -545,12 +557,12 @@
     "afterMin": "{{n}} 分鐘",
     "advanced": "進階",
     "cache": "本機快取",
-    "cacheD": "從 Modal 讀來的區塊，所有 Volume 共用。還沒上傳的修改另外存放，不算在內。",
+    "cacheD": "modalfs 在這台電腦上用的所有空間：從 Modal 讀來的區塊（所有 Volume 共用），加上還沒上傳的修改。",
     "cacheUsed": "已用 {{used}}，上限 {{max}}",
     "cacheSize": "快取大小",
     "custom": "自訂…",
     "cacheSmall": "小於 {{n}} GB 時，預讀的區塊和重新打開的檔案常常得重新下載。",
-    "cacheSizeD": "可以是 {{min}} 以上的任何整數 GB。建議至少 {{n}} GB，同時讀很多大檔案的話再大一點。還沒上傳的修改另外存在磁碟上，不算在這裡面。",
+    "cacheSizeD": "可以是 {{min}} 以上的任何整數 GB。這是 modalfs 最多佔用的硬碟空間，還沒上傳的修改也算在內：塞滿時寫入會等上傳，所以比它大的複製會以上傳的速度進行。連不上 Modal 時，往 Volume 寫入的 app 會等待，在 macOS 上幾分鐘後會放棄。建議至少 {{n}} GB，同時讀很多大檔案的話再大一點。",
     "cacheSizeBad": "請輸入不小於 {{min}} 的整數。",
     "clearCache": "清除快取",
     "clearQ": "清除本機快取？",
@@ -565,7 +577,8 @@
     "open": "打開",
     "openLogs": "日誌",
     "quitButton": "卸載全部並結束…",
-    "quitD": "關閉視窗不會卸載任何東西；這個會，並且結束 modalfs。"
+    "quitD": "關閉視窗不會卸載任何東西；這個會，並且結束 modalfs。",
+    "cacheUsedPending": "已用 {{used}}，上限 {{max}}，其中 {{pending}} 還沒上傳"
   },
   "time": {
     "s": "{{n}} 秒",

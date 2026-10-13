@@ -51,7 +51,8 @@ export function SettingsPage() {
     },
   })
   const sizes = [...new Set([...CACHE_SIZES, s.cache_size_gb ?? 20])].sort((a, b) => a - b)
-  const pct = st.cache.max ? Math.min(100, (st.cache.bytes / st.cache.max) * 100) : 0
+  const used = st.cache.bytes + (st.cache.pending ?? 0)
+  const pct = st.cache.max ? Math.min(100, (used / st.cache.max) * 100) : 0
 
   /** Turning remote downloads off stops new ones; it asks about the ones running, which would go on billing otherwise. */
   const setDownloads = (on: boolean) => {
@@ -192,7 +193,11 @@ export function SettingsPage() {
                 title={<Hint text={t('settings.cacheD')}><span>{t('settings.cache')}</span></Hint>}
                 desc={
                   <>
-                    <span className="tabular">{t('settings.cacheUsed', { used: bytes(st.cache.bytes), max: bytes(st.cache.max) })}</span>
+                    <span className="tabular">
+                      {st.cache.pending > 0
+                        ? t('settings.cacheUsedPending', { used: bytes(used), max: bytes(st.cache.max), pending: bytes(st.cache.pending) })
+                        : t('settings.cacheUsed', { used: bytes(used), max: bytes(st.cache.max) })}
+                    </span>
                     {(s.cache_size_gb ?? 20) < CACHE_RECOMMENDED_GB && <span className="mt-1 block text-warn-ink">{t('settings.cacheSmall', { n: CACHE_RECOMMENDED_GB })}</span>}
                     <Bar pct={pct} className="mt-2 max-w-72" label={t('settings.cache')} />
                   </>

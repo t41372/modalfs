@@ -109,6 +109,10 @@ type FS struct {
 	cancel context.CancelFunc
 	closed atomic.Bool // no more commit timers
 	nextID int64
+
+	upRate  atomic.Int64 // upload speed seen by recent commits, bytes a second (see commitBatch)
+	waiting atomic.Int32 // writes waiting for room (see waitRoom)
+	noRoom  atomic.Int64 // when a write last failed for lack of disk (unix seconds), to report it once a minute
 }
 
 func New(c *modalapi.Client, vol modalapi.VolumeInfo, opt Options) (*FS, error) {
@@ -767,9 +771,16 @@ func (fs *FS) WriteAt(p string, data []byte, off int64) (int, error) {
 		if err != nil {
 			return 0, err
 		}
+		if err := st.waitRoom(off, len(data)); err != nil {
+			return 0, err
+		}
 		n, err := st.writeAt(data, off)
 		if err != errDetached {
 			return n, err
+		}
+		if st.isDeleted() {
+			// removed while this write waited: don't bring the file back
+			return 0, syscall.ESTALE
 		}
 	}
 }
@@ -858,6 +869,7 @@ func (fs *FS) Close() error {
 		if st.timer != nil {
 			st.timer.Stop()
 		}
+		st.accountLocked() // closed: drops this file from the count
 		st.mu.Unlock()
 	}
 	fs.cancel()

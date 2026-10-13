@@ -30,26 +30,34 @@ type journal struct {
 const journalName = "meta.json"
 
 // writeJournalLocked persists the file's shape. force=false throttles to
-// one write per second unless the shape changed block count.
-func (st *fileState) writeJournalLocked(force bool) {
+// one write per second unless the shape changed block count. Most callers
+// ignore its error: the journal is written again with the next change.
+func (st *fileState) writeJournalLocked(force bool) error {
 	if !force {
 		if st.jSize == st.size && st.jFloor == st.truncFloor {
-			return
+			return nil
 		}
 		if st.fs.numBlocks(st.jSize) == st.fs.numBlocks(st.size) && time.Since(st.jAt) < time.Second {
-			return
+			return nil
 		}
 	}
 	if err := os.MkdirAll(st.dir, 0o700); err != nil {
-		return
+		return err
 	}
 	raw, _ := json.Marshal(journal{Fingerprint: st.fs.fingerprint(), ChunkSize: st.fs.chunkSize(), Path: st.path, BaseExists: st.baseExists, BaseSize: st.baseSize,
 		BaseMtime: st.baseMtime, TruncFloor: st.truncFloor, Size: st.size})
 	tmp := filepath.Join(st.dir, journalName+".tmp")
-	if os.WriteFile(tmp, raw, 0o600) == nil && os.Rename(tmp, filepath.Join(st.dir, journalName)) == nil {
-		st.jSize, st.jFloor, st.jAt = st.size, st.truncFloor, time.Now()
-		st.journalUnsynced = true
+	err := os.WriteFile(tmp, raw, 0o600)
+	if err == nil {
+		err = os.Rename(tmp, filepath.Join(st.dir, journalName))
 	}
+	if err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	st.jSize, st.jFloor, st.jAt = st.size, st.truncFloor, time.Now()
+	st.journalUnsynced = true
+	return nil
 }
 
 // recover re-attaches journals left by a previous run.
@@ -101,10 +109,12 @@ func (fs *FS) recover(dirtyRoot string) {
 			}
 		}
 		st.jSize, st.jFloor = st.size, st.truncFloor
+		st.accountLocked() // not shared yet: no lock needed
 		fs.mu.Lock()
 		if old := fs.files[j.Path]; old != nil {
 			// a newer journal for the same path wins; park the older one
 			old.removed = true
+			old.accountLocked()
 			_ = os.MkdirAll(orphan, 0o700)
 			_ = os.Rename(old.dir, filepath.Join(orphan, filepath.Base(old.dir)))
 		}

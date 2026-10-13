@@ -13,6 +13,8 @@ type counters struct {
 	lastErr                                    string
 	lastErrAt                                  time.Time
 	lastCommit                                 time.Time
+	uploadErr                                  string    // why commits fail, until one succeeds
+	uploadErrAt                                time.Time // since when
 }
 
 // Status is a point-in-time summary of a mounted volume.
@@ -28,6 +30,13 @@ type Status struct {
 	LastErrorAt    int64  `json:"last_error_at,omitempty"`
 	LastCommitAt   int64  `json:"last_commit_at,omitempty"`
 	LocalOnlyFiles int    `json:"local_only_files"`
+	// WaitingForRoom: writes are waiting for uploads to free room on this
+	// computer (the cache size limit, or a full disk).
+	WaitingForRoom bool `json:"waiting_for_room,omitempty"`
+	// UploadError is why commits keep failing (they're retried), since
+	// UploadErrorAt; empty once one succeeds.
+	UploadError   string `json:"upload_error,omitempty"`
+	UploadErrorAt int64  `json:"upload_error_at,omitempty"`
 }
 
 func (fs *FS) Status() Status {
@@ -38,7 +47,7 @@ func (fs *FS) Status() Status {
 	}
 	nEph := len(fs.eph)
 	fs.mu.Unlock()
-	s := Status{LocalOnlyFiles: nEph}
+	s := Status{LocalOnlyFiles: nEph, WaitingForRoom: fs.waiting.Load() > 0}
 	for _, st := range files {
 		st.mu.Lock()
 		if st.gen != st.flushedGen && !st.removed {
@@ -61,6 +70,9 @@ func (fs *FS) Status() Status {
 	}
 	if !fs.ctr.lastCommit.IsZero() {
 		s.LastCommitAt = fs.ctr.lastCommit.Unix()
+	}
+	if fs.ctr.uploadErr != "" {
+		s.UploadError, s.UploadErrorAt = fs.ctr.uploadErr, fs.ctr.uploadErrAt.Unix()
 	}
 	fs.ctr.mu.Unlock()
 	return s
@@ -106,12 +118,23 @@ func (fs *FS) PendingFiles() []PendingFile {
 	return out
 }
 
+// uploadFailed records why a commit failed; it's retried.
+func (fs *FS) uploadFailed(err error) {
+	fs.ctr.mu.Lock()
+	defer fs.ctr.mu.Unlock()
+	if fs.ctr.uploadErr == "" {
+		fs.ctr.uploadErrAt = time.Now()
+	}
+	fs.ctr.uploadErr = err.Error()
+}
+
 func (fs *FS) event(kind, p, detail string) {
 	switch kind {
 	case "commit":
 		fs.ctr.commits.Add(1)
 		fs.ctr.mu.Lock()
 		fs.ctr.lastCommit = time.Now()
+		fs.ctr.uploadErr = ""
 		fs.ctr.mu.Unlock()
 	case "conflict":
 		fs.ctr.conflicts.Add(1)

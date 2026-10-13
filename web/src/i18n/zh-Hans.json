@@ -83,7 +83,8 @@
       "starting": "正在挂载",
       "error": "无法挂载",
       "off": "未挂载",
-      "locked": "已锁定"
+      "locked": "已锁定",
+      "stalled": "已挂载于"
     },
     "state": {
       "synced": "已挂载 · 全部都在 Modal 上",
@@ -93,7 +94,8 @@
       "stopping": "正在卸载",
       "error": "无法挂载",
       "off": "未挂载",
-      "locked": "已锁定"
+      "locked": "已锁定",
+      "stalled": "已挂载 · {{why}} · {{size}} 等待上传"
     },
     "step": {
       "connect": "正在连接 Modal…",
@@ -175,7 +177,17 @@
     "modalName": "它在 Modal 上的名称",
     "speedOver": "速度",
     "rangeHour": "1 小时",
-    "peaks": "最高 ↑ {{up}} ↓ {{down}}"
+    "peaks": "最高 ↑ {{up}} ↓ {{down}}",
+    "stall": {
+      "offline": "连不上 Modal",
+      "token": "Token 被拒绝",
+      "other": "上传失败"
+    },
+    "stalledTitle": "无法上传到 Modal",
+    "stalledKept": "{{size}} 的修改保存在这台电脑上，等 Modal 能接收时会自动上传。",
+    "stalledFull": "在那之前，写入会等待，在 macOS 上几分钟后会失败：等待上传的修改已占满缓存大小。",
+    "stalledSince": "已持续 {{time}}",
+    "waitingRoom": "写入正在等上传腾出空间"
   },
   "opts": {
     "title": "{{name}} 的挂载选项",
@@ -545,12 +557,12 @@
     "afterMin": "{{n}} 分钟",
     "advanced": "高级",
     "cache": "本地缓存",
-    "cacheD": "从 Modal 读来的块，所有 Volume 共用。还没上传的修改另外存放，不算在内。",
+    "cacheD": "modalfs 在这台电脑上用的所有空间：从 Modal 读来的块（所有 Volume 共用），加上还没上传的修改。",
     "cacheUsed": "已用 {{used}}，上限 {{max}}",
     "cacheSize": "缓存大小",
     "custom": "自定义…",
     "cacheSmall": "小于 {{n}} GB 时，预读的块和重新打开的文件经常需要重新下载。",
-    "cacheSizeD": "可以是 {{min}} 及以上的任意整数 GB。建议至少 {{n}} GB，同时读取很多大文件的话再大一些。还没上传的修改另外存在磁盘上，不计入这里。",
+    "cacheSizeD": "可以是 {{min}} 及以上的任意整数 GB。这是 modalfs 最多占用的磁盘空间，还没上传的修改也算在内：占满时写入会等上传，所以比它大的复制会以上传的速度进行。连不上 Modal 时，往 Volume 写入的 app 会等待，在 macOS 上几分钟后会放弃。建议至少 {{n}} GB，同时读取很多大文件的话再大一些。",
     "cacheSizeBad": "请输入不小于 {{min}} 的整数。",
     "clearCache": "清除缓存",
     "clearQ": "清除本地缓存？",
@@ -565,7 +577,8 @@
     "open": "打开",
     "openLogs": "日志",
     "quitButton": "卸载全部并退出…",
-    "quitD": "关闭窗口不会卸载任何东西；这个会，并且退出 modalfs。"
+    "quitD": "关闭窗口不会卸载任何东西；这个会，并且退出 modalfs。",
+    "cacheUsedPending": "已用 {{used}}，上限 {{max}}，其中 {{pending}} 还没上传"
   },
   "time": {
     "s": "{{n}} 秒",

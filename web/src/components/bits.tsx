@@ -32,6 +32,7 @@ export const glyphOf: Record<Look, Glyph> = {
   starting: 'spin',
   busy: 'moving',
   conflict: 'alert',
+  stalled: 'alert',
   error: 'alert',
   locked: 'lock',
   off: 'off',
