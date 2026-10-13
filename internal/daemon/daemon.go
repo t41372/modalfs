@@ -62,6 +62,7 @@ type Daemon struct {
 	conflicts conflicts   // conflicts not marked handled yet, by mount
 	usage     *usageStore // volume sizes, from listing them
 	avatars   *avatarStore
+	labels    *labelStore // volume labels, as last read from the volumes
 
 	bootID  string
 	auth    *uiAuth
@@ -156,6 +157,7 @@ func Run(log *slog.Logger) error {
 	}
 	d.usage = newUsageStore(config.Dir())
 	d.avatars = newAvatarStore(config.Dir())
+	d.labels = newLabelStore(config.Dir())
 	d.cleanupStale()
 	d.checkService()
 
@@ -479,6 +481,9 @@ func (d *Daemon) State() StateView {
 	for _, m := range f.Mounts {
 		mv := MountView{Mount: m, State: StateStopped, AccountLabel: accts[m.AccountID].Label, Workspace: accts[m.AccountID].Workspace}
 		mv.OpenConflicts = d.conflicts.count(m.ID)
+		if d.labels != nil && m.VolumeID != "" {
+			mv.Label = d.labels.get(m.VolumeID)
+		}
 		if d.usage != nil && m.VolumeID != "" {
 			if u, ok := d.usage.last(m.VolumeID); ok {
 				mv.SizeBytes, mv.SizeAt = u.Total, u.At

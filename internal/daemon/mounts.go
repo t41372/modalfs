@@ -96,6 +96,8 @@ type MountView struct {
 	// The volume's size from its last listing, and when that was.
 	SizeBytes int64 `json:"size_bytes,omitempty"`
 	SizeAt    int64 `json:"size_at,omitempty"`
+	// The volume's label (kept in the volume), "" when it has none.
+	Label string `json:"label,omitempty"`
 }
 
 func defaultMode() string {

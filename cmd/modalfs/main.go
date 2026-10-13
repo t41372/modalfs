@@ -44,6 +44,7 @@ Volumes:
   modalfs volume ls [--account A] [--env E]
   modalfs volume create NAME [--account A] [--env E] [--mount]
   modalfs volume rename NAME NEWNAME [--account A] [--env E]
+  modalfs volume label NAME [LABEL | --clear]   a name shown instead of NAME, kept in the volume
   modalfs volume rm NAME [--account A] [--env E] [--yes]
 
 Remote downloads (off until enabled; each runs in a Modal Function billed to your account):
@@ -246,7 +247,7 @@ func cmdStatus() {
 		return
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "VOLUME\tACCOUNT\tSTATE\tMOUNTPOINT\tPENDING\tDOWN/UP")
+	fmt.Fprintln(w, "VOLUME\tLABEL\tACCOUNT\tSTATE\tMOUNTPOINT\tPENDING\tDOWN/UP")
 	for _, m := range st.Mounts {
 		pending, traffic := "-", "-"
 		if m.Status != nil {
@@ -257,7 +258,11 @@ func cmdStatus() {
 		if m.State == daemon.StateError {
 			state = "error: " + m.Error
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", m.VolumeName, m.AccountLabel, state, m.Mountpoint, pending, traffic)
+		label := m.Label
+		if label == "" {
+			label = "-"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", m.VolumeName, label, m.AccountLabel, state, m.Mountpoint, pending, traffic)
 	}
 	_ = w.Flush()
 	fmt.Printf("\ncache %s of %s\n", human(st.Cache.Bytes), human(st.Cache.Max))
@@ -480,6 +485,9 @@ func cmdInfo(args []string) {
 	c := client()
 	m := findMount(state(c), pos[0])
 	fmt.Printf("%s  %s · %s\n", m.VolumeName, m.AccountLabel, m.State)
+	if m.Label != "" {
+		fmt.Printf("  label       %s\n", m.Label)
+	}
 	fmt.Printf("  folder      %s\n", m.Mountpoint)
 	if m.VolumeID != "" {
 		fmt.Printf("  volume ID   %s\n", m.VolumeID)
@@ -590,6 +598,7 @@ func cmdVolume(args []string) {
 	env := fl.String("env", "", "Modal environment")
 	yes := fl.Bool("yes", false, "don't ask for confirmation")
 	mountIt := fl.Bool("mount", false, "mount right after creating")
+	clear := fl.Bool("clear", false, "remove the label")
 	pos := parseFlags(fl, args[1:])
 	c := client()
 	st := state(c)
@@ -632,6 +641,27 @@ func cmdVolume(args []string) {
 		v := byName(pos[0])
 		must(c.Do("POST", "/api/accounts/"+a.ID+"/volumes/"+v.ID+"/rename", map[string]string{"name": pos[1], "environment": *env}, nil))
 		fmt.Printf("renamed %s → %s\n", pos[0], pos[1])
+	case "label":
+		if len(pos) < 1 || len(pos) > 2 || (*clear && len(pos) == 2) {
+			fatal(errors.New("usage: modalfs volume label NAME [LABEL | --clear]"))
+		}
+		v := byName(pos[0])
+		path := "/api/accounts/" + a.ID + "/volumes/" + v.ID + "/label"
+		var out struct{ Label string }
+		if len(pos) == 1 && !*clear {
+			must(c.Do("GET", path+"?env="+url.QueryEscape(*env), nil, &out))
+		} else {
+			label := ""
+			if len(pos) == 2 {
+				label = pos[1]
+			}
+			must(c.Do("POST", path, map[string]string{"label": label, "environment": *env}, &out))
+		}
+		if out.Label == "" {
+			fmt.Printf("%s has no label\n", v.Name)
+		} else {
+			fmt.Printf("%s: %s\n", v.Name, out.Label)
+		}
 	case "rm", "delete":
 		if len(pos) != 1 {
 			fatal(errors.New("usage: modalfs volume rm NAME"))

@@ -32,7 +32,10 @@ func (d *Daemon) routes() http.Handler {
 	mux.HandleFunc("GET /api/ping", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"ok": true, "version": Version})
 	})
-	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, d.State()) })
+	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
+		d.refreshLabels() // someone is looking: keep the labels they see current
+		writeJSON(w, 200, d.State())
+	})
 	mux.HandleFunc("GET /api/events", func(w http.ResponseWriter, r *http.Request) {
 		after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
 		writeJSON(w, 200, d.Events(after))
@@ -190,6 +193,7 @@ func (d *Daemon) routes() http.Handler {
 		Format  string `json:"format"`
 		Mounted bool   `json:"mounted"`
 		MountID string `json:"mount_id,omitempty"`
+		Label   string `json:"label,omitempty"` // only when known: labels aren't read for every volume
 	}
 	mux.HandleFunc("GET /api/accounts/{id}/volumes", func(w http.ResponseWriter, r *http.Request) {
 		acct := r.PathValue("id")
@@ -207,7 +211,7 @@ func (d *Daemon) routes() http.Handler {
 		st := d.State()
 		out := []volView{}
 		for _, v := range vs {
-			vv := volView{VolumeInfo: v, Format: strings.ToLower(strings.TrimPrefix(v.Version.String(), "VOLUME_FS_VERSION_"))}
+			vv := volView{VolumeInfo: v, Format: strings.ToLower(strings.TrimPrefix(v.Version.String(), "VOLUME_FS_VERSION_")), Label: d.labels.get(v.ID)}
 			if vv.Format == "unspecified" {
 				vv.Format = "v1"
 			}
@@ -274,6 +278,35 @@ func (d *Daemon) routes() http.Handler {
 		})
 		d.emitC("info", "vol_renamed", "", in.Name, "renamed volume to "+in.Name)
 		writeJSON(w, 200, map[string]bool{"ok": true})
+	})
+	// A volume's label: GET reads it from the volume now; POST sets it ("" clears).
+	mux.HandleFunc("GET /api/accounts/{id}/volumes/{vol}/label", func(w http.ResponseWriter, r *http.Request) {
+		c, _, err := d.clientFor(r.PathValue("id"), r.URL.Query().Get("env"))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		volID := r.PathValue("vol")
+		label, err := readLabel(r.Context(), c, volID)
+		if err != nil {
+			writeErr(w, friendly(err))
+			return
+		}
+		d.labels.set(volID, label)
+		writeJSON(w, 200, map[string]string{"label": label})
+	})
+	mux.HandleFunc("POST /api/accounts/{id}/volumes/{vol}/label", func(w http.ResponseWriter, r *http.Request) {
+		var in struct{ Label, Environment string }
+		if err := readJSON(r, &in); err != nil {
+			writeErr(w, err)
+			return
+		}
+		label, err := d.setLabel(r.Context(), r.PathValue("id"), in.Environment, r.PathValue("vol"), in.Label)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, 200, map[string]string{"label": label})
 	})
 	mux.HandleFunc("POST /api/accounts/{id}/volumes/{vol}/delete", func(w http.ResponseWriter, r *http.Request) {
 		var in struct{ Confirm, Name, Environment string }

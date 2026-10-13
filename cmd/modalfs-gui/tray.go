@@ -21,6 +21,7 @@ type trayState struct {
 	Mounts []struct {
 		ID         string `json:"id"`
 		VolumeName string `json:"volume_name"`
+		Label      string `json:"label"`
 		State      string `json:"state"`
 		Status     *struct {
 			PendingFiles int   `json:"pending_files"`
@@ -69,6 +70,9 @@ func buildTray(st *trayState, s strs) trayModel {
 	var moving bool
 	for _, mt := range st.Mounts {
 		v := trayVol{ID: mt.ID, Name: mt.VolumeName}
+		if mt.Label != "" {
+			v.Name = mt.Label
+		}
 		live := mt.State == "mounted" || mt.State == "starting" || mt.State == "stopping"
 		if live {
 			on++
