@@ -88,6 +88,7 @@ const mounts: Mount[] = [
     state: 'mounted',
     started_at: now() - 3600 * 5,
     status: status({ bytes_down: 3.4 * GiB, bytes_up: 182 * MiB, commits: 14, last_commit_at: now() - 140, local_only_files: 3 }),
+    down_speed: 38.4 * MiB,
     size_bytes: 214.3 * GiB,
     size_at: now() - 2 * 3600,
   },
@@ -108,6 +109,7 @@ const mounts: Mount[] = [
     state: 'mounted',
     started_at: now() - 1800,
     status: status({ pending_files: 2, pending_bytes: 1.2 * GiB, bytes_down: 812 * MiB, bytes_up: 1.9 * GiB, commits: 6, conflicts: 1, last_commit_at: now() - 30 }),
+    up_speed: 9.6 * MiB,
     open_conflicts: 1,
     size_bytes: 158 * GiB,
     size_at: now() - 26 * 3600,
@@ -953,7 +955,8 @@ export async function mockRequest(method: string, path: string, raw?: unknown): 
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(name)) fail("volume names use letters, digits, '.', '_' and '-' (max 64)")
     const list = (volumes[m[1]] ||= [])
     if (list.some((v) => v.name === name)) fail(`a volume named ${name} already exists`)
-    const v: Volume = { id: `vo-${name}`, name, format: 'v2', mounted: false, created_at: now(), created_by: 'sam' }
+    const label = String(body.label ?? '').trim()
+    const v: Volume = { id: `vo-${name}`, name, format: 'v2', mounted: false, created_at: now(), created_by: 'sam', ...(label ? { label } : {}) }
     if (body.encrypted) {
       const key = String(body.key || '')
       if (!/^mfs1-/i.test(key)) fail('an encrypted volume needs its key: ask for one with POST /encryption/key first')
@@ -1058,6 +1061,7 @@ export async function mockRequest(method: string, path: string, raw?: unknown): 
       environment: String(body.environment || ''),
       volume_name: name,
       volume_id: v.id,
+      ...(v.label ? { label: v.label } : {}),
       mountpoint: String(body.mountpoint || '') || `${ROOT}/${name}`,
       mode: 'auto',
       filter_junk: true,

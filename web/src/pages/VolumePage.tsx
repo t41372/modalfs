@@ -1,5 +1,5 @@
 import type { TFunction } from 'i18next'
-import { ChevronLeft, Copy, FolderOpen, Info, KeyRound, Lock, MoreHorizontal, Pencil, RefreshCw, Tag, Trash2, TriangleAlert, Upload, X } from 'lucide-react'
+import { ChevronLeft, FolderOpen, Info, Lock, MoreHorizontal, Pencil, TriangleAlert } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -13,14 +13,14 @@ import { Card, Mono, Page, Row, Section } from '@/components/page'
 import { Spinner } from '@/components/Spinner'
 import { duration, StopProgress } from '@/components/StopProgress'
 import { TrafficChart } from '@/components/TrafficChart'
+import { askUnmount, useVolumeMenu } from '@/components/VolumeMenu'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
-import { askLock, encryptionHint, ShowKeyDialog, UnlockDialog } from '@/dialogs/Encryption'
+import { encryptionHint, UnlockDialog } from '@/dialogs/Encryption'
 import { MountOptionsDialog } from '@/dialogs/MountOptions'
-import { DeleteVolumeDialog, RenameVolumeDialog } from '@/dialogs/Volume'
-import { ago, bytes, date, homeOf, tilde } from '@/lib/format'
+import { ago, bytes, date, homeOf, speed, tilde } from '@/lib/format'
 import { live, look, nameOf, toneOf } from '@/lib/mounts'
 import { isMac } from '@/lib/platform'
 import { stateText } from './Home'
@@ -48,11 +48,9 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
   const mounted = m.state === 'mounted'
   const s = m.status
   const [editing, setEditing] = useState(false)
-  const [renaming, setRenaming] = useState(false)
   const [labeling, setLabeling] = useState(false)
-  const [deleting, setDeleting] = useState(false)
-  const [keyDialog, setKeyDialog] = useState<'' | 'unlock' | 'show'>('')
-  const closeKey = (o: boolean) => !o && setKeyDialog('')
+  const [unlocking, setUnlocking] = useState(false)
+  const menu = useVolumeMenu(m, { onEditLabel: () => setLabeling(true) })
 
   const vols = useVolumes(m.account_id, m.environment ?? '')
   const info = vols.data?.find((v) => (m.volume_id ? v.id === m.volume_id : v.name === m.volume_name))
@@ -79,7 +77,6 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
       }
     },
   })
-  const sync = useAction(() => api('POST', `/mounts/${m.id}/sync`), { success: () => t('toast.synced') })
   const autoMount = useAction((v: boolean) => patchMount(m.id, { auto_mount: v }), {
     optimistic: (state, v) => {
       const x = state.mounts.find((y) => y.id === m.id)
@@ -91,32 +88,6 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
     await api('POST', `/mounts/${m.id}/start`)
   })
   const reveal = (path = '') => api('POST', `/mounts/${m.id}/reveal`, { path }).catch((e) => toast.error(e.message))
-
-  const askUnmount = () => {
-    const left = s?.pending_bytes ?? 0
-    confirm({
-      title: t('vol.unmountQ', { name: nameOf(m) }),
-      desc: left > 0 ? t('vol.unmountPending', { size: bytes(left) }) : t('vol.unmountClean'),
-      action: t(left > 0 ? 'vol.unmountAfter' : 'vol.unmount'),
-      dismiss: t('vol.keepMounted'),
-      run: () => api('POST', `/mounts/${m.id}/stop`).catch(() => refreshState()),
-    })
-  }
-  const askRemove = () =>
-    confirm({
-      title: t('vol.removeQ', { name: nameOf(m) }),
-      desc: `${t('vol.removeP')}${live(m) ? ` ${t((s?.pending_files ?? 0) > 0 ? 'vol.removeLivePending' : 'vol.removeLive', { size: bytes(s?.pending_bytes ?? 0) })}` : ''}`,
-      action: t('vol.remove'),
-      dismiss: t('vol.keepIt'),
-      run: () =>
-        api('DELETE', `/mounts/${m.id}`)
-          .then(() => {
-            toast(t('vol.removed', { name: nameOf(m) }))
-            navigate('volumes')
-          })
-          .catch((e) => toast.error(e.message))
-          .finally(refreshState),
-    })
 
   const createdHint = info
     ? [info.format === 'v1' ? 'v1' : 'v2', info.created_at ? t(info.created_by ? 'vol.createdBy' : 'vol.created', { date: date(info.created_at, lang), who: info.created_by }) : '']
@@ -178,12 +149,12 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
                 <FolderOpen />
                 {t(isMac ? 'vol.finder' : 'vol.openFolder')}
               </Button>
-              <Button variant="outline" onClick={askUnmount}>
+              <Button variant="outline" onClick={() => askUnmount(m, t)}>
                 {t('vol.unmountMenu')}
               </Button>
             </>
           ) : l === 'locked' ? (
-            <Button onClick={() => setKeyDialog('unlock')}>
+            <Button onClick={() => setUnlocking(true)}>
               <Lock />
               {t('enc.unlock')}
             </Button>
@@ -198,58 +169,7 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
               <MoreHorizontal />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="min-w-52">
-              <DropdownMenuItem disabled={!mounted || sync.isPending} onClick={() => sync.mutate()}>
-                <Upload />
-                {t('vol.syncNow')}
-              </DropdownMenuItem>
-              <DropdownMenuItem disabled={!m.volume_id || !!u?.running} onClick={() => measure.mutate()}>
-                <RefreshCw />
-                {t('vol.measure')}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={!m.volume_id || m.read_only || m.locked}
-                title={m.locked ? t('enc.labelLocked') : m.read_only ? t('vol.labelReadOnly') : undefined}
-                onClick={() => setLabeling(true)}
-              >
-                <Tag />
-                {t('vol.editLabel')}
-              </DropdownMenuItem>
-              <DropdownMenuItem disabled={!info} onClick={() => setRenaming(true)}>
-                <Pencil />
-                {t('vol.rename')}
-              </DropdownMenuItem>
-              {m.volume_id && (
-                <DropdownMenuItem onClick={() => navigator.clipboard?.writeText(m.volume_id!).then(() => toast(t('vol.copied')))}>
-                  <Copy />
-                  {t('vol.copyId')}
-                </DropdownMenuItem>
-              )}
-              {m.encrypted && m.volume_id && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem
-                    disabled={m.locked || !m.key_remembered}
-                    title={m.locked ? undefined : !m.key_remembered ? t('enc.showNotRemembered') : undefined}
-                    onClick={() => setKeyDialog('show')}
-                  >
-                    <KeyRound />
-                    {t('enc.menuShow')}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem disabled={m.locked || live(m)} title={live(m) ? t('enc.lockLive') : undefined} onClick={() => askLock(m, t)}>
-                    <Lock />
-                    {live(m) ? t('enc.menuLockLive') : t('enc.menuLock')}
-                  </DropdownMenuItem>
-                </>
-              )}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem disabled={m.state === 'starting' || m.state === 'stopping'} onClick={askRemove}>
-                <X />
-                {t('vol.remove')}
-              </DropdownMenuItem>
-              <DropdownMenuItem variant="destructive" disabled={!info || live(m)} onClick={() => setDeleting(true)}>
-                <Trash2 />
-                {live(m) ? t('vol.deleteLive') : t('vol.delete')}
-              </DropdownMenuItem>
+              {menu.items}
             </DropdownMenuContent>
           </DropdownMenu>
         </>
@@ -338,7 +258,7 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
           value={live(m) && s ? `↑ ${bytes(s.bytes_up)}` : '—'}
           hint={live(m) && s ? t('vol.sessionHint', { commits: s.commits, ago: m.started_at ? ago(m.started_at, lang, t('time.justNow')) : '' }) : undefined}
         >
-          <div className="mt-1 truncate text-[12px] text-muted-foreground tabular">{live(m) && s ? t('vol.read', { size: bytes(s.bytes_down) }) : m.last_used ? t('home.lastUsed', { ago: ago(m.last_used, lang, t('time.justNow')) }) : t('vol.state.off')}</div>
+          <div className="mt-1 truncate text-[12px] text-muted-foreground tabular">{live(m) && s ? (m.up_speed || m.down_speed ? t('vol.speedNow', { up: speed(m.up_speed), down: speed(m.down_speed) }) : t('vol.read', { size: bytes(s.bytes_down) })) : m.last_used ? t('home.lastUsed', { ago: ago(m.last_used, lang, t('time.justNow')) }) : t('vol.state.off')}</div>
         </Tile>
         <Tile
           label={t('vol.waiting')}
@@ -459,22 +379,8 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
       </Section>
 
       <MountOptionsDialog m={m} open={editing} onOpenChange={setEditing} />
-      {m.encrypted && m.volume_id && (
-        <>
-          <UnlockDialog m={m} open={keyDialog === 'unlock'} onOpenChange={closeKey} />
-          <ShowKeyDialog m={m} open={keyDialog === 'show'} onOpenChange={closeKey} />
-        </>
-      )}
-      {info && <RenameVolumeDialog volume={renaming ? info : null} onClose={() => setRenaming(false)} account={m.account_id} env={m.environment ?? ''} />}
-      {info && (
-        <DeleteVolumeDialog
-          volume={deleting ? info : null}
-          onClose={() => setDeleting(false)}
-          account={m.account_id}
-          env={m.environment ?? ''}
-          onDeleted={() => navigate('volumes')}
-        />
-      )}
+      {m.locked && <UnlockDialog m={m} open={unlocking} onOpenChange={setUnlocking} />}
+      {menu.dialogs}
     </Page>
   )
 }

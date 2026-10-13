@@ -54,5 +54,8 @@ export function summary(mounts: Mount[]) {
   const problems = mounts.filter((m) => look(m) === 'error' || look(m) === 'conflict').length
   const moving = on.some((m) => m.state === 'starting' || m.state === 'stopping')
   const tone: Tone = problems ? 'bad' : files > 0 || moving ? 'up' : on.length ? 'ok' : 'off'
-  return { on: on.length, pending, files, problems, tone }
+  // What's moving between this computer and Modal: now, and since each was mounted.
+  const sum = (f: (m: Mount) => number | undefined) => on.reduce((n, m) => n + (f(m) ?? 0), 0)
+  const traffic = { up: sum((m) => m.up_speed), down: sum((m) => m.down_speed), sent: sum((m) => m.status?.bytes_up), read: sum((m) => m.status?.bytes_down) }
+  return { on: on.length, pending, files, problems, tone, traffic }
 }

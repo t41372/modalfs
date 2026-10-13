@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { ConnectDialog } from '@/dialogs/Connect'
 import { EncryptedMark } from '@/dialogs/Encryption'
 import { CreateVolumeDialog } from '@/dialogs/Volume'
+import { navigate } from '@/app/nav'
 import { date } from '@/lib/format'
 
 const DEFAULT = '__default__'
@@ -190,7 +191,18 @@ export function AddVolumeDialog({ open, onOpenChange }: { open: boolean; onOpenC
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <CreateVolumeDialog open={creating} onOpenChange={setCreating} account={account} env={envName} />
+      <CreateVolumeDialog
+        open={creating}
+        onOpenChange={setCreating}
+        account={account}
+        env={envName}
+        onCreated={(mountId) => {
+          // Mounting it: done here, on to its page. Not mounting: back to the list, where it's ready to add.
+          if (!mountId) return
+          onOpenChange(false)
+          navigate('volumes', mountId)
+        }}
+      />
       <ConnectDialog open={connecting} onOpenChange={setConnecting} />
     </>
   )

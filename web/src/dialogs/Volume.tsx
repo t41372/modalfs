@@ -14,15 +14,31 @@ import { EncryptFacts, KeyBlock, RememberBox, SavedBox } from './Encryption'
 
 const NAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/
 
+type VolumeRef = Pick<Volume, 'id' | 'name'>
+
 /**
  * A new volume. An encrypted one takes one more step: its key, which has to be
  * saved (and that confirmed) before the volume exists, because nothing else can
  * ever read its files.
  */
-export function CreateVolumeDialog({ open, onOpenChange, account, env }: { open: boolean; onOpenChange: (o: boolean) => void; account: string; env: string }) {
+export function CreateVolumeDialog({
+  open,
+  onOpenChange,
+  account,
+  env,
+  onCreated,
+}: {
+  open: boolean
+  onOpenChange: (o: boolean) => void
+  account: string
+  env: string
+  /** After it's created: with the new mount's ID when it's being mounted. */
+  onCreated?: (mountId?: string) => void
+}) {
   const { t } = useTranslation()
   const [step, setStep] = useState<'name' | 'key'>('name')
   const [name, setName] = useState('')
+  const [label, setLabel] = useState('')
   const [mount, setMount] = useState(true)
   const [encrypt, setEncrypt] = useState(false)
   const [remember, setRemember] = useState(true)
@@ -33,6 +49,7 @@ export function CreateVolumeDialog({ open, onOpenChange, account, env }: { open:
     if (open) {
       setStep('name')
       setName('')
+      setLabel('')
       setMount(true)
       setEncrypt(false)
       setRemember(true)
@@ -47,12 +64,23 @@ export function CreateVolumeDialog({ open, onOpenChange, account, env }: { open:
       const r = await api<{ mount: Mount; error?: string }>('POST', '/mounts', { account_id: account, environment: env, volume_name: name, filter_junk: true, start: true })
       if (r.error) toast.error(r.error)
       else toast(t('toast.mounting', { name: r.mount.volume_name }))
+      return r.mount.id
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
     } finally {
       refreshState()
       refreshVolumes()
     }
+  }
+
+  // The volume exists now, so the dialog closes whatever happens to the mount.
+  async function created() {
+    toast.success(t('toast.created', { name }))
+    refreshVolumes()
+    const id = mount ? await mountIt() : undefined
+    // Its page needs the new mount in the state first.
+    await refreshState()
+    onCreated?.(id)
   }
 
   const steps = {
@@ -68,11 +96,8 @@ export function CreateVolumeDialog({ open, onOpenChange, account, env }: { open:
           setStep('key')
           return 'stay' as const
         }
-        await api('POST', `/accounts/${account}/volumes`, { name, environment: env })
-        toast.success(t('toast.created', { name }))
-        refreshVolumes()
-        // The volume exists now, so the dialog closes whatever happens to the mount.
-        if (mount) await mountIt()
+        await api('POST', `/accounts/${account}/volumes`, { name, label: label.trim(), environment: env })
+        await created()
       },
     },
     key: {
@@ -80,10 +105,8 @@ export function CreateVolumeDialog({ open, onOpenChange, account, env }: { open:
       submit: t('enc.createEncrypted'),
       canSubmit: saved && !!key,
       run: async () => {
-        await createEncrypted(account, env, name, key, remember)
-        toast.success(t('toast.created', { name }))
-        refreshVolumes()
-        if (mount) await mountIt()
+        await createEncrypted(account, env, name, label.trim(), key, remember)
+        await created()
       },
     },
   }[step]
@@ -109,6 +132,9 @@ export function CreateVolumeDialog({ open, onOpenChange, account, env }: { open:
         <>
           <Field label={t('form.volName')} htmlFor="vol-name" hint={t('form.volNameHint')} error={bad ? t('form.volNameBad') : undefined}>
             <Input id="vol-name" className="font-mono text-[13px]" value={name} onChange={(e) => setName(e.target.value.trim())} aria-invalid={bad} spellCheck={false} autoFocus maxLength={64} />
+          </Field>
+          <Field label={t('form.volLabel')} htmlFor="vol-label" hint={t('form.volLabelHint')}>
+            <Input id="vol-label" value={label} onChange={(e) => setLabel(e.target.value)} placeholder={t('form.optional')} maxLength={80} />
           </Field>
           <label className="flex items-center gap-2.5 text-[13px]">
             <Checkbox checked={mount} onCheckedChange={(v) => setMount(!!v)} />
@@ -137,7 +163,7 @@ export function CreateVolumeDialog({ open, onOpenChange, account, env }: { open:
   )
 }
 
-export function RenameVolumeDialog({ volume, onClose, account, env }: { volume: Volume | null; onClose: () => void; account: string; env: string }) {
+export function RenameVolumeDialog({ volume, onClose, account, env }: { volume: VolumeRef | null; onClose: () => void; account: string; env: string }) {
   const { t } = useTranslation()
   const [name, setName] = useState('')
   useEffect(() => {
@@ -166,7 +192,7 @@ export function RenameVolumeDialog({ volume, onClose, account, env }: { volume: 
 }
 
 /** Deleting asks for the volume's name to be typed, like GitHub's repository deletion. */
-export function DeleteVolumeDialog({ volume, onClose, account, env, onDeleted }: { volume: Volume | null; onClose: () => void; account: string; env: string; onDeleted?: () => void }) {
+export function DeleteVolumeDialog({ volume, onClose, account, env, onDeleted }: { volume: VolumeRef | null; onClose: () => void; account: string; env: string; onDeleted?: () => void }) {
   const { t } = useTranslation()
   const [typed, setTyped] = useState('')
   useEffect(() => {
@@ -193,6 +219,34 @@ export function DeleteVolumeDialog({ volume, onClose, account, env, onDeleted }:
       <Field label={t('form.deleteType', { name: volume?.name })} htmlFor="vol-delete">
         <Input id="vol-delete" className="font-mono text-[13px]" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={volume?.name} spellCheck={false} autoFocus />
       </Field>
+    </FormDialog>
+  )
+}
+
+/** The volume's label, for where it can't be edited in place. "" goes back to the volume's name. */
+export function LabelDialog({ m, open, onOpenChange }: { m: Mount; open: boolean; onOpenChange: (o: boolean) => void }) {
+  const { t } = useTranslation()
+  const [label, setLabel] = useState('')
+  useEffect(() => {
+    if (open) setLabel(m.label ?? '')
+  }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <FormDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title={t('vol.labelTitle', { name: m.volume_name })}
+      desc={t('vol.labelHint')}
+      submit={t('form.save')}
+      canSubmit={label.trim() !== (m.label ?? '')}
+      onSubmit={async () => {
+        const next = label.trim()
+        await api('POST', `/accounts/${m.account_id}/volumes/${m.volume_id}/label`, { label: next, environment: m.environment ?? '' })
+        toast(t(next ? 'toast.labeled' : 'toast.labelCleared'))
+        refreshState()
+        refreshVolumes()
+      }}
+    >
+      <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder={t('vol.labelPlaceholder', { name: m.volume_name })} aria-label={t('vol.editLabel')} maxLength={80} autoFocus />
     </FormDialog>
   )
 }

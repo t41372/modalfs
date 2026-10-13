@@ -16,8 +16,8 @@ const base = (account: string, volumeId: string) => `/accounts/${account}/volume
 export const draftKey = () => api<{ key: string }>('POST', '/encryption/key').then((r) => r.key)
 
 /** Creates an empty volume encrypted with `key`; `remember` keeps the key on this computer. */
-export const createEncrypted = (account: string, env: string, name: string, key: string, remember: boolean) =>
-  api<Volume>('POST', `/accounts/${account}/volumes`, { name, environment: env, encrypted: true, key, remember })
+export const createEncrypted = (account: string, env: string, name: string, label: string, key: string, remember: boolean) =>
+  api<Volume>('POST', `/accounts/${account}/volumes`, { name, label, environment: env, encrypted: true, key, remember })
 
 /** Unlocks a volume on this computer with its key; `remember` keeps it past modalfs quitting. */
 export const unlock = (account: string, env: string, volumeId: string, key: string, remember: boolean) =>

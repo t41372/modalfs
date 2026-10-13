@@ -83,6 +83,9 @@ export interface Mount {
   locked?: boolean
   /** Unlocked, and the key is kept on this computer (keychain or a private file) rather than until modalfs quits. */
   key_remembered?: boolean
+  /** Mounted: bytes per second uploaded and read, over the last few seconds. */
+  up_speed?: number
+  down_speed?: number
 }
 
 /** A file that changed on Modal while it was edited here; the local version was saved as `copy`. */

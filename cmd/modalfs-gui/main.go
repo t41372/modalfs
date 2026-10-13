@@ -229,6 +229,9 @@ func main() {
 			About:                &mac.AboutInfo{Title: "modalfs", Message: "Modal Volumes as local folders.\nVersion " + daemon.VersionBuild()},
 		},
 		Linux: &linux.Options{Icon: icon, ProgramName: "modalfs", WebviewGpuPolicy: linux.WebviewGpuPolicyOnDemand},
+		// The WebView's own menu (Copy, Paste…) on text fields and selected
+		// text; elsewhere the UI shows its own, such as a volume's actions.
+		EnableDefaultContextMenu: true,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "modalfs-gui:", err, runtime.GOOS)

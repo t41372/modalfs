@@ -1,6 +1,6 @@
 import { cn } from 'cn'
 import type { TFunction } from 'i18next'
-import { ChevronRight, FolderOpen, HardDrive, Lock, Plus } from 'lucide-react'
+import { ChevronRight, FolderOpen, HardDrive, Lock, MoreHorizontal, Plus } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api } from '@/api/client'
@@ -12,9 +12,12 @@ import { Card, Empty, Page } from '@/components/page'
 import { Spinner } from '@/components/Spinner'
 import { duration, StopProgress } from '@/components/StopProgress'
 import { Button } from '@/components/ui/button'
+import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { useVolumeMenu } from '@/components/VolumeMenu'
 import { AddVolumeDialog } from '@/dialogs/AddVolume'
 import { EncryptedMark, UnlockDialog } from '@/dialogs/Encryption'
-import { ago, bytes, homeOf, tilde } from '@/lib/format'
+import { ago, bytes, homeOf, speed, tilde } from '@/lib/format'
 import { look, type Look, nameOf, summary, toneOf } from '@/lib/mounts'
 import { isMac } from '@/lib/platform'
 import { mountError } from '@/lib/mountError'
@@ -44,6 +47,16 @@ export function Home() {
               </Chip>
             )}
             {s.on > 0 && <Chip tone="ok" glyph="check">{t('home.mounted', { count: s.on })}</Chip>}
+            {s.on > 0 &&
+              (s.traffic.up > 0 || s.traffic.down > 0 ? (
+                <Chip tone="up" hint={t('home.speedHint', { up: bytes(s.traffic.sent), down: bytes(s.traffic.read) })}>
+                  <span className="tabular">{`↑ ${speed(s.traffic.up)} · ↓ ${speed(s.traffic.down)}`}</span>
+                </Chip>
+              ) : (
+                <Chip hint={t('home.trafficHint')}>
+                  <span className="tabular">{`↑ ${bytes(s.traffic.sent)} · ↓ ${bytes(s.traffic.read)}`}</span>
+                </Chip>
+              ))}
             {s.files > 0 && (
               <Chip tone="up" glyph="up" hint={t('home.uploadingHint', { count: s.files })}>
                 {t('home.uploading', { size: bytes(s.pending) })}
@@ -130,6 +143,7 @@ function VolumeRow({ m, biggest, showAccount }: { m: Mount; biggest: number; sho
   const reveal = () => api('POST', `/mounts/${m.id}/reveal`, {}).catch(() => refreshState())
   const open = () => navigate('volumes', m.id)
   const [unlocking, setUnlocking] = useState(false)
+  const menu = useVolumeMenu(m, { full: true })
   const nowSec = Date.now() / 1000
   const pending = m.status?.pending_bytes ?? 0
 
@@ -152,6 +166,9 @@ function VolumeRow({ m, biggest, showAccount }: { m: Mount; biggest: number; sho
         {l === 'conflict' && <span className="shrink-0 text-destructive">{t('vol.conflicts', { count: m.open_conflicts ?? 0 })}</span>}
         {l === 'conflict' && pending > 0 && <span className="shrink-0 text-warn-ink tabular">↑ {bytes(pending)}</span>}
         {l === 'busy' && <span className="shrink-0 text-warn-ink">{t('vol.state.busy')}</span>}
+        {/* Too narrow for them: the total is at the top. */}
+        {!!m.up_speed && <span className="shrink-0 text-warn-ink tabular max-sm:hidden">↑ {speed(m.up_speed)}</span>}
+        {!!m.down_speed && <span className="shrink-0 tabular max-sm:hidden">↓ {speed(m.down_speed)}</span>}
       </>
     )
 
@@ -183,8 +200,8 @@ function VolumeRow({ m, biggest, showAccount }: { m: Mount; biggest: number; sho
     )
 
   return (
-    <div>
-      <div className="flex items-center gap-3 pr-3 pl-4">
+    <ContextMenu>
+      <ContextMenuTrigger className="flex items-center gap-3 pr-3 pl-4 data-popup-open:bg-muted/50">
         <StateIcon look={l} tone={toneOf[l]} label={stateText(m, l, t)} />
         <button onClick={open} className="group/row flex min-w-0 flex-1 items-center gap-3 rounded-lg py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
           <span className="min-w-0 flex-1">
@@ -217,14 +234,26 @@ function VolumeRow({ m, biggest, showAccount }: { m: Mount; biggest: number; sho
           )}
           <ChevronRight className="size-4 shrink-0 text-muted-foreground/60 transition-transform group-hover/row:translate-x-0.5" />
         </button>
-        <div className="flex shrink-0 justify-end sm:w-[136px]">{action}</div>
-      </div>
+        <div className="flex shrink-0 items-center justify-end gap-1 sm:w-[168px]">
+          {action}
+          <DropdownMenu>
+            <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label={t('vol.moreFor', { name: nameOf(m) })} />}>
+              <MoreHorizontal />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-52">
+              {menu.items}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent className="min-w-52">{menu.items}</ContextMenuContent>
       {m.state === 'stopping' && (
         <div className="-mt-1 pr-4 pb-3 pl-[50px]">
           <StopProgress m={m} />
         </div>
       )}
       {m.locked && <UnlockDialog m={m} open={unlocking} onOpenChange={setUnlocking} />}
-    </div>
+      {menu.dialogs}
+    </ContextMenu>
   )
 }

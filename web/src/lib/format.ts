@@ -2,6 +2,9 @@ import type { TFunction } from 'i18next'
 import type { DaemonEvent } from '@/api/types'
 import { intlTag } from '@/i18n'
 
+/** A speed in bytes per second. */
+export const speed = (n: number | undefined) => `${bytes(n)}/s`
+
 export function bytes(n: number | undefined) {
   if (!n) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
