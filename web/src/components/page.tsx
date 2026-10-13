@@ -9,7 +9,7 @@ export function Page({
   back,
   children,
 }: {
-  title: string
+  title: ReactNode
   sub?: ReactNode
   actions?: ReactNode
   /** A way back above the title, for a page inside another. */

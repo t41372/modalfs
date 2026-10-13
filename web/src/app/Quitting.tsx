@@ -7,6 +7,7 @@ import { Hint } from '@/components/bits'
 import { Spinner } from '@/components/Spinner'
 import { StopProgress } from '@/components/StopProgress'
 import { Button } from '@/components/ui/button'
+import { nameOf } from '@/lib/mounts'
 import { easeOut } from '@/lib/motion'
 import { type QuitPhase, quit } from './quit'
 
@@ -38,7 +39,7 @@ export function Quitting({ state, phase }: { state: State | undefined; phase: Qu
                 <Spinner className="size-4 border-2" />
               </span>
               <div className="min-w-0 flex-1">
-                <div className="truncate text-[14px] font-medium">{m.volume_name}</div>
+                <div className="truncate text-[14px] font-medium">{nameOf(m)}</div>
                 <div className="mt-0.5">{m.state === 'stopping' ? <StopProgress m={m} /> : <span className="text-[12.5px] text-muted-foreground">{t('quit.waiting')}</span>}</div>
               </div>
             </motion.li>

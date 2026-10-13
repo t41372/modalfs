@@ -80,7 +80,7 @@ export function RenameVolumeDialog({ volume, onClose, account, env }: { volume: 
         refreshState()
       }}
     >
-      <Field label={t('form.volName')} htmlFor="vol-rename" error={bad ? t('form.volNameBad') : undefined}>
+      <Field label={t('form.volName')} htmlFor="vol-rename" hint={t('form.renameHint')} error={bad ? t('form.volNameBad') : undefined}>
         <Input id="vol-rename" className="font-mono text-[13px]" value={name} onChange={(e) => setName(e.target.value.trim())} aria-invalid={bad} spellCheck={false} autoFocus maxLength={64} />
       </Field>
     </FormDialog>

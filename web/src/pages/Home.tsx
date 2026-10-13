@@ -13,7 +13,7 @@ import { duration, StopProgress } from '@/components/StopProgress'
 import { Button } from '@/components/ui/button'
 import { AddVolumeDialog } from '@/dialogs/AddVolume'
 import { ago, bytes, homeOf, tilde } from '@/lib/format'
-import { look, type Look, summary, toneOf } from '@/lib/mounts'
+import { look, type Look, nameOf, summary, toneOf } from '@/lib/mounts'
 import { isMac } from '@/lib/platform'
 import { mountError } from '@/lib/mountError'
 
@@ -176,7 +176,10 @@ function VolumeRow({ m, biggest, showAccount }: { m: Mount; biggest: number; sho
         <StateIcon look={l} tone={toneOf[l]} label={stateText(m, l, t)} />
         <button onClick={open} className="group/row flex min-w-0 flex-1 items-center gap-3 rounded-lg py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
           <span className="min-w-0 flex-1">
-            <span className={cn('block truncate text-[14.5px] font-semibold tracking-[-0.01em]', l === 'off' && 'text-foreground/70')}>{m.volume_name}</span>
+            <span className={cn('block truncate text-[14.5px] font-semibold tracking-[-0.01em]', l === 'off' && 'text-foreground/70')}>
+              {nameOf(m)}
+              {m.label && <span className="ml-2 font-mono text-[12px] font-normal tracking-normal text-muted-foreground">{m.volume_name}</span>}
+            </span>
             <span className="mt-0.5 flex min-w-0 items-center gap-2 text-[12.5px] text-muted-foreground">
               {showAccount && (
                 <Hint text={m.environment ? t('home.accountEnv', { env: m.environment }) : undefined}>

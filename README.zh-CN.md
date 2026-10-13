@@ -65,6 +65,8 @@ datasets  work     mounted  /Users/me/ModalVolumes/datasets  0        0 B / 3 B
 
 **多账号，绝不混淆。** 每个挂载都绑定到自己的账号和 volume ID，所以切换 Modal CLI 的 profile 或给 volume 改名，都不会让挂载指向别处。
 
+**名字由你来取。** 可以给 volume 取一个标签，空格、emoji、任何语言都行。标签存在 volume 里，所以每个用 modalfs 打开它的人看到的都一样，脚本则照旧用 Modal 上的名称。
+
 **一个小巧的原生应用**，一个菜单栏图标，以及能做到应用里所有事情的命令行。
 
 ## 安装
@@ -140,7 +142,7 @@ modalfs 会记住每个挂载，所以下次 `modalfs mount my-data` 会沿用�
 
 | 页面 | 可以做什么 |
 |---|---|
-| **Volume** | modalfs 管理的 Volume，一眼看出每个的状态（已同步、上传中、有冲突、未挂载）、文件夹和大小。从账号里搜索并添加别的 Volume，几百个里也找得到。Volume 的页面显示大小和最大的几个文件夹、还没上传的内容、最近一小时的上传和读取，以及冲突（两个版本都能一键在访达中显示）。挂载、卸载（会先说明还有什么在上传）、更改选项、从 modalfs 移除、重命名或删除。 |
+| **Volume** | modalfs 管理的 Volume，一眼看出每个的状态（已同步、上传中、有冲突、未挂载）、文件夹和大小。从账号里搜索并添加别的 Volume，几百个里也找得到。Volume 的页面显示大小和最大的几个文件夹、还没上传的内容、最近一小时的上传和读取，以及冲突（两个版本都能一键在访达中显示）。挂载、卸载（会先说明还有什么在上传）、更改选项、取标签、从 modalfs 移除、在 Modal 上重命名或删除。 |
 | **远程下载** | 添加链接、暂停、继续、删除。正在运行的有几个、总速度、现在每小时花多少；每个下载全程的速度（把光标移到线上可以看那一点的加速度），以及它经历了什么。 |
 | **动态** | 挂载、上传、冲突、错误和崩溃恢复，按天分组，重要的会发通知。 |
 | **设置** | Modal 账号（连接、检查或更换 token、重命名、默认环境、断开连接）、登录时启动、挂载位置、浅色/深色、语言（English / 繁體中文 / 简体中文）、远程下载，“高级”里还有缓存、预读和连接方式。 |
@@ -210,6 +212,7 @@ Volumes
   modalfs volume ls      [--account A] [--env E]
   modalfs volume create  NAME [--account A] [--env E] [--mount]
   modalfs volume rename  NAME NEWNAME [--account A] [--env E]
+  modalfs volume label   NAME [LABEL | --clear]   代替 NAME 显示的名字，存在 volume 里
   modalfs volume rm      NAME [--account A] [--env E] [--yes]
 
 账号

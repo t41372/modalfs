@@ -11,7 +11,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { homeOf, tilde, untilde } from '@/lib/format'
-import { live } from '@/lib/mounts'
+import { live, nameOf } from '@/lib/mounts'
 
 /**
  * Options read when a volume is mounted. Changing them on a mounted volume
@@ -52,7 +52,7 @@ export function MountOptionsDialog({ m, open, onOpenChange }: { m: Mount; open: 
     <FormDialog
       open={open}
       onOpenChange={onOpenChange}
-      title={t('opts.title', { name: m.volume_name })}
+      title={t('opts.title', { name: nameOf(m) })}
       desc={wasLive ? t('opts.remount') : undefined}
       submit={wasLive ? t('opts.saveRemount') : t('form.save')}
       canSubmit={changed && !badPath && (!risky || understood)}

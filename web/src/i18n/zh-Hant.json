@@ -57,7 +57,7 @@
     "more": "更多",
     "syncNow": "立即上傳變更",
     "measure": "重新計算大小",
-    "rename": "重新命名 Volume…",
+    "rename": "在 Modal 上重新命名…",
     "copyId": "複製 Volume ID",
     "copied": "已複製 Volume ID",
     "remove": "從 modalfs 移除…",
@@ -166,7 +166,12 @@
     "mode": "連接方式",
     "modeAuto": "自動",
     "created": "{{date}}建立",
-    "createdBy": "{{who}} 於 {{date}}建立"
+    "createdBy": "{{who}} 於 {{date}}建立",
+    "editLabel": "編輯標籤…",
+    "labelHint": "你自己取的名字，會取代 Volume 名稱顯示。標籤存在 Volume 裡，所以每個用 modalfs 開它的人看到的都一樣。",
+    "labelPlaceholder": "幫 {{name}} 取個標籤",
+    "labelReadOnly": "以唯讀掛載：modalfs 不會寫入這個 Volume，標籤也一樣。",
+    "modalName": "它在 Modal 上的名稱"
   },
   "opts": {
     "title": "{{name}} 的掛載選項",
@@ -639,7 +644,8 @@
     "addAccount": "新增帳號",
     "path": "資料夾",
     "pathBad": "請用完整路徑，例如 ~/ModalVolumes",
-    "keep": "保留"
+    "keep": "保留",
+    "renameHint": "Modal 上的正式名稱，程式和其他工具都用這個名字。英數字、. _ -，最長 64 字。只想換個顯示的名字，請改用標籤。"
   },
   "toast": {
     "created": "已建立 {{name}}",
@@ -651,7 +657,9 @@
     "accountAdded": "已新增 {{w}}",
     "restarted": "modalfs 剛重新啟動",
     "problems_other": "{{count}} 個衝突和錯誤，到「活動」查看",
-    "mounting": "正在掛載 {{name}}…"
+    "mounting": "正在掛載 {{name}}…",
+    "labeled": "已儲存標籤",
+    "labelCleared": "已移除標籤"
   },
   "mountErr": {
     "token": "Modal 拒絕了這個帳號的 token。請到「設定」更換。",

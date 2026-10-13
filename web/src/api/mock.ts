@@ -99,6 +99,7 @@ const mounts: Mount[] = [
     environment: 'main',
     volume_name: 'checkpoints',
     volume_id: 'vo-00000checkpoints',
+    label: 'Training checkpoints · 2024',
     mountpoint: `${ROOT}/checkpoints`,
     mode: 'auto',
     active_mode: 'nfs',
@@ -296,6 +297,7 @@ function syncVolumeFlags() {
       const m = mounts.find((x) => x.account_id === acct && x.volume_id === v.id)
       v.mount_id = m?.id
       v.mounted = m?.state === 'mounted'
+      v.label = m?.label
     }
   }
 }
@@ -884,6 +886,16 @@ export async function mockRequest(method: string, path: string, raw?: unknown): 
     emit('info', name, 'vol_renamed')
     v.name = name
     return ok
+  }
+  if ((m = route.match(/^(GET|POST) \/accounts\/([^/]+)\/volumes\/([^/]+)\/label$/))) {
+    const mt = mounts.find((x) => x.account_id === m![2] && x.volume_id === m![3])
+    if (m[1] === 'GET') return { label: mt?.label ?? '' }
+    if (mt?.read_only) fail(`${mt.volume_name} is mounted read-only, so modalfs doesn't write to it, its label included; turn read-only off to change the label`)
+    const label = String(body.label ?? '').trim()
+    if ([...label].length > 80) fail('a label can be at most 80 characters')
+    await wait(300)
+    if (mt) mt.label = label || undefined
+    return { label }
   }
   if ((m = route.match(/^POST \/accounts\/([^/]+)\/volumes\/([^/]+)\/delete$/))) {
     const list = volumes[m[1]] || []

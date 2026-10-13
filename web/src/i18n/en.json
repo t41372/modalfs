@@ -63,7 +63,7 @@
     "more": "More",
     "syncNow": "Upload changes now",
     "measure": "Measure size again",
-    "rename": "Rename volume…",
+    "rename": "Rename on Modal…",
     "copyId": "Copy volume ID",
     "copied": "Volume ID copied",
     "remove": "Remove from modalfs…",
@@ -182,7 +182,12 @@
     "mode": "Connection",
     "modeAuto": "Automatic",
     "created": "Created {{date}}",
-    "createdBy": "Created {{date}} by {{who}}"
+    "createdBy": "Created {{date}} by {{who}}",
+    "editLabel": "Edit label…",
+    "labelHint": "A name of your own, shown instead of the volume's name. It's kept in the volume, so everyone using modalfs on it sees the same label.",
+    "labelPlaceholder": "A label for {{name}}",
+    "labelReadOnly": "Mounted read-only: modalfs doesn't write to this volume, its label included.",
+    "modalName": "Its name on Modal"
   },
   "opts": {
     "title": "Mount options of {{name}}",
@@ -672,7 +677,8 @@
     "addAccount": "Add account",
     "path": "Folder",
     "pathBad": "Use a full path, like ~/ModalVolumes",
-    "keep": "Keep"
+    "keep": "Keep",
+    "renameHint": "Modal's own name, which scripts and other tools use. Letters, digits, . _ and -, up to 64. To show a different name only here, edit its label instead."
   },
   "toast": {
     "created": "Created {{name}}",
@@ -686,7 +692,9 @@
     "restarted": "modalfs was restarted",
     "problems_one": "{{count}} problem, see Activity",
     "problems_other": "{{count}} conflicts and errors, see Activity",
-    "mounting": "Mounting {{name}}…"
+    "mounting": "Mounting {{name}}…",
+    "labeled": "Label saved",
+    "labelCleared": "Label removed"
   },
   "mountErr": {
     "token": "Modal rejected this account's token. Replace it in Settings.",

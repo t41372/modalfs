@@ -39,6 +39,8 @@ export interface Mount {
   environment?: string
   volume_name: string
   volume_id?: string
+  /** The volume's label, kept in the volume itself; shown instead of its name. */
+  label?: string
   mountpoint: string
   mode?: MountMode
   read_only?: boolean
@@ -181,6 +183,8 @@ export interface Volume {
   format: string // v1 | v2
   mounted: boolean
   mount_id?: string
+  /** Only when modalfs already knows it: labels aren't read for every volume. */
+  label?: string
 }
 
 export interface Profile {

@@ -9,7 +9,7 @@ import { api } from '@/api/client'
 import type { Mount, State } from '@/api/types'
 import { RUNNING } from '@/lib/downloads'
 import { inApp } from '@/lib/platform'
-import { live } from '@/lib/mounts'
+import { live, nameOf } from '@/lib/mounts'
 import { quit as quitWithoutList } from './quit'
 
 export type RowPhase =
@@ -110,7 +110,7 @@ export async function startQuit() {
     return
   }
   const pending = (m: Mount) => (m.state === 'stopping' ? -1 : (m.status?.pending_bytes ?? 0))
-  const rows = [...on].sort((a, b) => pending(a) - pending(b)).map((m): Row => ({ id: m.id, name: m.volume_name, phase: 'waiting' }))
+  const rows = [...on].sort((a, b) => pending(a) - pending(b)).map((m): Row => ({ id: m.id, name: nameOf(m), phase: 'waiting' }))
   const token = ++run
   update({ stage: 'running', rows, downloads, now: false })
   await loop(token)

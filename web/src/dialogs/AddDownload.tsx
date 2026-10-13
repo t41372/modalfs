@@ -18,6 +18,7 @@ import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { AddVolumeDialog } from '@/dialogs/AddVolume'
 import { hourlyFor, isTorrent, warpByDefault } from '@/lib/downloads'
+import { nameOf } from '@/lib/mounts'
 
 type ToolChoice = 'auto' | DownloadTool
 /** How a download reaches the site: auto is Cloudflare WARP for YouTube, direct for the rest. */
@@ -156,7 +157,7 @@ export function AddDownloadDialog({ open, onOpenChange }: { open: boolean; onOpe
                 value={mountId}
                 onChange={(v) => (v === OTHER ? setAddingVolume(true) : setMountId(v))}
                 options={[
-                  ...usable.map((m) => ({ value: m.id, label: m.volume_name, hint: many ? m.account_label : undefined, icon: many ? <AccountMark id={m.account_id} label={m.account_label} size={16} /> : undefined })),
+                  ...usable.map((m) => ({ value: m.id, label: nameOf(m), hint: many ? m.account_label : m.label ? m.volume_name : undefined, icon: many ? <AccountMark id={m.account_id} label={m.account_label} size={16} /> : undefined })),
                   { value: OTHER, label: t('dl.otherVolume') },
                 ]}
               />

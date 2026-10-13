@@ -56,7 +56,7 @@ export function AddVolumeDialog({ open, onOpenChange }: { open: boolean; onOpenC
     const q = query.trim().toLowerCase()
     const all = (vols.data ?? []).filter((v) => !managed(v.id, v.name) || added.includes(v.id))
     const hits = all
-      .filter((v) => !q || v.name.toLowerCase().includes(q))
+      .filter((v) => !q || v.name.toLowerCase().includes(q) || !!v.label?.toLowerCase().includes(q))
       // Exact and prefix matches first, then the newest.
       .sort((a, b) => rank(a.name, q) - rank(b.name, q) || (b.created_at ?? 0) - (a.created_at ?? 0))
     return { list: hits.slice(0, SHOWN), matches: hits.length, total: all.length }
@@ -146,7 +146,10 @@ export function AddVolumeDialog({ open, onOpenChange }: { open: boolean; onOpenC
                 return (
                   <div key={v.id} className="flex items-center gap-3 px-3.5 py-2.5">
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-[13.5px] font-medium">{v.name}</div>
+                      <div className="truncate text-[13.5px] font-medium">
+                        {v.label || v.name}
+                        {v.label && <span className="ml-2 font-mono text-[12px] font-normal text-muted-foreground">{v.name}</span>}
+                      </div>
                       <div className="truncate text-[12px] text-muted-foreground">
                         {v.format !== 'v2' ? t('addVol.v1') : v.created_by ? t('vol.createdBy', { date: date(v.created_at, i18n.language), who: v.created_by }) : t('vol.created', { date: date(v.created_at, i18n.language) })}
                       </div>

@@ -5,6 +5,9 @@ import type { Mount } from '@/api/types'
 
 export type Tone = 'ok' | 'up' | 'busy' | 'bad' | 'off'
 
+/** What a volume is called here: its label, or else its name on Modal. */
+export const nameOf = (m: Pick<Mount, 'label' | 'volume_name'>) => m.label || m.volume_name
+
 export const live = (m: Mount) => m.state === 'mounted' || m.state === 'starting' || m.state === 'stopping'
 
 /** The one thing to know about a mount, in order of what matters most. */

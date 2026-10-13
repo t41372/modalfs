@@ -65,6 +65,8 @@ datasets  work     mounted  /Users/me/ModalVolumes/datasets  0        0 B / 3 B
 
 **Many accounts, never mixed up.** Each mount is pinned to its account and volume ID, so switching Modal CLI profiles or renaming a volume never points a mount somewhere else.
 
+**Names you choose.** Give a volume a label, with spaces, emoji or any language. It's kept in the volume, so everyone using modalfs on it sees the same name, while scripts keep using Modal's.
+
 **A small native app**, a menu bar icon, and a CLI that does everything the app does.
 
 ## Install
@@ -140,7 +142,7 @@ modalfs saves each mount, so `modalfs mount my-data` reuses the same account, en
 
 | Page | What you can do |
 |---|---|
-| **Volumes** | The volumes modalfs manages, each with its state at a glance (synced, uploading, a conflict, not mounted), its folder and its size. Add another volume from your account by searching for it, even among hundreds. A volume's page shows its size and largest folders, what's still waiting to upload, the last hour's uploads and reads, and its conflicts with both versions a click away in Finder. Mount, unmount (it says what's still uploading first), change its options, remove it from modalfs, rename or delete it. |
+| **Volumes** | The volumes modalfs manages, each with its state at a glance (synced, uploading, a conflict, not mounted), its folder and its size. Add another volume from your account by searching for it, even among hundreds. A volume's page shows its size and largest folders, what's still waiting to upload, the last hour's uploads and reads, and its conflicts with both versions a click away in Finder. Mount, unmount (it says what's still uploading first), change its options, give it a label, remove it from modalfs, rename it on Modal or delete it. |
 | **Remote downloads** | Add links, pause, resume, delete. What's running, how fast in all and what it costs now; each one's speed over the whole run (point at the line for the acceleration there), and what happened to it. |
 | **Activity** | Mounts, uploads, conflicts, errors and crash recoveries, grouped by day, with notifications for the important ones. |
 | **Settings** | Your Modal accounts (connect, check or replace a token, rename, default environment, disconnect), start at login, mount location, light/dark mode, language (English / 繁體中文 / 简体中文), remote downloads, and under Advanced the cache, read-ahead and connection mode. |
@@ -210,6 +212,7 @@ Volumes
   modalfs volume ls      [--account A] [--env E]
   modalfs volume create  NAME [--account A] [--env E] [--mount]
   modalfs volume rename  NAME NEWNAME [--account A] [--env E]
+  modalfs volume label   NAME [LABEL | --clear]   a name shown instead of NAME, kept in the volume
   modalfs volume rm      NAME [--account A] [--env E] [--yes]
 
 Accounts

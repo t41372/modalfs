@@ -1,6 +1,6 @@
 import type { TFunction } from 'i18next'
-import { ChevronLeft, Copy, FolderOpen, Info, MoreHorizontal, Pencil, RefreshCw, Trash2, TriangleAlert, Upload, X } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { ChevronLeft, Copy, FolderOpen, Info, MoreHorizontal, Pencil, RefreshCw, Tag, Trash2, TriangleAlert, Upload, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { api } from '@/api/client'
@@ -14,12 +14,13 @@ import { Spinner } from '@/components/Spinner'
 import { duration, StopProgress } from '@/components/StopProgress'
 import { TrafficChart } from '@/components/TrafficChart'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { MountOptionsDialog } from '@/dialogs/MountOptions'
 import { DeleteVolumeDialog, RenameVolumeDialog } from '@/dialogs/Volume'
 import { ago, bytes, date, homeOf, tilde } from '@/lib/format'
-import { live, look, toneOf } from '@/lib/mounts'
+import { live, look, nameOf, toneOf } from '@/lib/mounts'
 import { isMac } from '@/lib/platform'
 import { stateText } from './Home'
 import { mountError } from '@/lib/mountError'
@@ -47,6 +48,7 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
   const s = m.status
   const [editing, setEditing] = useState(false)
   const [renaming, setRenaming] = useState(false)
+  const [labeling, setLabeling] = useState(false)
   const [deleting, setDeleting] = useState(false)
 
   const vols = useVolumes(m.account_id, m.environment ?? '')
@@ -90,7 +92,7 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
   const askUnmount = () => {
     const left = s?.pending_bytes ?? 0
     confirm({
-      title: t('vol.unmountQ', { name: m.volume_name }),
+      title: t('vol.unmountQ', { name: nameOf(m) }),
       desc: left > 0 ? t('vol.unmountPending', { size: bytes(left) }) : t('vol.unmountClean'),
       action: t(left > 0 ? 'vol.unmountAfter' : 'vol.unmount'),
       dismiss: t('vol.keepMounted'),
@@ -99,14 +101,14 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
   }
   const askRemove = () =>
     confirm({
-      title: t('vol.removeQ', { name: m.volume_name }),
+      title: t('vol.removeQ', { name: nameOf(m) }),
       desc: `${t('vol.removeP')}${live(m) ? ` ${t((s?.pending_files ?? 0) > 0 ? 'vol.removeLivePending' : 'vol.removeLive', { size: bytes(s?.pending_bytes ?? 0) })}` : ''}`,
       action: t('vol.remove'),
       dismiss: t('vol.keepIt'),
       run: () =>
         api('DELETE', `/mounts/${m.id}`)
           .then(() => {
-            toast(t('vol.removed', { name: m.volume_name }))
+            toast(t('vol.removed', { name: nameOf(m) }))
             navigate('volumes')
           })
           .catch((e) => toast.error(e.message))
@@ -126,7 +128,7 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
 
   return (
     <Page
-      title={m.volume_name}
+      title={<LabelTitle m={m} editing={labeling} onEditing={setLabeling} t={t} />}
       back={
         <Button variant="ghost" size="sm" onClick={() => navigate('volumes')} className="text-muted-foreground">
           <ChevronLeft />
@@ -135,6 +137,11 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
       }
       sub={
         <span className="flex flex-wrap gap-1.5 pt-1">
+          {m.label && (
+            <Chip mono hint={t('vol.modalName')}>
+              {m.volume_name}
+            </Chip>
+          )}
           <Chip tone={toneOf[l]} glyph={glyphOf[l]} hint={stateText(m, l, t)}>
             {live(m) ? (
               <>
@@ -185,6 +192,10 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
               <DropdownMenuItem disabled={!m.volume_id || !!u?.running} onClick={() => measure.mutate()}>
                 <RefreshCw />
                 {t('vol.measure')}
+              </DropdownMenuItem>
+              <DropdownMenuItem disabled={!m.volume_id || m.read_only} title={m.read_only ? t('vol.labelReadOnly') : undefined} onClick={() => setLabeling(true)}>
+                <Tag />
+                {t('vol.editLabel')}
               </DropdownMenuItem>
               <DropdownMenuItem disabled={!info} onClick={() => setRenaming(true)}>
                 <Pencil />
@@ -434,7 +445,7 @@ function askNow(m: Mount, t: TFunction) {
   const pending = (m.status?.pending_files ?? 0) > 0
   const apps = m.in_use_by?.join(', ')
   confirm({
-    title: t(busy ? 'vol.forceQ' : 'vol.nowQ', { name: m.volume_name }),
+    title: t(busy ? 'vol.forceQ' : 'vol.nowQ', { name: nameOf(m) }),
     desc: busy ? `${apps ? t('vol.forceApps', { apps }) : t('vol.forceAppsUnknown')} ${t(pending ? 'vol.forcePending' : 'vol.forceUploaded')}` : t('vol.nowP'),
     action: t(busy ? 'vol.force' : 'vol.unmountNow'),
     dismiss: t(busy ? 'vol.keepMounted' : 'vol.wait'),
@@ -474,4 +485,69 @@ function FolderBar({ name, size, pct, hint, muted }: { name: string; size: numbe
     </div>
   )
   return hint ? <Hint text={hint}>{row}</Hint> : row
+}
+
+/**
+ * The page's title: the volume's label, or its name. It's edited in place:
+ * Enter or leaving the field saves, Escape keeps the old one, and an empty
+ * label goes back to the name. The label is written into the volume, so a
+ * read-only mount can't change it.
+ */
+function LabelTitle({ m, editing, onEditing, t }: { m: Mount; editing: boolean; onEditing: (on: boolean) => void; t: TFunction }) {
+  const [text, setText] = useState('')
+  const cancelled = useRef(false)
+  const save = useAction(
+    (label: string) => api('POST', `/accounts/${m.account_id}/volumes/${m.volume_id}/label`, { label, environment: m.environment ?? '' }),
+    { success: (label) => t(label ? 'toast.labeled' : 'toast.labelCleared'), volumes: true },
+  )
+  useEffect(() => {
+    if (editing) {
+      cancelled.current = false
+      setText(m.label ?? '')
+    }
+  }, [editing]) // eslint-disable-line react-hooks/exhaustive-deps
+  const finish = () => {
+    onEditing(false)
+    const next = text.trim()
+    if (!cancelled.current && next !== (m.label ?? '')) save.mutate(next)
+  }
+  if (editing)
+    return (
+      <Input
+        autoFocus
+        value={text}
+        maxLength={80}
+        placeholder={t('vol.labelPlaceholder', { name: m.volume_name })}
+        aria-label={t('vol.editLabel')}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={finish}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') e.currentTarget.blur()
+          if (e.key === 'Escape') {
+            cancelled.current = true
+            e.currentTarget.blur()
+          }
+        }}
+        className="-ml-2.5 h-11 w-[min(26rem,100%)] px-2.5 text-[28px] font-semibold tracking-[-0.02em] md:text-[28px]"
+      />
+    )
+  const shown = save.isPending ? save.variables || m.volume_name : nameOf(m)
+  const canEdit = !!m.volume_id && !m.read_only
+  return (
+    <span className="group/title inline-flex max-w-full items-center gap-1.5">
+      <span className="min-w-0 break-words">{shown}</span>
+      <Hint text={m.read_only ? t('vol.labelReadOnly') : t('vol.labelHint')}>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label={t('vol.editLabel')}
+          disabled={!canEdit}
+          onClick={() => onEditing(true)}
+          className="text-muted-foreground opacity-0 transition-opacity group-hover/title:opacity-100 focus-visible:opacity-100 max-sm:opacity-100"
+        >
+          <Pencil />
+        </Button>
+      </Hint>
+    </span>
+  )
 }

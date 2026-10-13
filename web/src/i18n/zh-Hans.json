@@ -57,7 +57,7 @@
     "more": "更多",
     "syncNow": "立即上传更改",
     "measure": "重新计算大小",
-    "rename": "重命名 Volume…",
+    "rename": "在 Modal 上重命名…",
     "copyId": "复制 Volume ID",
     "copied": "已复制 Volume ID",
     "remove": "从 modalfs 移除…",
@@ -166,7 +166,12 @@
     "mode": "连接方式",
     "modeAuto": "自动",
     "created": "{{date}}创建",
-    "createdBy": "{{who}} 于 {{date}}创建"
+    "createdBy": "{{who}} 于 {{date}}创建",
+    "editLabel": "编辑标签…",
+    "labelHint": "你自己取的名字，会代替 Volume 名称显示。标签存在 Volume 里，所以每个用 modalfs 打开它的人看到的都一样。",
+    "labelPlaceholder": "给 {{name}} 取个标签",
+    "labelReadOnly": "以只读方式挂载：modalfs 不会写入这个 Volume，标签也一样。",
+    "modalName": "它在 Modal 上的名称"
   },
   "opts": {
     "title": "{{name}} 的挂载选项",
@@ -639,7 +644,8 @@
     "addAccount": "添加账号",
     "path": "文件夹",
     "pathBad": "请用完整路径，例如 ~/ModalVolumes",
-    "keep": "保留"
+    "keep": "保留",
+    "renameHint": "Modal 上的正式名称，脚本和其他工具都用这个名字。字母、数字、. _ -，最长 64 个字符。只想换个显示的名字，请改用标签。"
   },
   "toast": {
     "created": "已创建 {{name}}",
@@ -651,7 +657,9 @@
     "accountAdded": "已添加 {{w}}",
     "restarted": "modalfs 刚刚重新启动",
     "problems_other": "{{count}} 个冲突和错误，到“动态”查看",
-    "mounting": "正在挂载 {{name}}…"
+    "mounting": "正在挂载 {{name}}…",
+    "labeled": "已保存标签",
+    "labelCleared": "已移除标签"
   },
   "mountErr": {
     "token": "Modal 拒绝了这个账号的 token。请到“设置”更换。",
