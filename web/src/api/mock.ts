@@ -364,7 +364,7 @@ function addMockDownload(o: { id: string; url: string; name: string; tool: Downl
 
   // Running, in its second attempt: Modal stopped the first container (a preemption) 34 s before it went on.
   {
-    const m = addMockDownload({ id: 'dl-train', url: 'https://data.example.org/vision/train-2024.tar', name: 'train-2024.tar', tool: 'gopeed', folder: 'datasets/raw', volume: 'datasets', created: t0 - 905, state: 'running' })
+    const m = addMockDownload({ id: 'dl-train', url: 'https://data.example.org/vision/train-2024.tar', name: 'train-2024.tar', tool: 'gopeed', folder: 'raw', volume: 'datasets', created: t0 - 905, state: 'running' })
     const a = profile(40e6, 1)
     const b = profile(42e6, 2)
     const s1 = t0 - 900
@@ -382,7 +382,7 @@ function addMockDownload(o: { id: string; url: string; name: string; tool: Downl
 
   // Running, just started, with aria2.
   {
-    const m = addMockDownload({ id: 'dl-coco', url: 'https://datasets.example.com/coco/train2017.zip', name: 'train2017.zip', tool: 'aria2', folder: 'datasets/coco', volume: 'datasets', created: t0 - 97, state: 'running' })
+    const m = addMockDownload({ id: 'dl-coco', url: 'https://datasets.example.com/coco/train2017.zip', name: 'train2017.zip', tool: 'aria2', folder: 'coco', volume: 'datasets', created: t0 - 97, state: 'running' })
     const a = profile(68e6, 3)
     m.events.push({ ev: 'start', t: t0 - 95, attempt: 1 })
     m.live = []
@@ -458,7 +458,7 @@ function addMockDownload(o: { id: string; url: string; name: string; tool: Downl
   ck.events.push({ ev: 'start', t: s1, attempt: 1 })
   ck.d.status = { state: 'running', tool: 'aria2', url: ck.d.url, name: ck.d.name, done, total: 14.2e9, speed: 0, attempt: 1, t: s1 + 60 }
   // Running as far as the daemon knows, but nothing heard from its container for a while.
-  const q = addMockDownload({ id: 'dl-quiet', url: 'https://data.example.org/audio/librispeech-960h.tar', name: 'librispeech-960h.tar', tool: 'gopeed', folder: 'datasets', volume: 'datasets', created: t0 - 500, state: 'starting' })
+  const q = addMockDownload({ id: 'dl-quiet', url: 'https://data.example.org/audio/librispeech-960h.tar', name: 'librispeech-960h.tar', tool: 'gopeed', folder: 'audio', volume: 'datasets', created: t0 - 500, state: 'starting' })
   q.d.silent = 480
 }
 

@@ -11,7 +11,7 @@
 <p align="center"><a href="README.md">English</a> · 简体中文</p>
 
 <p align="center">
-  <img src="docs/screenshots/zh-CN/volumes.jpg" alt="modalfs 应用：它管理的 Volume，每个都显示状态、文件夹、大小和下一步可以做的事">
+  <img src="docs/screenshots/zh-CN/hero.jpg" alt="名为 datasets 的 Modal Volume 在访达里是一个普通文件夹，里面是 parquet 文件；后面是 modalfs 应用，列出它管理的 Volume：三个已挂载，一个正在上传 1.2 GB">
 </p>
 
 ---
@@ -149,7 +149,7 @@ modalfs 会记住每个挂载，所以下次 `modalfs mount my-data` 会沿用�
       <a href="docs/screenshots/zh-CN/volume.jpg"><img src="docs/screenshots/zh-CN/volume.jpg" alt="深色主题的 Volume 页面：挂载位置、按文件夹的大小、最近一小时的上传和读取，以及挂载选项"></a>
     </td>
     <td width="50%" valign="top">
-      <a href="docs/screenshots/zh-CN/activity.jpg"><img src="docs/screenshots/zh-CN/activity.jpg" alt="动态页：上传、挂载、一次冲突和一次恢复，按天分组"></a>
+      <a href="docs/screenshots/zh-CN/activity.jpg"><img src="docs/screenshots/zh-CN/activity.jpg" alt="动态页：上传、挂载和一次恢复，按天分组"></a>
     </td>
   </tr>
   <tr>
@@ -370,7 +370,7 @@ just fake -up 20M                            # 假的 Modal，不用账号就能
 MODALFS_TEST_VOLUME=scratch just test-integration   # 会在这个 volume 里创建和删除文件
 ```
 
-界面用 React、Tailwind 和基于 Base UI 的 shadcn/ui 写成，风格与 [Jezo](https://github.com/t41372/Jezo) 一致。`just ui` 把它构建到 `internal/webui/dist`，由后台进程和应用嵌入。本文的图片来自 `cd web && bun run screenshots`：它用 `web/src/api/mock.ts` 里的示例数据构建界面，按每种 README 语言拍下每一页，再把透明的窗口叠在 `docs/screenshots/backdrops/` 里的画上（画来自 Jezo）。
+界面用 React、Tailwind 和基于 Base UI 的 shadcn/ui 写成，风格与 [Jezo](https://github.com/t41372/Jezo) 一致。`just ui` 把它构建到 `internal/webui/dist`，由后台进程和应用嵌入。本文的图片来自 `cd web && bun run screenshots`：它用 `web/src/api/mock.ts` 里的示例数据（平静的 `?scenario=demo`）构建界面，按应用自己的窗口大小、每种 README 语言拍下每一页，再把透明的窗口叠在 `docs/screenshots/backdrops/` 里的画上（画来自 Jezo）。第一张图另外放了一个真实的访达窗口，由 `web/scripts/capture-finder.sh` 从挂载的假 Modal 上截取。
 
 目录结构：
 

@@ -11,7 +11,7 @@
 <p align="center">English · <a href="README.zh-CN.md">简体中文</a></p>
 
 <p align="center">
-  <img src="docs/screenshots/en/volumes.jpg" alt="The modalfs app: the volumes it manages, each with its state, folder, size and the one thing to do next">
+  <img src="docs/screenshots/en/hero.jpg" alt="A Modal Volume named datasets open in Finder as an ordinary folder of parquet files, in front of the modalfs app listing the volumes it manages: three mounted, one uploading 1.2 GB">
 </p>
 
 ---
@@ -149,7 +149,7 @@ The window is only a remote control. Mounts live in the background daemon, so **
       <a href="docs/screenshots/en/volume.jpg"><img src="docs/screenshots/en/volume.jpg" alt="A volume's page in the dark theme: where it's mounted, its size by folder, what it uploaded and read in the last hour, and its mount options"></a>
     </td>
     <td width="50%" valign="top">
-      <a href="docs/screenshots/en/activity.jpg"><img src="docs/screenshots/en/activity.jpg" alt="Activity: uploads, a mount, a conflict and a recovery, grouped by day"></a>
+      <a href="docs/screenshots/en/activity.jpg"><img src="docs/screenshots/en/activity.jpg" alt="Activity: uploads, mounts and a recovery, grouped by day"></a>
     </td>
   </tr>
   <tr>
@@ -370,7 +370,7 @@ just fake -up 20M                            # a fake Modal to try modalfs witho
 MODALFS_TEST_VOLUME=scratch just test-integration   # CREATES AND DELETES files in that volume
 ```
 
-The UI is React with Tailwind and shadcn/ui on Base UI, in the style of [Jezo](https://github.com/t41372/Jezo). `just ui` builds it into `internal/webui/dist`, which the daemon and the app embed. The pictures in this README come from `cd web && bun run screenshots`: it builds the UI on the sample data in `web/src/api/mock.ts`, shoots each page in each README language, and lays the see-through window over a painting in `docs/screenshots/backdrops/` (Jezo's).
+The UI is React with Tailwind and shadcn/ui on Base UI, in the style of [Jezo](https://github.com/t41372/Jezo). `just ui` builds it into `internal/webui/dist`, which the daemon and the app embed. The pictures in this README come from `cd web && bun run screenshots`: it builds the UI on the sample data in `web/src/api/mock.ts` (its calm `?scenario=demo`), shoots each page at the app's own window size in each README language, and lays the see-through window over a painting in `docs/screenshots/backdrops/` (Jezo's). The first picture adds a real Finder window, captured from a mount of the fake Modal by `web/scripts/capture-finder.sh`.
 
 Layout:
 
