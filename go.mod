@@ -13,6 +13,7 @@ require (
 	github.com/willscott/go-nfs-client v0.0.0-20240104095149-b44639837b00
 	github.com/zalando/go-keyring v0.2.8
 	go.etcd.io/bbolt v1.5.0
+	golang.org/x/crypto v0.55.0
 	golang.org/x/sync v0.24.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.47.0
@@ -52,7 +53,6 @@ require (
 	github.com/wailsapp/go-webview2 v1.0.22 // indirect
 	github.com/wailsapp/mimetype v1.4.1 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	golang.org/x/crypto v0.55.0 // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
