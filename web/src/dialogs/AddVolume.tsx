@@ -11,6 +11,7 @@ import { Spinner } from '@/components/Spinner'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { ConnectDialog } from '@/dialogs/Connect'
+import { EncryptedMark } from '@/dialogs/Encryption'
 import { CreateVolumeDialog } from '@/dialogs/Volume'
 import { date } from '@/lib/format'
 
@@ -148,6 +149,7 @@ export function AddVolumeDialog({ open, onOpenChange }: { open: boolean; onOpenC
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-[13.5px] font-medium">
                         {v.label || v.name}
+                        {v.encrypted && <EncryptedMark className="ml-1.5 align-[-1px]" />}
                         {v.label && <span className="ml-2 font-mono text-[12px] font-normal text-muted-foreground">{v.name}</span>}
                       </div>
                       <div className="truncate text-[12px] text-muted-foreground">

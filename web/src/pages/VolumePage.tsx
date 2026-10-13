@@ -1,5 +1,5 @@
 import type { TFunction } from 'i18next'
-import { ChevronLeft, Copy, FolderOpen, Info, MoreHorizontal, Pencil, RefreshCw, Tag, Trash2, TriangleAlert, Upload, X } from 'lucide-react'
+import { ChevronLeft, Copy, FolderOpen, Info, KeyRound, Lock, MoreHorizontal, Pencil, RefreshCw, Tag, Trash2, TriangleAlert, Upload, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -17,6 +17,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
+import { askLock, encryptionHint, ShowKeyDialog, UnlockDialog } from '@/dialogs/Encryption'
 import { MountOptionsDialog } from '@/dialogs/MountOptions'
 import { DeleteVolumeDialog, RenameVolumeDialog } from '@/dialogs/Volume'
 import { ago, bytes, date, homeOf, tilde } from '@/lib/format'
@@ -50,6 +51,8 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
   const [renaming, setRenaming] = useState(false)
   const [labeling, setLabeling] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [keyDialog, setKeyDialog] = useState<'' | 'unlock' | 'show'>('')
+  const closeKey = (o: boolean) => !o && setKeyDialog('')
 
   const vols = useVolumes(m.account_id, m.environment ?? '')
   const info = vols.data?.find((v) => (m.volume_id ? v.id === m.volume_id : v.name === m.volume_name))
@@ -62,7 +65,7 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
   const measure = useAction(() => api('POST', `/mounts/${m.id}/usage`).then(() => refreshUsage(m.id)), { quiet: true })
   const u = usage.data
   useEffect(() => {
-    if (u && !u.last && !u.running && !u.error && m.volume_id && !measure.isPending && !measure.isError) measure.mutate()
+    if (u && !u.last && !u.running && !u.error && m.volume_id && !m.locked && !measure.isPending && !measure.isError) measure.mutate()
   }, [u, m.volume_id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const start = useAction(() => api('POST', `/mounts/${m.id}/start`), {
@@ -142,7 +145,7 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
               {m.volume_name}
             </Chip>
           )}
-          <Chip tone={toneOf[l]} glyph={glyphOf[l]} hint={stateText(m, l, t)}>
+          <Chip tone={toneOf[l]} glyph={glyphOf[l]} hint={l === 'locked' ? encryptionHint(m, t) : stateText(m, l, t)}>
             {live(m) ? (
               <>
                 {t(`vol.chip.${l}`)} <span className="font-mono text-[12px] text-muted-foreground">{tilde(m.mountpoint, home)}</span>
@@ -158,6 +161,11 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
               {m.environment && <span className="text-muted-foreground">· {m.environment}</span>}
             </span>
           </Hint>
+          {m.encrypted && !m.locked && (
+            <Chip glyph="lock" hint={encryptionHint(m, t)}>
+              {t('enc.chip')}
+            </Chip>
+          )}
           {m.read_only && <Chip>{t('vol.readOnly')}</Chip>}
           {m.on_conflict === 'overwrite' && <Chip tone="up" glyph="alert">{t('vol.overwrites')}</Chip>}
         </span>
@@ -174,6 +182,11 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
                 {t('vol.unmountMenu')}
               </Button>
             </>
+          ) : l === 'locked' ? (
+            <Button onClick={() => setKeyDialog('unlock')}>
+              <Lock />
+              {t('enc.unlock')}
+            </Button>
           ) : m.state === 'stopped' || m.state === 'error' ? (
             <Button disabled={start.isPending} onClick={() => start.mutate()}>
               {start.isPending && <Spinner />}
@@ -193,7 +206,11 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
                 <RefreshCw />
                 {t('vol.measure')}
               </DropdownMenuItem>
-              <DropdownMenuItem disabled={!m.volume_id || m.read_only} title={m.read_only ? t('vol.labelReadOnly') : undefined} onClick={() => setLabeling(true)}>
+              <DropdownMenuItem
+                disabled={!m.volume_id || m.read_only || m.locked}
+                title={m.locked ? t('enc.labelLocked') : m.read_only ? t('vol.labelReadOnly') : undefined}
+                onClick={() => setLabeling(true)}
+              >
                 <Tag />
                 {t('vol.editLabel')}
               </DropdownMenuItem>
@@ -206,6 +223,23 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
                   <Copy />
                   {t('vol.copyId')}
                 </DropdownMenuItem>
+              )}
+              {m.encrypted && m.volume_id && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    disabled={m.locked || !m.key_remembered}
+                    title={m.locked ? undefined : !m.key_remembered ? t('enc.showNotRemembered') : undefined}
+                    onClick={() => setKeyDialog('show')}
+                  >
+                    <KeyRound />
+                    {t('enc.menuShow')}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem disabled={m.locked || live(m)} title={live(m) ? t('enc.lockLive') : undefined} onClick={() => askLock(m, t)}>
+                    <Lock />
+                    {live(m) ? t('enc.menuLockLive') : t('enc.menuLock')}
+                  </DropdownMenuItem>
+                </>
               )}
               <DropdownMenuSeparator />
               <DropdownMenuItem disabled={m.state === 'starting' || m.state === 'stopping'} onClick={askRemove}>
@@ -425,6 +459,12 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
       </Section>
 
       <MountOptionsDialog m={m} open={editing} onOpenChange={setEditing} />
+      {m.encrypted && m.volume_id && (
+        <>
+          <UnlockDialog m={m} open={keyDialog === 'unlock'} onOpenChange={closeKey} />
+          <ShowKeyDialog m={m} open={keyDialog === 'show'} onOpenChange={closeKey} />
+        </>
+      )}
       {info && <RenameVolumeDialog volume={renaming ? info : null} onClose={() => setRenaming(false)} account={m.account_id} env={m.environment ?? ''} />}
       {info && (
         <DeleteVolumeDialog

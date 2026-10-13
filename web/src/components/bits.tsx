@@ -2,7 +2,7 @@
 // picture and name, and a hint that shows on hover.
 
 import { cn } from 'cn'
-import { ArrowDown, ArrowUp, Check, type LucideIcon, Minus, Pause, RefreshCw, TriangleAlert } from 'lucide-react'
+import { ArrowDown, ArrowUp, Check, Lock, type LucideIcon, Minus, Pause, RefreshCw, TriangleAlert } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { ReactElement, ReactNode } from 'react'
 import { Spinner } from '@/components/Spinner'
@@ -20,9 +20,9 @@ const TONE: Record<Tone, string> = {
 }
 
 /** What a status icon shows. The shape carries the meaning; the color only backs it up. */
-export type Glyph = 'check' | 'up' | 'down' | 'spin' | 'alert' | 'off' | 'pause' | 'moving'
+export type Glyph = 'check' | 'up' | 'down' | 'spin' | 'alert' | 'off' | 'pause' | 'moving' | 'lock'
 
-const GLYPH: Record<Exclude<Glyph, 'spin'>, LucideIcon> = { check: Check, up: ArrowUp, down: ArrowDown, alert: TriangleAlert, off: Minus, pause: Pause, moving: RefreshCw }
+const GLYPH: Record<Exclude<Glyph, 'spin'>, LucideIcon> = { check: Check, up: ArrowUp, down: ArrowDown, alert: TriangleAlert, off: Minus, pause: Pause, moving: RefreshCw, lock: Lock }
 
 /** A mount's look, as a glyph. */
 export const glyphOf: Record<Look, Glyph> = {
@@ -33,6 +33,7 @@ export const glyphOf: Record<Look, Glyph> = {
   busy: 'moving',
   conflict: 'alert',
   error: 'alert',
+  locked: 'lock',
   off: 'off',
 }
 
@@ -54,7 +55,7 @@ export function GlyphIcon({ glyph, className }: { glyph: Glyph; className?: stri
           exit={{ opacity: 0, scale: 0.6, filter: 'blur(2px)' }}
           transition={{ duration: 0.2, ease: easeOut }}
         >
-          {Icon ? <Icon className="size-full" strokeWidth={glyph === 'alert' || glyph === 'moving' || glyph === 'pause' ? 2.6 : 3} /> : <Spinner className="size-full border-2" />}
+          {Icon ? <Icon className="size-full" strokeWidth={glyph === 'alert' || glyph === 'moving' || glyph === 'pause' || glyph === 'lock' ? 2.6 : 3} /> : <Spinner className="size-full border-2" />}
         </motion.span>
       </AnimatePresence>
     </span>

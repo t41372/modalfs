@@ -19,12 +19,14 @@ export type Look =
   | 'stopping'
   | 'uploading' // mounted, with changes not on Modal yet
   | 'synced' // mounted, everything on Modal
+  | 'locked' // encrypted, and this computer doesn't have the key
   | 'off' // not mounted
 
 export function look(m: Mount): Look {
-  if (m.state === 'error') return 'error'
   if (m.state === 'starting') return 'starting'
   if (m.state === 'stopping') return 'stopping'
+  if (m.locked && m.state !== 'mounted') return 'locked'
+  if (m.state === 'error') return 'error'
   if (m.state !== 'mounted') return 'off'
   if ((m.open_conflicts ?? 0) > 0) return 'conflict'
   if (m.unmount_error) return 'busy'
@@ -40,6 +42,7 @@ export const toneOf: Record<Look, Tone> = {
   stopping: 'up',
   uploading: 'up',
   synced: 'ok',
+  locked: 'off',
   off: 'off',
 }
 

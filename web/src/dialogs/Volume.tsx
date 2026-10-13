@@ -1,60 +1,138 @@
-import { useEffect, useState } from 'react'
+import { Lock } from 'lucide-react'
+import { useEffect, useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { api } from '@/api/client'
+import { createEncrypted, draftKey } from '@/api/encryption'
 import { refreshState, refreshVolumes } from '@/api/queries'
 import type { Mount, Volume } from '@/api/types'
 import { Field, FormDialog } from '@/components/FormDialog'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
+import { EncryptFacts, KeyBlock, RememberBox, SavedBox } from './Encryption'
 
 const NAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/
 
+/**
+ * A new volume. An encrypted one takes one more step: its key, which has to be
+ * saved (and that confirmed) before the volume exists, because nothing else can
+ * ever read its files.
+ */
 export function CreateVolumeDialog({ open, onOpenChange, account, env }: { open: boolean; onOpenChange: (o: boolean) => void; account: string; env: string }) {
   const { t } = useTranslation()
+  const [step, setStep] = useState<'name' | 'key'>('name')
   const [name, setName] = useState('')
   const [mount, setMount] = useState(true)
+  const [encrypt, setEncrypt] = useState(false)
+  const [remember, setRemember] = useState(true)
+  const [key, setKey] = useState('')
+  const [saved, setSaved] = useState(false)
+  const encId = useId()
   useEffect(() => {
     if (open) {
+      setStep('name')
       setName('')
       setMount(true)
+      setEncrypt(false)
+      setRemember(true)
+      setKey('')
+      setSaved(false)
     }
   }, [open])
   const bad = name !== '' && !NAME.test(name)
+
+  async function mountIt() {
+    try {
+      const r = await api<{ mount: Mount; error?: string }>('POST', '/mounts', { account_id: account, environment: env, volume_name: name, filter_junk: true, start: true })
+      if (r.error) toast.error(r.error)
+      else toast(t('toast.mounting', { name: r.mount.volume_name }))
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      refreshState()
+      refreshVolumes()
+    }
+  }
+
+  const steps = {
+    name: {
+      title: t('form.createVolume'),
+      submit: encrypt ? t('enc.next') : t('form.create'),
+      canSubmit: NAME.test(name),
+      run: async () => {
+        if (encrypt) {
+          // The same key comes back if the person goes back and forth, so a
+          // copy they already saved stays the right one.
+          if (!key) setKey(await draftKey())
+          setStep('key')
+          return 'stay' as const
+        }
+        await api('POST', `/accounts/${account}/volumes`, { name, environment: env })
+        toast.success(t('toast.created', { name }))
+        refreshVolumes()
+        // The volume exists now, so the dialog closes whatever happens to the mount.
+        if (mount) await mountIt()
+      },
+    },
+    key: {
+      title: t('enc.keyTitle', { name }),
+      submit: t('enc.createEncrypted'),
+      canSubmit: saved && !!key,
+      run: async () => {
+        await createEncrypted(account, env, name, key, remember)
+        toast.success(t('toast.created', { name }))
+        refreshVolumes()
+        if (mount) await mountIt()
+      },
+    },
+  }[step]
 
   return (
     <FormDialog
       open={open}
       onOpenChange={onOpenChange}
-      title={t('form.createVolume')}
-      submit={t('form.create')}
-      canSubmit={NAME.test(name)}
-      onSubmit={async () => {
-        await api('POST', `/accounts/${account}/volumes`, { name, environment: env })
-        toast.success(t('toast.created', { name }))
-        refreshVolumes()
-        // The volume exists now, so the dialog closes whatever happens to the mount.
-        if (mount) {
-          try {
-            const r = await api<{ mount: Mount; error?: string }>('POST', '/mounts', { account_id: account, environment: env, volume_name: name, filter_junk: true, start: true })
-            if (r.error) toast.error(r.error)
-            else toast(t('toast.mounting', { name: r.mount.volume_name }))
-          } catch (e) {
-            toast.error(e instanceof Error ? e.message : String(e))
-          } finally {
-            refreshState()
-            refreshVolumes()
-          }
-        }
-      }}
+      title={steps.title}
+      desc={step === 'key' ? t('enc.keyP') : undefined}
+      submit={steps.submit}
+      canSubmit={steps.canSubmit}
+      onSubmit={steps.run}
+      aside={
+        step === 'key' ? (
+          <button type="button" className="text-[12.5px] text-muted-foreground hover:text-foreground" onClick={() => setStep('name')}>
+            {t('enc.back')}
+          </button>
+        ) : undefined
+      }
     >
-      <Field label={t('form.volName')} htmlFor="vol-name" hint={t('form.volNameHint')} error={bad ? t('form.volNameBad') : undefined}>
-        <Input id="vol-name" className="font-mono text-[13px]" value={name} onChange={(e) => setName(e.target.value.trim())} aria-invalid={bad} spellCheck={false} autoFocus maxLength={64} />
-      </Field>
-      <label className="flex items-center gap-2.5 text-[13px]">
-        <Checkbox checked={mount} onCheckedChange={(v) => setMount(!!v)} />
-        {t('form.mountNow')}
-      </label>
+      {step === 'name' && (
+        <>
+          <Field label={t('form.volName')} htmlFor="vol-name" hint={t('form.volNameHint')} error={bad ? t('form.volNameBad') : undefined}>
+            <Input id="vol-name" className="font-mono text-[13px]" value={name} onChange={(e) => setName(e.target.value.trim())} aria-invalid={bad} spellCheck={false} autoFocus maxLength={64} />
+          </Field>
+          <label className="flex items-center gap-2.5 text-[13px]">
+            <Checkbox checked={mount} onCheckedChange={(v) => setMount(!!v)} />
+            {t('form.mountNow')}
+          </label>
+          <div className="flex flex-col gap-2.5">
+            <div className="flex items-center gap-3">
+              <label htmlFor={encId} className="flex min-w-0 flex-1 items-center gap-2 text-[13px] font-medium">
+                <Lock className="size-3.5 text-muted-foreground" />
+                {t('enc.encrypt')}
+              </label>
+              <Switch id={encId} checked={encrypt} onCheckedChange={setEncrypt} />
+            </div>
+            {encrypt ? <EncryptFacts /> : <span className="-mt-1 text-[12px] text-muted-foreground">{t('enc.encryptOff')}</span>}
+          </div>
+        </>
+      )}
+      {step === 'key' && (
+        <>
+          <KeyBlock value={key} volume={name} />
+          <RememberBox value={remember} onChange={setRemember} />
+          <SavedBox value={saved} onChange={setSaved} />
+        </>
+      )}
     </FormDialog>
   )
 }

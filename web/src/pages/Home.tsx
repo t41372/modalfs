@@ -1,5 +1,6 @@
 import { cn } from 'cn'
-import { ChevronRight, FolderOpen, HardDrive, Plus } from 'lucide-react'
+import type { TFunction } from 'i18next'
+import { ChevronRight, FolderOpen, HardDrive, Lock, Plus } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api } from '@/api/client'
@@ -12,6 +13,7 @@ import { Spinner } from '@/components/Spinner'
 import { duration, StopProgress } from '@/components/StopProgress'
 import { Button } from '@/components/ui/button'
 import { AddVolumeDialog } from '@/dialogs/AddVolume'
+import { EncryptedMark, UnlockDialog } from '@/dialogs/Encryption'
 import { ago, bytes, homeOf, tilde } from '@/lib/format'
 import { look, type Look, nameOf, summary, toneOf } from '@/lib/mounts'
 import { isMac } from '@/lib/platform'
@@ -85,7 +87,7 @@ export function Home() {
 }
 
 /** A mount's state in a few words, for the icon's hover and the screen reader. */
-export function stateText(m: Mount, l: Look, t: ReturnType<typeof useTranslation>['t']) {
+export function stateText(m: Mount, l: Look, t: TFunction) {
   switch (l) {
     case 'synced':
       return t('vol.state.synced')
@@ -101,6 +103,8 @@ export function stateText(m: Mount, l: Look, t: ReturnType<typeof useTranslation
       return t('vol.state.stopping')
     case 'error':
       return t('vol.state.error')
+    case 'locked':
+      return t('vol.state.locked')
     case 'off':
       return t('vol.state.off')
   }
@@ -125,11 +129,14 @@ function VolumeRow({ m, biggest, showAccount }: { m: Mount; biggest: number; sho
   })
   const reveal = () => api('POST', `/mounts/${m.id}/reveal`, {}).catch(() => refreshState())
   const open = () => navigate('volumes', m.id)
+  const [unlocking, setUnlocking] = useState(false)
   const nowSec = Date.now() / 1000
   const pending = m.status?.pending_bytes ?? 0
 
   const line =
-    l === 'error' ? (
+    l === 'locked' ? (
+      <span className="truncate">{t('enc.rowLocked')}</span>
+    ) : l === 'error' ? (
       <span className="truncate text-destructive" title={m.error}>
         {mountError(m.error, t).text}
         {m.retry_at && m.retry_at > nowSec ? ` · ${t('vol.retryIn', { time: duration(m.retry_at - nowSec, t) })}` : ''}
@@ -149,7 +156,12 @@ function VolumeRow({ m, biggest, showAccount }: { m: Mount; biggest: number; sho
     )
 
   const action =
-    l === 'conflict' ? (
+    l === 'locked' ? (
+      <Button size="sm" variant="outline" onClick={() => setUnlocking(true)}>
+        <Lock />
+        {t('enc.unlock')}
+      </Button>
+    ) : l === 'conflict' ? (
       <Button size="sm" onClick={open}>
         {t('home.handle')}
       </Button>
@@ -176,8 +188,9 @@ function VolumeRow({ m, biggest, showAccount }: { m: Mount; biggest: number; sho
         <StateIcon look={l} tone={toneOf[l]} label={stateText(m, l, t)} />
         <button onClick={open} className="group/row flex min-w-0 flex-1 items-center gap-3 rounded-lg py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
           <span className="min-w-0 flex-1">
-            <span className={cn('block truncate text-[14.5px] font-semibold tracking-[-0.01em]', l === 'off' && 'text-foreground/70')}>
+            <span className={cn('block truncate text-[14.5px] font-semibold tracking-[-0.01em]', (l === 'off' || l === 'locked') && 'text-foreground/70')}>
               {nameOf(m)}
+              {m.encrypted && <EncryptedMark m={m} className="ml-1.5 align-[-1px]" />}
               {m.label && <span className="ml-2 font-mono text-[12px] font-normal tracking-normal text-muted-foreground">{m.volume_name}</span>}
             </span>
             <span className="mt-0.5 flex min-w-0 items-center gap-2 text-[12.5px] text-muted-foreground">
@@ -211,6 +224,7 @@ function VolumeRow({ m, biggest, showAccount }: { m: Mount; biggest: number; sho
           <StopProgress m={m} />
         </div>
       )}
+      {m.locked && <UnlockDialog m={m} open={unlocking} onOpenChange={setUnlocking} />}
     </div>
   )
 }

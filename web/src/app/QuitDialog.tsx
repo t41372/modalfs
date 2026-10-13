@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { bytes } from '@/lib/format'
 import { easeOut } from '@/lib/motion'
 import { force, keepRunning, quitNow, type Row, type RowPhase, retry, useQuitFlow } from './quitFlow'
+import { EncryptedMark } from '@/dialogs/Encryption'
 
 type IconLook = RowPhase | 'final-wait' | 'final-run' | 'final-done' | 'cloud'
 
@@ -161,8 +162,17 @@ export function QuitDialog() {
         <ul className="mt-3 flex flex-col">
           {f.rows.map((r, i) => {
             const d = detail(r)
+            const m = state?.mounts.find((x) => x.id === r.id)
+            const title = m?.encrypted ? (
+              <>
+                {r.name}
+                <EncryptedMark m={m} className="ml-1.5 align-[-1px]" />
+              </>
+            ) : (
+              r.name
+            )
             return (
-              <Line key={r.id} i={i} look={r.phase} progress={d.progress} title={r.name} detail={d.text} done={r.phase === 'done' || r.phase === 'skipped'}>
+              <Line key={r.id} i={i} look={r.phase} progress={d.progress} title={title} detail={d.text} done={r.phase === 'done' || r.phase === 'skipped'}>
                 {(r.phase === 'blocked' || r.phase === 'failed') && f.stage !== 'stopped' && (
                   <div className="mt-2 flex flex-wrap gap-2">
                     <Button size="sm" variant="outline" onClick={() => void retry(r.id)}>

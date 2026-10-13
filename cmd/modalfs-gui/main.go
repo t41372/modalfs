@@ -66,6 +66,20 @@ func (a *App) Quitting() { a.quitting.Store(true) }
 // QuitAck tells the app the UI is showing the quit checklist it asked for.
 func (a *App) QuitAck() { a.acked.Store(true) }
 
+// SaveText asks where to save a text file, such as an encrypted volume's key
+// (the WebView can't download), and writes it readable only by its owner. It
+// returns the path, or "" when the person cancelled.
+func (a *App) SaveText(name, text string) (string, error) {
+	path, err := wruntime.SaveFileDialog(a.ctx, wruntime.SaveDialogOptions{DefaultFilename: name, CanCreateDirectories: true})
+	if err != nil || path == "" {
+		return "", err
+	}
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		return "", fmt.Errorf("couldn't save %s: %w", path, err)
+	}
+	return path, nil
+}
+
 // requestQuit is ⌘Q, Quit in the menu bar menu, or Quit in the Dock: the
 // window comes forward and shows the quit checklist, which unmounts every
 // volume and then quits. A window that doesn't answer (its page failed to

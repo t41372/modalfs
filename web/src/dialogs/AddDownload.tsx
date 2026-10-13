@@ -1,7 +1,7 @@
 import { Collapsible as CollapsiblePrimitive } from '@base-ui/react/collapsible'
 import { useQuery } from '@tanstack/react-query'
 import { cn } from 'cn'
-import { ChevronDown, ChevronRight, CornerLeftUp, Folder, FolderPlus, Globe, Info } from 'lucide-react'
+import { ChevronDown, ChevronRight, CornerLeftUp, Folder, FolderPlus, Globe, Info, Lock } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -40,7 +40,9 @@ export function AddDownloadDialog({ open, onOpenChange }: { open: boolean; onOpe
   const [picking, setPicking] = useState(false)
 
   // Only volumes modalfs manages, and only once they've been mounted (so their ID is pinned).
-  const usable = st.mounts.filter((m) => m.volume_id)
+  // Encrypted ones are listed but can't be picked: the download would need their key on Modal.
+  const listed = st.mounts.filter((m) => m.volume_id)
+  const usable = listed.filter((m) => !m.encrypted)
   useEffect(() => {
     if (!open) return
     setLinks('')
@@ -148,7 +150,7 @@ export function AddDownloadDialog({ open, onOpenChange }: { open: boolean; onOpe
           }
         >
           {usable.length === 0 ? (
-            <p className="rounded-lg bg-muted px-3 py-2.5 text-[12.5px] text-muted-foreground">{t('dl.noVolumes')}</p>
+            <p className="rounded-lg bg-muted px-3 py-2.5 text-[12.5px] text-muted-foreground">{t(listed.length ? 'enc.dlAllEncrypted' : 'dl.noVolumes')}</p>
           ) : (
             <div className="grid grid-cols-2 gap-2 max-sm:grid-cols-1">
               <Choice
@@ -159,6 +161,10 @@ export function AddDownloadDialog({ open, onOpenChange }: { open: boolean; onOpe
                 options={[
                   ...usable.map((m) => ({ value: m.id, label: nameOf(m), hint: many ? m.account_label : m.label ? m.volume_name : undefined, icon: many ? <AccountMark id={m.account_id} label={m.account_label} size={16} /> : undefined })),
                   { value: OTHER, label: t('dl.otherVolume') },
+                  // Listed last, under a label that says why they can't be picked.
+                  ...listed
+                    .filter((m) => m.encrypted)
+                    .map((m) => ({ value: m.id, label: nameOf(m), group: t('enc.dlGroup'), disabled: true, icon: <Lock className="size-3.5 text-muted-foreground" /> })),
                 ]}
               />
               {mount && (

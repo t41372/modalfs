@@ -10,7 +10,17 @@ declare global {
       EventsOn?: (name: string, cb: (...data: unknown[]) => void) => () => void
     }
     /** Go methods the desktop app binds (cmd/modalfs-gui). */
-    go?: { main?: { App?: { SetAppearance?: (a: string) => Promise<void>; Quitting?: () => Promise<void>; QuitAck?: () => Promise<void> } } }
+    go?: {
+      main?: {
+        App?: {
+          SetAppearance?: (a: string) => Promise<void>
+          Quitting?: () => Promise<void>
+          QuitAck?: () => Promise<void>
+          /** Asks where to save a text file and writes it; resolves to the path, or '' when cancelled. */
+          SaveText?: (name: string, text: string) => Promise<string>
+        }
+      }
+    }
   }
 }
 
@@ -40,6 +50,23 @@ export function markPlatform() {
 export function openExternal(url: string) {
   if (window.runtime?.BrowserOpenURL) window.runtime.BrowserOpenURL(url)
   else window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+/**
+ * Saves text as a file the person picks up: the desktop app asks where (its
+ * WebView doesn't download), a browser downloads it. Resolves to false only
+ * when the person cancelled.
+ */
+export async function saveText(name: string, text: string): Promise<boolean> {
+  const save = window.go?.main?.App?.SaveText
+  if (save) return (await save(name, text)) !== ''
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }))
+  const a = Object.assign(document.createElement('a'), { href: url, download: name })
+  document.body.append(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+  return true
 }
 
 /** The desktop app's window follows the appearance chosen here, not only the system's. */

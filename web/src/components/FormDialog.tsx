@@ -31,8 +31,8 @@ export function FormDialog({
   /** The dismiss button; never a word that's also in `submit`. */
   dismiss?: string
   canSubmit?: boolean
-  /** Return normally to close; throw to show the error. */
-  onSubmit: () => Promise<void>
+  /** Return normally to close, 'stay' to go on to a next step; throw to show the error. */
+  onSubmit: () => Promise<void | 'stay'>
   /** A quiet note at the start of the footer, such as what submitting costs. */
   aside?: ReactNode
   children?: ReactNode
@@ -51,8 +51,7 @@ export function FormDialog({
     setBusy(true)
     setError('')
     try {
-      await onSubmit()
-      onOpenChange(false)
+      if ((await onSubmit()) !== 'stay') onOpenChange(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {

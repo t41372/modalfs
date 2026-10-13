@@ -165,6 +165,64 @@ const mounts: Mount[] = [
     error: "couldn't reach Modal: connection refused. Is this Mac online?",
     retry_at: now() + 95,
   },
+  // End-to-end encrypted volumes: one unlocked with its key remembered, one
+  // unlocked for this session only, one this computer has no key for.
+  {
+    id: 'm-contracts',
+    account_id: 'acc-research',
+    account_label: 'research',
+    workspace: 'acme-research',
+    environment: 'main',
+    volume_name: 'contracts',
+    volume_id: 'vo-00000000contracts',
+    label: 'Contracts · signed',
+    mountpoint: `${ROOT}/contracts`,
+    mode: 'auto',
+    active_mode: 'nfs',
+    filter_junk: true,
+    on_conflict: 'keep-both',
+    state: 'mounted',
+    started_at: now() - 5400,
+    status: status({ bytes_down: 96 * MiB, bytes_up: 12 * MiB, commits: 3, last_commit_at: now() - 900 }),
+    size_bytes: 1.8 * GiB,
+    size_at: now() - 3600,
+    encrypted: true,
+    key_remembered: true,
+  },
+  {
+    id: 'm-journal',
+    account_id: 'acc-personal',
+    account_label: 'personal',
+    workspace: 'sam-dev',
+    volume_name: 'journal',
+    volume_id: 'vo-0000000000journal',
+    mountpoint: `${ROOT}/journal`,
+    mode: 'auto',
+    active_mode: 'nfs',
+    filter_junk: true,
+    on_conflict: 'keep-both',
+    state: 'mounted',
+    started_at: now() - 600,
+    status: status({ bytes_down: 4 * MiB, bytes_up: 1 * MiB, commits: 1, last_commit_at: now() - 300 }),
+    encrypted: true,
+    key_remembered: false,
+  },
+  {
+    id: 'm-medical',
+    account_id: 'acc-research',
+    account_label: 'research',
+    workspace: 'acme-research',
+    environment: 'main',
+    volume_name: 'medical',
+    volume_id: 'vo-00000000000medical',
+    mountpoint: `${ROOT}/medical`,
+    mode: 'auto',
+    filter_junk: true,
+    state: 'stopped',
+    last_used: now() - 9 * 86400,
+    encrypted: true,
+    locked: true,
+  },
 ]
 
 const volumes: Record<string, Volume[]> = {
@@ -174,12 +232,32 @@ const volumes: Record<string, Volume[]> = {
     { id: 'vo-0000000evalruns', name: 'eval-runs', format: 'v2', mounted: false, created_at: now() - 86400 * 9, created_by: 'alex' },
     { id: 'vo-00000000hfcache', name: 'hf-cache', format: 'v2', mounted: false, created_at: now() - 86400 * 120, created_by: 'alex' },
     { id: 'vo-000legacyweights', name: 'legacy-weights', format: 'v1', mounted: false, created_at: now() - 86400 * 400, created_by: 'sam' },
+    { id: 'vo-00000000contracts', name: 'contracts', format: 'v2', mounted: true, mount_id: 'm-contracts', created_at: now() - 86400 * 14, created_by: 'sam', encrypted: true },
+    { id: 'vo-00000000000medical', name: 'medical', format: 'v2', mounted: false, mount_id: 'm-medical', created_at: now() - 86400 * 40, created_by: 'kim', encrypted: true },
   ],
   'acc-personal': [
     { id: 'vo-000000notebooks', name: 'notebooks', format: 'v2', mounted: false, mount_id: 'm-notebooks', created_at: now() - 86400 * 20, created_by: 'sam' },
     { id: 'vo-00000000scratch', name: 'scratch', format: 'v2', mounted: false, created_at: now() - 86400 * 2, created_by: 'sam' },
+    { id: 'vo-0000000000journal', name: 'journal', format: 'v2', mounted: true, mount_id: 'm-journal', created_at: now() - 86400 * 5, created_by: 'sam', encrypted: true },
   ],
 }
+
+// Encrypted volumes' keys, as Modal never sees them. The mock checks a pasted
+// key against these; a locked volume's label is readable only once unlocked.
+const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
+function newKey() {
+  const chars = Array.from(crypto.getRandomValues(new Uint8Array(56)), (b) => CROCKFORD[b % 32]).join('')
+  return `mfs1-${chars.match(/.{4}/g)!.join('-')}`
+}
+const keys: Record<string, string> = {
+  'vo-00000000contracts': newKey(),
+  'vo-0000000000journal': newKey(),
+  'vo-00000000000medical': newKey(),
+}
+const hiddenLabels: Record<string, string> = { 'm-medical': 'Patient files' }
+/** New encrypted volumes whose key was to be remembered, until they're mounted. */
+const rememberOnMount = new Set<string>()
+const sameKey = (a: string, b: string) => a.replace(/[\s-]+/g, '').toUpperCase() === b.replace(/[\s-]+/g, '').toUpperCase()
 
 // A workspace shared by many projects: the add dialog has to find one among them.
 {
@@ -297,7 +375,7 @@ function syncVolumeFlags() {
       const m = mounts.find((x) => x.account_id === acct && x.volume_id === v.id)
       v.mount_id = m?.id
       v.mounted = m?.state === 'mounted'
-      v.label = m?.label
+      v.label = m?.locked ? undefined : m?.label
     }
   }
 }
@@ -569,6 +647,9 @@ async function downloadsRoute(method: string, p: string, url: URL, body: Body): 
   if (method === 'GET' && p === '/downloads') return clone(listed())
   if (method === 'POST' && p === '/downloads') {
     if (!state.settings.remote_downloads) fail('remote downloads are off; turn them on in Settings first')
+    if (mounts.some((x) => x.volume_name === body.volume && x.account_id === body.account && x.encrypted)) {
+      fail(`${body.volume} is end-to-end encrypted: a remote download would need its key on Modal, so it can't save into it`)
+    }
     const urls = (body.urls as string[]) || []
     const added = urls.map((u, i) => {
       const name = u.replace(/[?#].*$/, '').split('/').filter(Boolean).pop() || 'download'
@@ -685,7 +766,7 @@ if (params.get('scenario') === 'demo') {
   const drop = <T>(list: T[], gone: (x: T) => boolean) => {
     for (let i = list.length - 1; i >= 0; i--) if (gone(list[i])) list.splice(i, 1)
   }
-  drop(mounts, (m) => m.state === 'error')
+  drop(mounts, (m) => m.state === 'error' || !!m.encrypted)
   for (const m of mounts) {
     delete m.unmount_error
     delete m.in_use_by
@@ -873,6 +954,13 @@ export async function mockRequest(method: string, path: string, raw?: unknown): 
     const list = (volumes[m[1]] ||= [])
     if (list.some((v) => v.name === name)) fail(`a volume named ${name} already exists`)
     const v: Volume = { id: `vo-${name}`, name, format: 'v2', mounted: false, created_at: now(), created_by: 'sam' }
+    if (body.encrypted) {
+      const key = String(body.key || '')
+      if (!/^mfs1-/i.test(key)) fail('an encrypted volume needs its key: ask for one with POST /encryption/key first')
+      v.encrypted = true
+      keys[v.id] = key
+      if (body.remember) rememberOnMount.add(v.id)
+    }
     list.push(v)
     emit('info', name, 'vol_created')
     return clone(v)
@@ -886,6 +974,32 @@ export async function mockRequest(method: string, path: string, raw?: unknown): 
     emit('info', name, 'vol_renamed')
     v.name = name
     return ok
+  }
+  if (route === 'POST /encryption/key') {
+    await wait(200)
+    return { key: newKey() }
+  }
+  if ((m = route.match(/^(POST \/accounts\/[^/]+\/volumes\/([^/]+)\/(unlock|lock)|GET \/accounts\/[^/]+\/volumes\/([^/]+)\/key)$/))) {
+    const volId = m[2] || m[4]
+    const mt = mounts.find((x) => x.volume_id === volId) ?? fail('volume not found')
+    if (m[3] === 'unlock') {
+      await wait(400)
+      if (!sameKey(String(body.key || ''), keys[volId] ?? '')) fail(`this key doesn't open ${mt.volume_name}: it's a valid modalfs key, but for another volume or mistyped`)
+      mt.locked = false
+      mt.key_remembered = !!body.remember
+      if (hiddenLabels[mt.id]) mt.label = hiddenLabels[mt.id]
+      return ok
+    }
+    if (m[3] === 'lock') {
+      if (mt.state !== 'stopped' && mt.state !== 'error') fail(`unmount ${mt.volume_name} first: a mounted volume needs its key`)
+      mt.locked = true
+      mt.key_remembered = false
+      if (mt.label) hiddenLabels[mt.id] = mt.label
+      mt.label = undefined
+      return ok
+    }
+    if (!mt.key_remembered || mt.locked) fail("this computer doesn't remember that volume's key")
+    return { key: keys[volId] }
   }
   if ((m = route.match(/^(GET|POST) \/accounts\/([^/]+)\/volumes\/([^/]+)\/label$/))) {
     const mt = mounts.find((x) => x.account_id === m![2] && x.volume_id === m![3])
@@ -948,6 +1062,7 @@ export async function mockRequest(method: string, path: string, raw?: unknown): 
       mode: 'auto',
       filter_junk: true,
       state: body.start ? 'starting' : 'stopped',
+      ...(v.encrypted ? { encrypted: true, key_remembered: rememberOnMount.has(v.id) } : {}),
     }
     mounts.push(mt)
     if (body.start) setState(mt, 'mounted', 900)
@@ -973,6 +1088,7 @@ export async function mockRequest(method: string, path: string, raw?: unknown): 
   if ((m = route.match(/^POST \/mounts\/([^/]+)\/(start|stop|sync|reveal)$/))) {
     const mt = findMount(m[1])
     if (m[2] === 'start') {
+      if (mt.locked) fail(`${mt.volume_name} is encrypted and this computer doesn't have its key; unlock it first`)
       mt.state = 'starting'
       mt.error = undefined
       setState(mt, 'mounted', 900)

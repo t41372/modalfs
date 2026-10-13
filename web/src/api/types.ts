@@ -77,6 +77,12 @@ export interface Mount {
   /** The volume's size from its last listing, and when that was. */
   size_bytes?: number
   size_at?: number
+  /** End-to-end encrypted (docs/design/encryption.md): Modal sees only ciphertext. */
+  encrypted?: boolean
+  /** Encrypted, and this computer doesn't have its key: it can't mount until unlocked. */
+  locked?: boolean
+  /** Unlocked, and the key is kept on this computer (keychain or a private file) rather than until modalfs quits. */
+  key_remembered?: boolean
 }
 
 /** A file that changed on Modal while it was edited here; the local version was saved as `copy`. */
@@ -185,6 +191,8 @@ export interface Volume {
   mount_id?: string
   /** Only when modalfs already knows it: labels aren't read for every volume. */
   label?: string
+  /** Only when modalfs already knows it, like the label. */
+  encrypted?: boolean
 }
 
 export interface Profile {
