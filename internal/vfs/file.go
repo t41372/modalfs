@@ -799,6 +799,7 @@ func (st *fileState) flush() error {
 	committed = true
 	deleted := st.deleted
 	st.finishCommitLocked(sn, target, e.Mtime, hashes)
+	finished := st.removed // nothing written since the snapshot
 	st.mu.Unlock()
 
 	if deleted {
@@ -809,7 +810,9 @@ func (st *fileState) flush() error {
 		fs.invalidate(parentOf(target))
 		return nil
 	}
-	if fs.opt.SidecarMin > 0 && sn.size >= fs.opt.SidecarMin {
+	// A sidecar costs an upload and a commit of its own: write it once the
+	// file is done, not for each part of a long write.
+	if fs.opt.SidecarMin > 0 && sn.size >= fs.opt.SidecarMin && finished {
 		if err := fs.writeSidecar(target, m); err != nil {
 			fs.log.Warn("sidecar write failed", "path", target, "err", err)
 		}

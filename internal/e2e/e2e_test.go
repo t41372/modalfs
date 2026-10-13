@@ -23,6 +23,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -565,6 +566,21 @@ func TestUploadsWhileWriting(t *testing.T) {
 	}
 	e.waitRemote("long.bin", data, time.Minute)
 	t.Logf("%d of %d MiB were uploaded before the writer finished", upBeforeClose/MiB, len(data)/MiB)
+	// The parts don't each get a sidecar, but the finished file does.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		raw, err := e.remote(".modalfs/manifests/long.bin.json")
+		var sc struct {
+			Size int64 `json:"size"`
+		}
+		if err == nil && json.Unmarshal(raw, &sc) == nil && sc.Size == int64(len(data)) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no sidecar for the finished file (err %v, size %d)", err, sc.Size)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
 }
 
 // putRemote writes a file straight to "Modal", as a Modal Function would.
