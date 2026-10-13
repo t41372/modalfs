@@ -10,9 +10,10 @@ This file is for you, the agent working on modalfs. It's a small project: keep i
 2. **Compute only when asked.** Mounting, browsing and syncing only call Modal's control-plane API and signed block URLs, and never start a Sandbox, Function or container. The one exception is remote downloads: off until the user turns them on, and then a Function (or the short-lived Sandbox that deploys it) starts only for a download the user adds or resumes. It stops when the download ends, pauses or stalls, and is listed where the user can see and stop it.
 3. **A mount never silently changes what it points at.** Each mount is pinned to an account, environment and volume ID. Switching Modal CLI profiles, renaming or recreating a volume must never move a mount somewhere else.
 4. **Explicit over implicit.** No swallowed errors, no fake success, no silent fallback. Show what's happening (pending uploads, conflicts, errors) where the user will see it. A message says what went wrong and what to do about it.
-5. **The app and the CLI are both complete.** Everything goes through the daemon's API, so anything one can do the other can too. The app's window is only a remote control: closing it never unmounts anything.
-6. **Easy beats powerful.** Good defaults first. The user shouldn't need to know NFS, FUSE or block sizes to mount a folder.
-7. **Small and maintainable.** Prefer the standard library and the dependencies we already have. A bigger design has to justify itself against the smaller one that would also work. Write code and text for the person who maintains this for years: plain words, no AI slop.
+5. **No surprises.** modalfs behaves the way a user would expect from what the app and the CLI say. A setting, a label or a default means what it seems to mean: a cache size limits the disk modalfs uses. If the behavior can't match, change the design first. Explain it in words only when it truly can't be avoided, and then where the user makes the choice, not only in the README.
+6. **The app and the CLI are both complete.** Everything goes through the daemon's API, so anything one can do the other can too. The app's window is only a remote control: closing it never unmounts anything.
+7. **Easy beats powerful.** Good defaults first. The user shouldn't need to know NFS, FUSE or block sizes to mount a folder.
+8. **Small and maintainable.** Prefer the standard library and the dependencies we already have. A bigger design has to justify itself against the smaller one that would also work. Write code and text for the person who maintains this for years: plain words, no AI slop.
 
 ## Trust model
 
@@ -26,6 +27,7 @@ Don't add defenses that only protect the owner from themselves.
 
 ## How we work
 
+- **Weigh every principle.** Check each technical decision and design against all the principles above, not only the one it was made for. When two pull different ways, say so and choose on purpose.
 - **Reason from first principles.** Start from what the user needs and what Modal's API actually guarantees, not from how other sync tools do it. Precedent is evidence, not an argument.
 - **Ask or act.** Make routine calls yourself and state the assumption. Ask when different readings lead to materially different work.
 - **Precedence.** The user's request in the conversation overrides this file. If it conflicts with a principle, say so, then follow the user.
