@@ -56,6 +56,11 @@ func (c *conn) serve(ctx context.Context) {
 	// request is read whole, then handled on its own goroutine; replies go
 	// out through writeSerializer as they finish, matched to requests by XID.
 	sem := make(chan struct{}, maxConcurrentRequests)
+	// modalfs: writes take slots of their own. A write can wait a while
+	// for uploads to free room on disk, and the client keeps up to
+	// max_async_writes (128) of them in flight; sharing the slots, they'd
+	// leave none for the listings and stats that must keep answering.
+	writeSem := make(chan struct{}, maxConcurrentWrites)
 	for {
 		w, err := c.readRequestHeader(connCtx, bio)
 		if err == nil {
@@ -70,13 +75,17 @@ func (c *conn) serve(ctx context.Context) {
 			return
 		}
 		Log.Tracef("request: %v", w.req)
+		slots := sem
+		if w.req.Header.Prog == nfsServiceID && w.req.Header.Proc == uint32(NFSProcedureWrite) {
+			slots = writeSem
+		}
 		select {
-		case sem <- struct{}{}:
+		case slots <- struct{}{}:
 		case <-connCtx.Done():
 			return
 		}
 		go func() {
-			defer func() { <-sem }()
+			defer func() { <-slots }()
 			defer func() {
 				if r := recover(); r != nil {
 					// a handler bug fails this request, not the whole server
@@ -100,9 +109,16 @@ func (c *conn) serve(ctx context.Context) {
 	}
 }
 
-// maxConcurrentRequests bounds the requests one connection handles at once
-// (the macOS client keeps up to 16 or so in flight by default).
-const maxConcurrentRequests = 64
+// maxConcurrentRequests bounds the requests other than writes one
+// connection handles at once (the macOS client keeps up to 16 or so in
+// flight by default), and maxConcurrentWrites its writes: macOS's
+// vfs.generic.nfs.client.max_async_writes, so a write is never held up
+// behind others the client has no room for. Each holds its body (up to
+// wsize, 1 MiB) in memory.
+const (
+	maxConcurrentRequests = 64
+	maxConcurrentWrites   = 128
+)
 
 // bufferBody reads the rest of the request into memory, so the connection
 // can go on to read the next request while this one is handled.
