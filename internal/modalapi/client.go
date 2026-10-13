@@ -37,6 +37,11 @@ import (
 // BlockSize is the fixed Volume v2 block size.
 const BlockSize = 8 << 20
 
+// putWorkers is how many blocks one Put uploads at once, each held in
+// memory while it uploads. 16 came close to the link's speed where 8
+// reached about two thirds of it.
+const putWorkers = 16
+
 const clientVersion = "1.6.1"
 
 type Config struct {
@@ -183,7 +188,10 @@ func New(cfg Config) (*Client, error) {
 		DialContext:         (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		MaxIdleConnsPerHost: 64,
 		IdleConnTimeout:     90 * time.Second,
-		ForceAttemptHTTP2:   true,
+		// HTTP/1.1 only: over HTTP/2 every block shares one connection to
+		// the block store, which held uploads and downloads to about
+		// 10 MiB/s on a link where separate connections reach 45-50.
+		TLSNextProto: map[string]func(string, *tls.Conn) http.RoundTripper{},
 	}
 	c.HTTP = &http.Client{Transport: tr}
 	if cfg.Transport == "http1" {
@@ -552,7 +560,7 @@ func (c *Client) uploadMissing(ctx context.Context, files []PutFile, missing []*
 		uploaded int
 		first    error
 	)
-	for w := 0; w < min(8, len(missing)); w++ {
+	for w := 0; w < min(putWorkers, len(missing)); w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
