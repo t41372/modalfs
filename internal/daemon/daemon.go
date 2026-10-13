@@ -60,6 +60,7 @@ type Daemon struct {
 	dl         *dlManager  // remote downloads
 
 	traffic   traffic     // each mount's totals over the last hour
+	speeds    speeds      // each live mount's totals over the last few seconds
 	conflicts conflicts   // conflicts not marked handled yet, by mount
 	usage     *usageStore // volume sizes, from listing them
 	avatars   *avatarStore
@@ -504,6 +505,7 @@ func (d *Daemon) State() StateView {
 			if r.fs != nil && (r.state == StateMounted || r.state == StateStopping) {
 				st := r.fs.Status()
 				mv.Status = &st
+				mv.UpSpeed, mv.DownSpeed = d.speeds.get(m.ID)
 			}
 		}
 		v.Mounts = append(v.Mounts, mv)

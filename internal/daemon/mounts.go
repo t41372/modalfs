@@ -70,16 +70,20 @@ type runMount struct {
 // MountView is a saved mount plus its live state, as the UI sees it.
 type MountView struct {
 	config.Mount
-	Encrypted     bool        `json:"encrypted,omitempty"`
-	Locked        bool        `json:"locked,omitempty"`
-	KeyRemembered bool        `json:"key_remembered,omitempty"`
-	AccountLabel  string      `json:"account_label"`
-	Workspace     string      `json:"workspace"`
-	State         string      `json:"state"`
-	Error         string      `json:"error,omitempty"`
-	ActiveMode    string      `json:"active_mode,omitempty"`
-	StartedAt     int64       `json:"started_at,omitempty"`
-	Status        *vfs.Status `json:"status,omitempty"` // while mounted or stopping
+	Encrypted     bool `json:"encrypted,omitempty"`
+	Locked        bool `json:"locked,omitempty"`
+	KeyRemembered bool `json:"key_remembered,omitempty"`
+	// UpSpeed and DownSpeed are bytes per second uploaded and read, over the
+	// last few seconds, while mounted.
+	UpSpeed      int64       `json:"up_speed,omitempty"`
+	DownSpeed    int64       `json:"down_speed,omitempty"`
+	AccountLabel string      `json:"account_label"`
+	Workspace    string      `json:"workspace"`
+	State        string      `json:"state"`
+	Error        string      `json:"error,omitempty"`
+	ActiveMode   string      `json:"active_mode,omitempty"`
+	StartedAt    int64       `json:"started_at,omitempty"`
+	Status       *vfs.Status `json:"status,omitempty"` // while mounted or stopping
 	// Starting: what it's doing now (connect, open, mount).
 	Step string `json:"step,omitempty"`
 	// Error: an auto-mount tries again at this time (Unix seconds).

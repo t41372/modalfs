@@ -75,19 +75,89 @@ func (t *traffic) drop(id string) {
 	delete(t.m, id)
 }
 
-// sampleTraffic records every live mount's totals until ctx ends.
+// sampleTraffic records every live mount's totals until ctx ends: each
+// second for its current speed, and every trafficEvery for its last hour.
 func (d *Daemon) sampleTraffic(ctx context.Context) {
-	tick := time.NewTicker(trafficEvery)
+	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
+	var last time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case now := <-tick.C:
-			for id, fs := range d.liveFS() {
-				s := fs.Status()
-				d.traffic.add(id, TrafficSample{now.Unix(), s.BytesUp, s.BytesDown})
+			live := d.liveFS()
+			d.speeds.retain(live)
+			hour := now.Sub(last) >= trafficEvery
+			if hour {
+				last = now
 			}
+			for id, fs := range live {
+				s := fs.Status()
+				d.speeds.add(id, now, s.BytesUp, s.BytesDown)
+				if hour {
+					d.traffic.add(id, TrafficSample{now.Unix(), s.BytesUp, s.BytesDown})
+				}
+			}
+		}
+	}
+}
+
+// ---------- speed ----------
+
+// speedWindow is how far back a mount's current speed looks: long enough to
+// smooth over one slow second, short enough to fall to zero soon after.
+const speedWindow = 3 * time.Second
+
+type speedSample struct {
+	at       time.Time
+	up, down int64
+}
+
+// speeds holds each live mount's totals over the last few seconds.
+type speeds struct {
+	mu sync.Mutex
+	m  map[string][]speedSample
+}
+
+func (s *speeds) add(id string, at time.Time, up, down int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.m == nil {
+		s.m = map[string][]speedSample{}
+	}
+	list := s.m[id]
+	// The totals start again at zero with each mount.
+	if n := len(list); n > 0 && (up < list[n-1].up || down < list[n-1].down) {
+		list = nil
+	}
+	list = append(list, speedSample{at, up, down})
+	for len(list) > 1 && at.Sub(list[0].at) > speedWindow {
+		list = list[1:]
+	}
+	s.m[id] = list
+}
+
+// get returns a mount's upload and read speed, in bytes per second.
+func (s *speeds) get(id string) (up, down int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list := s.m[id]
+	if len(list) < 2 {
+		return 0, 0
+	}
+	first, last := list[0], list[len(list)-1]
+	secs := last.at.Sub(first.at).Seconds()
+	return int64(float64(last.up-first.up) / secs), int64(float64(last.down-first.down) / secs)
+}
+
+// retain forgets the mounts that aren't live any more.
+func (s *speeds) retain(live map[string]*vfs.FS) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id := range s.m {
+		if live[id] == nil {
+			delete(s.m, id)
 		}
 	}
 }

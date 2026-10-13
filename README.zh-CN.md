@@ -213,7 +213,7 @@ $ modalfs download show dl-3f2a --follow
 
 Volumes
   modalfs volume ls      [--account A] [--env E]
-  modalfs volume create  NAME [--account A] [--env E] [--mount]
+  modalfs volume create  NAME [--label L] [--account A] [--env E] [--mount]
   modalfs volume rename  NAME NEWNAME [--account A] [--env E]
   modalfs volume label   NAME [LABEL | --clear]   代替 NAME 显示的名字，存在 volume 里
   modalfs volume rm      NAME [--account A] [--env E] [--yes]

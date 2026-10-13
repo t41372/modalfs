@@ -213,7 +213,7 @@ Everyday
 
 Volumes
   modalfs volume ls      [--account A] [--env E]
-  modalfs volume create  NAME [--account A] [--env E] [--mount]
+  modalfs volume create  NAME [--label L] [--account A] [--env E] [--mount]
   modalfs volume rename  NAME NEWNAME [--account A] [--env E]
   modalfs volume label   NAME [LABEL | --clear]   a name shown instead of NAME, kept in the volume
   modalfs volume rm      NAME [--account A] [--env E] [--yes]

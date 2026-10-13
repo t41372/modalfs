@@ -253,9 +253,9 @@ func (d *Daemon) routes() http.Handler {
 	})
 	mux.HandleFunc("POST /api/accounts/{id}/volumes", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
-			Name, Environment, Key string
-			Encrypted              bool
-			Remember               *bool
+			Name, Environment, Key, Label string
+			Encrypted                     bool
+			Remember                      *bool
 		}
 		if err := readJSON(r, &in); err != nil {
 			writeErr(w, err)
@@ -267,6 +267,11 @@ func (d *Daemon) routes() http.Handler {
 		}
 		c, _, err := d.clientFor(r.PathValue("id"), in.Environment)
 		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		// Checked before the volume exists, so a bad label creates nothing.
+		if _, err := cleanLabel(in.Label); err != nil {
 			writeErr(w, err)
 			return
 		}
@@ -296,6 +301,12 @@ func (d *Daemon) routes() http.Handler {
 			}
 			if err != nil {
 				writeErr(w, fmt.Errorf("created volume %s (%s), but encryption initialization failed: %w; keep your key and retry recovery or delete this empty volume", v.Name, v.ID, err))
+				return
+			}
+		}
+		if strings.TrimSpace(in.Label) != "" {
+			if _, err := d.setLabel(r.Context(), r.PathValue("id"), in.Environment, v.ID, in.Label); err != nil {
+				writeErr(w, fmt.Errorf("created volume %s, but couldn't save its label: %w; set it again from the volume's page", v.Name, err))
 				return
 			}
 		}

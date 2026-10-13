@@ -42,7 +42,7 @@ Everyday:
 
 Volumes:
   modalfs volume ls [--account A] [--env E]
-  modalfs volume create NAME [--account A] [--env E] [--mount]
+  modalfs volume create NAME [--label L] [--account A] [--env E] [--mount]
   modalfs volume rename NAME NEWNAME [--account A] [--env E]
   modalfs volume label NAME [LABEL | --clear]   a name shown instead of NAME, kept in the volume
   modalfs volume rm NAME [--account A] [--env E] [--yes]
@@ -263,6 +263,9 @@ func cmdStatus() {
 		if m.Status != nil {
 			pending = fmt.Sprintf("%d", m.Status.PendingFiles)
 			traffic = human(m.Status.BytesDown) + " / " + human(m.Status.BytesUp)
+			if m.DownSpeed > 0 || m.UpSpeed > 0 {
+				traffic += fmt.Sprintf(" (now %s/s / %s/s)", human(m.DownSpeed), human(m.UpSpeed))
+			}
 		}
 		state := m.State
 		if m.State == daemon.StateError {
@@ -619,6 +622,7 @@ func cmdVolume(args []string) {
 	yes := fl.Bool("yes", false, "don't ask for confirmation")
 	mountIt := fl.Bool("mount", false, "mount right after creating")
 	clear := fl.Bool("clear", false, "remove the label")
+	labelF := fl.String("label", "", "a name shown instead of NAME, kept in the volume")
 	encrypt := fl.Bool("encrypt", false, "encrypt contents and names; save the displayed key before creating")
 	remember := fl.Bool("remember", true, "remember the encryption key on this computer")
 	to := fl.String("to", "", "local empty folder for decrypted recovery")
@@ -650,7 +654,7 @@ func cmdVolume(args []string) {
 			fatal(errors.New("usage: modalfs volume create NAME"))
 		}
 		var v volRow
-		in := map[string]any{"name": pos[0], "environment": *env}
+		in := map[string]any{"name": pos[0], "environment": *env, "label": *labelF}
 		if *encrypt {
 			var fresh struct {
 				Key string `json:"key"`
