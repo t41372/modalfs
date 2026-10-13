@@ -1,12 +1,13 @@
 import { cn } from 'cn'
-import { Fragment } from 'react'
+import { Fragment, type ReactNode } from 'react'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select'
 
-type Option<T> = { value: T; label: string; hint?: string; disabled?: boolean; group?: string }
+type Option<T> = { value: T; label: string; hint?: string; disabled?: boolean; group?: string; icon?: ReactNode }
 
 /**
  * A drop-down list of options. `value` must be one of them; an empty value shows the placeholder.
- * Options with a `group` are listed under its label, groups in the order they first appear.
+ * Options with a `group` are listed under its label, groups in the order they first appear;
+ * an `icon` (an account's picture, say) shows before the label in the list and on the button.
  */
 export function Choice<T extends string>({
   value,
@@ -33,6 +34,7 @@ export function Choice<T extends string>({
   }
   const item = (o: Option<T>) => (
     <SelectItem key={o.value} value={o.value} disabled={o.disabled}>
+      {o.icon}
       {o.label}
       {o.hint && <span className="ml-1.5 text-muted-foreground">{o.hint}</span>}
     </SelectItem>
@@ -45,7 +47,8 @@ export function Choice<T extends string>({
       disabled={disabled}
     >
       <SelectTrigger aria-label={label} className={cn('min-w-36 bg-secondary', className)}>
-        <SelectValue placeholder={placeholder} />
+        {options.find((o) => o.value === value)?.icon}
+        <SelectValue placeholder={placeholder} className="flex-1 text-left" />
       </SelectTrigger>
       <SelectContent alignItemWithTrigger={false} align="end">
         {groups.map((g, i) =>

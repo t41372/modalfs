@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { api } from '@/api/client'
 import { refreshState, refreshVolumes, useEnvironments, useLoadedState, useVolumes } from '@/api/queries'
 import type { Mount } from '@/api/types'
+import { AccountMark } from '@/components/bits'
 import { Choice } from '@/components/Choice'
 import { Spinner } from '@/components/Spinner'
 import { Button } from '@/components/ui/button'
@@ -95,7 +96,7 @@ export function AddVolumeDialog({ open, onOpenChange }: { open: boolean; onOpenC
                   setAccount(v)
                   setEnv(DEFAULT)
                 }}
-                options={st.accounts.map((a) => ({ value: a.id, label: a.label }))}
+                options={st.accounts.map((a) => ({ value: a.id, label: a.label, icon: <AccountMark id={a.id} label={a.label} size={16} /> }))}
               />
             )}
             {(envs.data?.length ?? 0) > 1 && (

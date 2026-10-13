@@ -162,6 +162,14 @@ func (d *Daemon) routes() http.Handler {
 		}
 		writeJSON(w, 200, a)
 	})
+	// The account owner's profile picture, as a data URL ("" if none).
+	mux.HandleFunc("GET /api/accounts/{id}/avatar", func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := d.store.Account(r.PathValue("id")); !ok {
+			writeJSON(w, 404, map[string]string{"error": "no such account"})
+			return
+		}
+		writeJSON(w, 200, map[string]string{"data_url": d.avatarDataURL(r.Context(), r.PathValue("id"))})
+	})
 	mux.HandleFunc("GET /api/accounts/{id}/environments", func(w http.ResponseWriter, r *http.Request) {
 		c, _, err := d.clientFor(r.PathValue("id"), "")
 		if err != nil {
@@ -798,6 +806,9 @@ func (d *Daemon) RemoveAccount(id string) error {
 		return err
 	}
 	d.dropClients(a.ID)
+	if d.avatars != nil {
+		d.avatars.forget(a.ID)
+	}
 	if err := config.DeleteSecret(a); err != nil {
 		return fmt.Errorf("removed the account, but could not delete its token secret: %w", err)
 	}

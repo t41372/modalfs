@@ -1,11 +1,12 @@
 // Small pieces the pages share: a state icon, chips, number tiles, an account's
-// mark, and a hint that shows on hover.
+// picture and name, and a hint that shows on hover.
 
 import { cn } from 'cn'
 import { ArrowDown, ArrowUp, Check, type LucideIcon, Minus, Pause, RefreshCw, TriangleAlert } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { ReactElement, ReactNode } from 'react'
 import { Spinner } from '@/components/Spinner'
+import { useAvatar } from '@/api/queries'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { easeOut } from '@/lib/motion'
 import type { Look, Tone } from '@/lib/mounts'
@@ -149,17 +150,32 @@ export function Bar({ pct, tone = 'brand', className, label }: { pct: number; to
 
 const MARKS = ['oklch(0.6 0.13 258)', 'oklch(0.62 0.12 160)', 'oklch(0.65 0.13 60)', 'oklch(0.6 0.14 320)', 'oklch(0.6 0.12 200)', 'oklch(0.6 0.15 25)']
 
-/** An account's colored initial, the same color wherever it appears. */
+/**
+ * An account's picture: its owner's Modal profile picture, or, when there is
+ * none, a colored initial (the same color wherever it appears).
+ */
 export function AccountMark({ id, label, size = 20 }: { id: string; label: string; size?: number }) {
+  const { data: src } = useAvatar(id)
+  if (src) return <img src={src} alt="" aria-hidden width={size} height={size} draggable={false} className="shrink-0 rounded-full bg-muted object-cover ring-1 ring-foreground/10" style={{ width: size, height: size }} />
   let h = 0
   for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0
   return (
     <span
       aria-hidden
-      className="inline-flex shrink-0 items-center justify-center rounded-[6px] font-semibold text-white"
-      style={{ width: size, height: size, fontSize: size * 0.52, background: MARKS[h % MARKS.length] }}
+      className="inline-flex shrink-0 items-center justify-center rounded-full font-semibold text-white"
+      style={{ width: size, height: size, fontSize: size * 0.5, background: MARKS[h % MARKS.length] }}
     >
       {(label.trim()[0] ?? '?').toUpperCase()}
+    </span>
+  )
+}
+
+/** An account as people recognize it: its picture and its name. */
+export function AccountName({ id, label, size = 16, className }: { id: string; label: string; size?: number; className?: string }) {
+  return (
+    <span className={cn('inline-flex min-w-0 items-center gap-1.5', className)}>
+      <AccountMark id={id} label={label} size={size} />
+      <span className="truncate">{label}</span>
     </span>
   )
 }

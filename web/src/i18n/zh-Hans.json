@@ -39,7 +39,8 @@
     "empty": "还没有 Volume",
     "emptyP": "从你的 Modal 账号添加一个 Volume，modalfs 会把它变成这台 Mac 上的文件夹。",
     "lastUsed": "未挂载 · 上次使用 {{ago}}",
-    "handle": "处理"
+    "handle": "处理",
+    "accountEnv": "环境：{{env}}"
   },
   "vol": {
     "mount": "挂载",
@@ -299,8 +300,10 @@
     "start": "开始下载",
     "startN_other": "开始 {{count}} 个下载",
     "added_other": "已开始 {{count}} 个下载",
-    "costLine_other": "运行时每个每小时约 ${{price}}",
-    "costHint2": "按秒从 {{workspace}} 的 Modal 账号计费。下载完成或暂停就停止计费。"
+    "costLine_other": "每个约 ${{price}}/小时",
+    "costHint2": "按秒从 {{workspace}} 的 Modal 账号计费。下载完成或暂停就停止计费。",
+    "folder": "文件夹",
+    "saveHere": "存在这里"
   },
   "downloads": {
     "auto": "自动",

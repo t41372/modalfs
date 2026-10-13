@@ -35,6 +35,17 @@ export function useLoadedState() {
   return data
 }
 
+/** An account's profile picture as a data URL ("" when it has none). The daemon fetches and keeps it. */
+export function useAvatar(accountId: string | undefined) {
+  return useQuery({
+    queryKey: ['avatar', accountId],
+    queryFn: () => api<{ data_url: string }>('GET', `/accounts/${accountId}/avatar`).then((r) => r.data_url),
+    enabled: !!accountId,
+    staleTime: 60 * 60_000,
+    retry: false,
+  })
+}
+
 export function useEnvironments(accountId: string | undefined) {
   return useQuery({
     queryKey: ['envs', accountId],

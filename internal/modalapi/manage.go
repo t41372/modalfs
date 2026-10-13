@@ -96,3 +96,31 @@ func (c *Client) RenameVolume(ctx context.Context, volID, newName string) error 
 
 // Environment returns the environment this client is scoped to ("" = workspace default).
 func (c *Client) Environment() string { return c.cfg.Environment }
+
+// AvatarURL returns the profile picture of the user a token belongs to, as
+// Modal's member list has it (often a GitHub avatar), or "" when there is
+// none, as for a service user's token.
+func (c *Client) AvatarURL(ctx context.Context) (string, error) {
+	t, err := withRetry(ctx, func(ctx context.Context) (*pb.TokenInfoGetResponse, error) {
+		return c.Stub.TokenInfoGet(ctx, pb.TokenInfoGetRequest_builder{}.Build())
+	})
+	if err != nil {
+		return "", err
+	}
+	user := t.GetUserIdentity().GetUserId()
+	if user == "" {
+		return "", nil
+	}
+	m, err := withRetry(ctx, func(ctx context.Context) (*pb.WorkspaceMembersListResponse, error) {
+		return c.Stub.WorkspaceMembersList(ctx, &emptypb.Empty{})
+	})
+	if err != nil {
+		return "", err
+	}
+	for _, it := range m.GetMembers() {
+		if it.GetUserId() == user {
+			return it.GetAvatarUrl(), nil
+		}
+	}
+	return "", nil
+}

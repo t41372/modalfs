@@ -9,7 +9,7 @@ import { queryClient, refreshDownloads, refreshState, useAction, useAppState, us
 import type { Billing, Download, DownloadStatus } from '@/api/types'
 import { navigate } from '@/app/nav'
 import { useIsDark } from '@/app/theme'
-import { Bar, Chip, Hint, Tile } from '@/components/bits'
+import { AccountName, Bar, Chip, Hint, Tile } from '@/components/bits'
 import { confirm } from '@/components/confirm'
 import { Card, Mono, Page, Section } from '@/components/page'
 import { Segmented } from '@/components/Segmented'
@@ -56,9 +56,11 @@ function DownloadPage({ d }: { d: Download }) {
   const pct = s && s.total > 0 ? Math.min(100, (s.done / s.total) * 100) : undefined
   const started = events.find((e) => e.ev === 'start')?.t
   const finished = events.findLast((e) => e.ev === 'finished')?.t
-  // A download Modal refused to start never ran: there's nothing to chart or count.
-  const ran = !!s || records.history.length > 0 || events.length > 0 || running
   const silent = !ENDED.has(d.state) && (d.silent ?? 0) >= SILENT_WARN
+  // Progress, figures and the chart only once something was downloaded or it's
+  // downloading now: a download that failed at once, or one Modal hasn't
+  // started yet, has nothing to chart or count, and empty tiles say nothing.
+  const ran = (s?.done ?? 0) > 0 || records.history.length > 0 || (d.state === 'running' && !silent)
   const { glyph, tone } = downloadGlyph(d.state)
   const hourly = hourlyFor(d.size, billing.data)
   const cost = (runSeconds(events, running, Date.now() / 1000) / 3600) * hourly
@@ -250,9 +252,9 @@ function DownloadPage({ d }: { d: Download }) {
               <span className="text-muted-foreground"> · {t('downloads.perHour', { price: hourly.toFixed(4) })}</span>
             </dd>
             <dt className="text-muted-foreground">{t('form.account')}</dt>
-            <dd data-selectable>
-              {d.account_label}
-              {d.environment && <span className="text-muted-foreground"> · {d.environment}</span>}
+            <dd data-selectable className="flex min-w-0 items-center gap-1">
+              <AccountName id={d.account_id} label={d.account_label} />
+              {d.environment && <span className="text-muted-foreground">· {d.environment}</span>}
             </dd>
             <dt className="text-muted-foreground">{t('dl.addedAt')}</dt>
             <dd>{when(d.created, lang)}</dd>

@@ -1,19 +1,21 @@
 import { Collapsible as CollapsiblePrimitive } from '@base-ui/react/collapsible'
 import { useQuery } from '@tanstack/react-query'
 import { cn } from 'cn'
-import { ChevronRight, CornerLeftUp, Folder, FolderPlus } from 'lucide-react'
+import { ChevronDown, ChevronRight, CornerLeftUp, Folder, FolderPlus, Info } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { api } from '@/api/client'
 import { refreshDownloads, refreshState, useBilling, useLoadedState } from '@/api/queries'
 import type { Download, DownloadSize, DownloadTool } from '@/api/types'
-import { Hint } from '@/components/bits'
+import { AccountMark, Hint } from '@/components/bits'
 import { Choice } from '@/components/Choice'
 import { Field, FormDialog } from '@/components/FormDialog'
 import { Segmented } from '@/components/Segmented'
 import { Spinner } from '@/components/Spinner'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { AddVolumeDialog } from '@/dialogs/AddVolume'
 import { hourlyFor } from '@/lib/downloads'
 
@@ -31,6 +33,7 @@ export function AddDownloadDialog({ open, onOpenChange }: { open: boolean; onOpe
   const [size, setSize] = useState<DownloadSize>('small')
   const [cookies, setCookies] = useState<{ name: string; text: string } | null>(null)
   const [addingVolume, setAddingVolume] = useState(false)
+  const [picking, setPicking] = useState(false)
 
   // Only volumes modalfs manages, and only once they've been mounted (so their ID is pinned).
   const usable = st.mounts.filter((m) => m.volume_id)
@@ -64,6 +67,14 @@ export function AddDownloadDialog({ open, onOpenChange }: { open: boolean; onOpe
         title={t('dl.addTitle')}
         submit={urls.length > 1 ? t('dl.startN', { count: urls.length }) : t('dl.start')}
         canSubmit={urls.length > 0 && !bad && !!mount}
+        aside={
+          <Hint text={t('dl.costHint2', { workspace: acct?.workspace || acct?.label || '…' })}>
+            <span className="inline-flex items-center gap-1 text-[12px] text-muted-foreground tabular">
+              {t('dl.costLine', { price: price.toFixed(4), count: Math.max(1, urls.length) })}
+              <Info className="size-3.5" />
+            </span>
+          </Hint>
+        }
         onSubmit={async () => {
           const added = await api<Download[]>('POST', '/downloads', {
             account: mount!.account_id,
@@ -93,30 +104,50 @@ export function AddDownloadDialog({ open, onOpenChange }: { open: boolean; onOpe
             className="min-h-18 w-full resize-y rounded-lg border border-input bg-transparent px-2.5 py-2 font-mono text-[12.5px] leading-relaxed outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:bg-input/30"
           />
         </Field>
-        <Field label={t('dl.saveTo')}>
+        <Field
+          label={t('dl.saveTo')}
+          hint={
+            mount && (
+              <>
+                {t('dl.willSave')}{' '}
+                <span className="font-mono text-[12px] font-medium text-foreground">
+                  {mount.volume_name}:/{folder}
+                </span>
+                {' · '}
+                {t('dl.neverOverwrites')}
+              </>
+            )
+          }
+        >
           {usable.length === 0 ? (
             <p className="rounded-lg bg-muted px-3 py-2.5 text-[12.5px] text-muted-foreground">{t('dl.noVolumes')}</p>
           ) : (
-            <Choice
-              label={t('dl.saveTo')}
-              className="w-full"
-              value={mountId}
-              onChange={(v) => (v === OTHER ? setAddingVolume(true) : setMountId(v))}
-              options={[
-                ...usable.map((m) => ({ value: m.id, label: m.volume_name, hint: many ? m.account_label : undefined })),
-                { value: OTHER, label: t('dl.otherVolume') },
-              ]}
-            />
-          )}
-          {mount && <FolderPicker account={mount.account_id} env={mount.environment ?? ''} volumeId={mount.volume_id!} volume={mount.volume_name} value={folder} onChange={setFolder} />}
-          {mount && (
-            <span className="text-[12.5px]">
-              {t('dl.willSave')}{' '}
-              <span className="font-mono text-[12px] font-medium">
-                {mount.volume_name}:/{folder}
-              </span>
-              <span className="text-muted-foreground"> · {t('dl.neverOverwrites')}</span>
-            </span>
+            <div className="grid grid-cols-2 gap-2 max-sm:grid-cols-1">
+              <Choice
+                label={t('dl.saveTo')}
+                className="h-9 w-full min-w-0"
+                value={mountId}
+                onChange={(v) => (v === OTHER ? setAddingVolume(true) : setMountId(v))}
+                options={[
+                  ...usable.map((m) => ({ value: m.id, label: m.volume_name, hint: many ? m.account_label : undefined, icon: many ? <AccountMark id={m.account_id} label={m.account_label} size={16} /> : undefined })),
+                  { value: OTHER, label: t('dl.otherVolume') },
+                ]}
+              />
+              {mount && (
+                <Popover open={picking} onOpenChange={setPicking}>
+                  <PopoverTrigger render={<Button type="button" variant="outline" className="h-9 min-w-0 justify-between bg-secondary font-normal" aria-label={t('dl.folder')} />}>
+                    <span className="flex min-w-0 items-center gap-2">
+                      <Folder className="text-muted-foreground" />
+                      <span className="truncate font-mono text-[12.5px]">/{folder}</span>
+                    </span>
+                    <ChevronDown className="text-muted-foreground" />
+                  </PopoverTrigger>
+                  <PopoverContent className="w-(--anchor-width) min-w-64">
+                    <FolderPicker account={mount.account_id} env={mount.environment ?? ''} volumeId={mount.volume_id!} volume={mount.volume_name} value={folder} onChange={setFolder} onDone={() => setPicking(false)} />
+                  </PopoverContent>
+                </Popover>
+              )}
+            </div>
           )}
         </Field>
         <CollapsiblePrimitive.Root>
@@ -162,11 +193,6 @@ export function AddDownloadDialog({ open, onOpenChange }: { open: boolean; onOpe
             </div>
           </CollapsiblePrimitive.Panel>
         </CollapsiblePrimitive.Root>
-        <Hint text={t('dl.costHint2', { workspace: acct?.workspace || acct?.label || '…' })}>
-          <p className="self-start rounded-lg bg-muted/70 px-3 py-2 text-[12px] text-muted-foreground tabular">
-            {t('dl.costLine', { price: price.toFixed(4), count: Math.max(1, urls.length) })}
-          </p>
-        </Hint>
       </FormDialog>
       <AddVolumeDialog open={addingVolume} onOpenChange={setAddingVolume} />
     </>
@@ -174,7 +200,7 @@ export function AddDownloadDialog({ open, onOpenChange }: { open: boolean; onOpe
 }
 
 /** The folders of a volume, one level at a time, and a new folder's name typed in. */
-function FolderPicker({ account, env, volumeId, volume, value, onChange }: { account: string; env: string; volumeId: string; volume: string; value: string; onChange: (p: string) => void }) {
+function FolderPicker({ account, env, volumeId, volume, value, onChange, onDone }: { account: string; env: string; volumeId: string; volume: string; value: string; onChange: (p: string) => void; onDone: () => void }) {
   const { t } = useTranslation()
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
@@ -196,8 +222,8 @@ function FolderPicker({ account, env, volumeId, volume, value, onChange }: { acc
     setName('')
   }
   return (
-    <div className="overflow-hidden rounded-lg border border-input">
-      <div className="flex min-h-8 flex-wrap items-center border-b border-input bg-muted/50 px-2.5 py-1 font-mono text-[12px]">
+    <div>
+      <div className="flex min-h-9 flex-wrap items-center border-b border-input bg-muted/50 px-2.5 py-1 font-mono text-[12px]">
         <button type="button" className="rounded px-0.5 hover:underline" onClick={() => go('')}>
           {volume}:/
         </button>
@@ -210,7 +236,7 @@ function FolderPicker({ account, env, volumeId, volume, value, onChange }: { acc
           </span>
         ))}
       </div>
-      <div className="max-h-36 overflow-y-auto py-1 text-[13px]">
+      <div className="max-h-56 overflow-y-auto py-1 text-[13px]">
         {value && (
           <Item onClick={() => go(parts.slice(0, -1).join('/'))} icon={<CornerLeftUp />}>
             ..
@@ -254,6 +280,11 @@ function FolderPicker({ account, env, volumeId, volume, value, onChange }: { acc
             {t('downloads.newFolder')}
           </Item>
         )}
+      </div>
+      <div className="flex justify-end border-t border-input px-2.5 py-2">
+        <Button type="button" size="sm" onClick={onDone}>
+          {t('dl.saveHere')}
+        </Button>
       </div>
     </div>
   )

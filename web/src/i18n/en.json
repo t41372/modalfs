@@ -45,7 +45,8 @@
     "empty": "No volumes yet",
     "emptyP": "Add a volume from your Modal account, and modalfs puts it in a folder on this Mac.",
     "lastUsed": "Not mounted · last used {{ago}}",
-    "handle": "Resolve"
+    "handle": "Resolve",
+    "accountEnv": "environment: {{env}}"
   },
   "vol": {
     "mount": "Mount",
@@ -320,9 +321,11 @@
     "startN_other": "Start {{count}} downloads",
     "added_one": "Download started",
     "added_other": "{{count}} downloads started",
-    "costLine_one": "About ${{price}} an hour while it runs",
-    "costLine_other": "About ${{price}} an hour each, while they run",
-    "costHint2": "Billed to {{workspace}}'s Modal account by the second. It stops when the download ends or is paused."
+    "costLine_one": "About ${{price}}/h while it runs",
+    "costLine_other": "About ${{price}}/h each while they run",
+    "costHint2": "Billed to {{workspace}}'s Modal account by the second. It stops when the download ends or is paused.",
+    "folder": "Folder",
+    "saveHere": "Save here"
   },
   "downloads": {
     "auto": "Automatic",

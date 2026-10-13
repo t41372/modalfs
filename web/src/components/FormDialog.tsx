@@ -19,6 +19,7 @@ export function FormDialog({
   dismiss,
   canSubmit = true,
   onSubmit,
+  aside,
   children,
 }: {
   open: boolean
@@ -32,6 +33,8 @@ export function FormDialog({
   canSubmit?: boolean
   /** Return normally to close; throw to show the error. */
   onSubmit: () => Promise<void>
+  /** A quiet note at the start of the footer, such as what submitting costs. */
+  aside?: ReactNode
   children?: ReactNode
 }) {
   const { t } = useTranslation()
@@ -70,7 +73,8 @@ export function FormDialog({
               {error}
             </p>
           )}
-          <DialogFooter>
+          <DialogFooter className={aside ? 'sm:items-center' : undefined}>
+            {aside && <div className="mr-auto min-w-0 max-sm:order-last max-sm:text-center">{aside}</div>}
             <Button type="button" variant="outline" disabled={busy} onClick={() => change(false)}>
               {dismiss ?? t('form.cancel')}
             </Button>

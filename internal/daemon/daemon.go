@@ -61,6 +61,7 @@ type Daemon struct {
 	traffic   traffic     // each mount's totals over the last hour
 	conflicts conflicts   // conflicts not marked handled yet, by mount
 	usage     *usageStore // volume sizes, from listing them
+	avatars   *avatarStore
 
 	bootID  string
 	auth    *uiAuth
@@ -154,6 +155,7 @@ func Run(log *slog.Logger) error {
 		return err
 	}
 	d.usage = newUsageStore(config.Dir())
+	d.avatars = newAvatarStore(config.Dir())
 	d.cleanupStale()
 	d.checkService()
 

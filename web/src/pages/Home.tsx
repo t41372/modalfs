@@ -6,7 +6,7 @@ import { api } from '@/api/client'
 import { refreshState, useAction, useLoadedState } from '@/api/queries'
 import type { Mount } from '@/api/types'
 import { navigate } from '@/app/nav'
-import { AccountMark, Chip, Hint, StateIcon } from '@/components/bits'
+import { AccountName, Chip, Hint, StateIcon } from '@/components/bits'
 import { Card, Empty, Page } from '@/components/page'
 import { Spinner } from '@/components/Spinner'
 import { duration, StopProgress } from '@/components/StopProgress'
@@ -26,7 +26,9 @@ export function Home() {
   const sizes = st.mounts.map((m) => m.size_bytes)
   const known = sizes.filter((x): x is number => x !== undefined)
   const biggest = Math.max(1, ...known)
+  // With one account, it's named once at the top; with several, on each row.
   const manyAccounts = new Set(st.mounts.map((m) => m.account_id)).size > 1
+  const only = !manyAccounts ? st.mounts[0] : undefined
 
   return (
     <Page
@@ -34,6 +36,11 @@ export function Home() {
       sub={
         st.mounts.length > 0 && (
           <span className="flex flex-wrap gap-1.5 pt-1">
+            {only && (
+              <Chip hint={only.environment ? t('home.accountEnv', { env: only.environment }) : undefined} className="pl-1.5">
+                <AccountName id={only.account_id} label={only.account_label} size={16} />
+              </Chip>
+            )}
             {s.on > 0 && <Chip tone="ok" glyph="check">{t('home.mounted', { count: s.on })}</Chip>}
             {s.files > 0 && (
               <Chip tone="up" glyph="up" hint={t('home.uploadingHint', { count: s.files })}>
@@ -172,9 +179,10 @@ function VolumeRow({ m, biggest, showAccount }: { m: Mount; biggest: number; sho
             <span className={cn('block truncate text-[14.5px] font-semibold tracking-[-0.01em]', l === 'off' && 'text-foreground/70')}>{m.volume_name}</span>
             <span className="mt-0.5 flex min-w-0 items-center gap-2 text-[12.5px] text-muted-foreground">
               {showAccount && (
-                <Hint text={`${m.account_label}${m.environment ? ` · ${m.environment}` : ''}`}>
-                  <span className="inline-flex shrink-0">
-                    <AccountMark id={m.account_id} label={m.account_label} size={15} />
+                <Hint text={m.environment ? t('home.accountEnv', { env: m.environment }) : undefined}>
+                  <span className="inline-flex max-w-[40%] shrink-0 items-center gap-2 text-foreground/75">
+                    <AccountName id={m.account_id} label={m.account_label} size={15} />
+                    <span aria-hidden className="text-muted-foreground/50">·</span>
                   </span>
                 </Hint>
               )}

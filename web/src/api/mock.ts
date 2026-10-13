@@ -37,6 +37,26 @@ const accounts: Account[] = [
   },
 ]
 
+/**
+ * A GitHub-style identicon for the sample accounts (Modal's member list often
+ * has a GitHub picture); accounts added in the mock have none, so they show
+ * the initial instead.
+ */
+function identicon(id: string): string {
+  if (!accounts.slice(0, 2).some((a) => a.id === id)) return ''
+  let h = 2166136261
+  for (const c of id) h = Math.imul(h ^ c.charCodeAt(0), 16777619) >>> 0
+  const hue = h % 360
+  let cells = ''
+  for (let y = 0; y < 5; y++)
+    for (let x = 0; x < 3; x++) {
+      h = Math.imul(h ^ (x * 7 + y), 16777619) >>> 0
+      if (h % 2) for (const cx of x === 2 ? [2] : [x, 4 - x]) cells += `<rect x="${cx + 1}" y="${y + 1}" width="1" height="1"/>`
+    }
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 7 7"><rect width="7" height="7" fill="#f0f0f0"/><g fill="hsl(${hue} 55% 55%)">${cells}</g></svg>`
+  return 'data:image/svg+xml;base64,' + btoa(svg)
+}
+
 const status = (o: Partial<NonNullable<Mount['status']>> = {}): NonNullable<Mount['status']> => ({
   pending_files: 0,
   pending_bytes: 0,
@@ -810,6 +830,7 @@ export async function mockRequest(method: string, path: string, raw?: unknown): 
     const id: Identity = { token_id: a.token_id, workspace_id: 'ac-0000', workspace_name: a.workspace || a.label, username: a.username }
     return id
   }
+  if ((m = route.match(/^GET \/accounts\/([^/]+)\/avatar$/))) return { data_url: identicon(m[1]) }
   if ((m = route.match(/^GET \/accounts\/([^/]+)\/environments$/))) return clone(environments[m[1]] || [])
   if ((m = route.match(/^GET \/accounts\/([^/]+)\/volumes$/))) {
     await wait(250)

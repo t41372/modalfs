@@ -39,7 +39,8 @@
     "empty": "還沒有 Volume",
     "emptyP": "從你的 Modal 帳號加入一個 Volume，modalfs 會把它變成這台 Mac 上的資料夾。",
     "lastUsed": "未掛載 · 上次使用 {{ago}}",
-    "handle": "處理"
+    "handle": "處理",
+    "accountEnv": "環境：{{env}}"
   },
   "vol": {
     "mount": "掛載",
@@ -299,8 +300,10 @@
     "start": "開始下載",
     "startN_other": "開始 {{count}} 個下載",
     "added_other": "已開始 {{count}} 個下載",
-    "costLine_other": "執行時每個每小時約 ${{price}}",
-    "costHint2": "按秒從 {{workspace}} 的 Modal 帳號計費。下載完成或暫停就停止計費。"
+    "costLine_other": "每個約 ${{price}}/小時",
+    "costHint2": "按秒從 {{workspace}} 的 Modal 帳號計費。下載完成或暫停就停止計費。",
+    "folder": "資料夾",
+    "saveHere": "存在這裡"
   },
   "downloads": {
     "auto": "自動",
