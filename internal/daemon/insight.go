@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,12 +31,9 @@ import (
 
 // ---------- traffic ----------
 
-// A mount's upload and read totals, sampled every trafficEvery for the last
-// hour; the UI draws the rates between samples.
-const (
-	trafficEvery = 10 * time.Second
-	trafficKeep  = int(time.Hour/trafficEvery) + 1
-)
+// A mount's upload and read totals, sampled each second for the last hour;
+// the UI draws the rates between samples.
+const trafficKeep = int(time.Hour/time.Second) + 1
 
 // TrafficSample is a mount's running totals at a moment: [unix seconds, bytes up, bytes down].
 type TrafficSample [3]int64
@@ -58,15 +56,18 @@ func (t *traffic) add(id string, s TrafficSample) {
 	}
 	list = append(list, s)
 	if len(list) > trafficKeep {
-		list = append([]TrafficSample(nil), list[len(list)-trafficKeep:]...)
+		list = list[len(list)-trafficKeep:] // append copies what's kept when it grows
 	}
 	t.m[id] = list
 }
 
-func (t *traffic) get(id string) []TrafficSample {
+// get returns a mount's samples taken after since (unix seconds).
+func (t *traffic) get(id string, since int64) []TrafficSample {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return append([]TrafficSample{}, t.m[id]...)
+	list := t.m[id]
+	i := sort.Search(len(list), func(i int) bool { return list[i][0] > since })
+	return append([]TrafficSample{}, list[i:]...)
 }
 
 func (t *traffic) drop(id string) {
@@ -75,12 +76,11 @@ func (t *traffic) drop(id string) {
 	delete(t.m, id)
 }
 
-// sampleTraffic records every live mount's totals until ctx ends: each
-// second for its current speed, and every trafficEvery for its last hour.
+// sampleTraffic records every live mount's totals each second until ctx
+// ends, for its current speed and its last hour.
 func (d *Daemon) sampleTraffic(ctx context.Context) {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
-	var last time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -88,16 +88,10 @@ func (d *Daemon) sampleTraffic(ctx context.Context) {
 		case now := <-tick.C:
 			live := d.liveFS()
 			d.speeds.retain(live)
-			hour := now.Sub(last) >= trafficEvery
-			if hour {
-				last = now
-			}
 			for id, fs := range live {
 				s := fs.Status()
 				d.speeds.add(id, now, s.BytesUp, s.BytesDown)
-				if hour {
-					d.traffic.add(id, TrafficSample{now.Unix(), s.BytesUp, s.BytesDown})
-				}
+				d.traffic.add(id, TrafficSample{now.Unix(), s.BytesUp, s.BytesDown})
 			}
 		}
 	}
@@ -444,7 +438,8 @@ func (d *Daemon) insightRoutes(mux *http.ServeMux) {
 	}
 	mux.HandleFunc("GET /api/mounts/{id}/traffic", func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := mount(w, r); ok {
-			writeJSON(w, 200, d.traffic.get(r.PathValue("id")))
+			since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
+			writeJSON(w, 200, d.traffic.get(r.PathValue("id"), since))
 		}
 	})
 	mux.HandleFunc("GET /api/mounts/{id}/pending", func(w http.ResponseWriter, r *http.Request) {

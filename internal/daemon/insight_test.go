@@ -18,20 +18,24 @@ func TestTrafficKeepsAnHourAndRestartsWithTheMount(t *testing.T) {
 	for i := range trafficKeep + 20 {
 		tr.add("m", TrafficSample{int64(i), int64(i) * 10, int64(i)})
 	}
-	got := tr.get("m")
+	got := tr.get("m", 0)
 	if len(got) != trafficKeep {
 		t.Fatalf("kept %d samples, want %d", len(got), trafficKeep)
 	}
 	if got[0][0] != 20 {
 		t.Fatalf("oldest sample is %d, want 20", got[0][0])
 	}
+	// The UI asks only for what it hasn't seen.
+	if got := tr.get("m", got[len(got)-3][0]); len(got) != 2 || got[0][0] != int64(trafficKeep+18) {
+		t.Fatalf("since: %v", got)
+	}
 	// A new mount starts its totals at zero: the old samples would make a negative rate.
 	tr.add("m", TrafficSample{1000, 5, 5})
-	if got := tr.get("m"); len(got) != 1 || got[0][1] != 5 {
+	if got := tr.get("m", 0); len(got) != 1 || got[0][1] != 5 {
 		t.Fatalf("after a restart: %v", got)
 	}
 	tr.drop("m")
-	if got := tr.get("m"); len(got) != 0 {
+	if got := tr.get("m", 0); len(got) != 0 {
 		t.Fatalf("after drop: %v", got)
 	}
 }
