@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"syscall"
 
 	"golang.org/x/crypto/chacha20poly1305"
 )
@@ -52,31 +53,38 @@ func (k Key) Text() string {
 	return "mfs1-" + strings.Join(groups, "-")
 }
 
+// ParseKey reads a key as Text writes it. Spaces, line breaks, dashes and
+// case don't matter, so a key copied from the screen or retyped still works;
+// O, I and L are read as 0, 1 and 1, as Crockford base32 does.
 func ParseKey(text string) (Key, error) {
 	var k Key
-	s := strings.ToUpper(strings.TrimSpace(text))
-	if !strings.HasPrefix(s, "MFS1-") {
-		return k, errors.New("key checksum failed: expected an mfs1 key; paste the complete key")
-	}
-	s = strings.Map(func(r rune) rune {
+	s := strings.Map(func(r rune) rune {
 		switch r {
 		case '-', ' ', '\t', '\r', '\n':
 			return -1
+		}
+		return r
+	}, strings.ToUpper(text))
+	if !strings.HasPrefix(s, "MFS1") {
+		return k, errors.New("that isn't a modalfs key: a key starts with mfs1-")
+	}
+	s = strings.Map(func(r rune) rune {
+		switch r {
 		case 'O':
 			return '0'
 		case 'I', 'L':
 			return '1'
 		}
 		return r
-	}, s[5:])
+	}, s[len("MFS1"):])
 	b, err := keyEncoding.DecodeString(s)
 	if err != nil || len(b) != 36 || keyEncoding.EncodeToString(b) != s {
-		return k, errors.New("key checksum failed: paste the complete key without changing any characters")
+		return k, errors.New("key checksum doesn't match: a character is mistyped or missing; paste the key as you saved it")
 	}
 	copy(k[:], b[:32])
 	h := sha256.Sum256(append([]byte("modalfs/key/v1\x00"), k[:]...))
 	if !hmac.Equal(b[32:], h[:4]) {
-		return Key{}, errors.New("key checksum failed: paste the complete key without changing any characters")
+		return Key{}, errors.New("key checksum doesn't match: a character is mistyped or missing; paste the key as you saved it")
 	}
 	return k, nil
 }
@@ -168,7 +176,7 @@ func (c *Cipher) EncodePath(path string) (string, error) {
 			return "", errors.New("invalid path component")
 		}
 		if len(part) > MaxNameBytes {
-			return "", fmt.Errorf("encrypted names can be at most %d bytes; shorten %q", MaxNameBytes, part)
+			return "", fmt.Errorf("encrypted names can be at most %d bytes; shorten %q: %w", MaxNameBytes, part, syscall.ENAMETOOLONG)
 		}
 		ad := []byte("modalfs/v1/name\x00" + strings.Join(parts[:i], "/"))
 		out[i] = NamePrefix + base64.RawURLEncoding.EncodeToString(c.names.seal([]byte(part), ad))

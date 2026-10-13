@@ -101,3 +101,41 @@ func DeleteSecret(a Account) error {
 	}
 	return nil
 }
+
+// Volume keys use a separate keychain account namespace from token secrets.
+func SaveVolumeKey(v VolumeEncryption, key string) (string, error) {
+	id := "volume/" + v.VolumeID
+	switch v.SecretStore {
+	case "":
+		return SaveSecret(id, key)
+	case "keychain":
+		return "keychain", keyring.Set(keyringService, id, key)
+	case "file":
+		fileMu.Lock()
+		defer fileMu.Unlock()
+		m, err := readSecretFile()
+		if err != nil {
+			return "", err
+		}
+		m[id] = key
+		return "file", writeSecretFile(m)
+	default:
+		return "", errors.New("unknown volume key store " + v.SecretStore)
+	}
+}
+
+func LoadVolumeKey(v VolumeEncryption) (string, error) {
+	return LoadSecret(Account{ID: "volume/" + v.VolumeID, SecretStore: v.SecretStore})
+}
+
+func DeleteVolumeKey(v VolumeEncryption) error {
+	id := "volume/" + v.VolumeID
+	if v.SecretStore == "keychain" {
+		err := keyring.Delete(keyringService, id)
+		if errors.Is(err, keyring.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	return DeleteSecret(Account{ID: id, SecretStore: v.SecretStore})
+}

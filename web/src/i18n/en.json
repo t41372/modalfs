@@ -510,6 +510,8 @@
     "unmounted_ext": "{{a0}} was unmounted outside modalfs",
     "conflict": "{{a0}} changed on Modal while you edited it. Your version is saved as {{a1}}",
     "commit_failed": "Upload of {{a0}} failed, retrying: {{a1}}",
+    "unreadable": "Couldn't read {{a0}}: {{a1}}",
+    "label_read_failed": "Couldn't read the encrypted volume's label: {{a0}}",
     "recovered": "Recovered unsaved changes to {{a0}}; uploading",
     "commit": "{{a0}} uploaded",
     "follow_rename": "Volume renamed {{a0}} → {{a1}}; the mount follows it",

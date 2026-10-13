@@ -70,13 +70,16 @@ type runMount struct {
 // MountView is a saved mount plus its live state, as the UI sees it.
 type MountView struct {
 	config.Mount
-	AccountLabel string      `json:"account_label"`
-	Workspace    string      `json:"workspace"`
-	State        string      `json:"state"`
-	Error        string      `json:"error,omitempty"`
-	ActiveMode   string      `json:"active_mode,omitempty"`
-	StartedAt    int64       `json:"started_at,omitempty"`
-	Status       *vfs.Status `json:"status,omitempty"` // while mounted or stopping
+	Encrypted     bool        `json:"encrypted,omitempty"`
+	Locked        bool        `json:"locked,omitempty"`
+	KeyRemembered bool        `json:"key_remembered,omitempty"`
+	AccountLabel  string      `json:"account_label"`
+	Workspace     string      `json:"workspace"`
+	State         string      `json:"state"`
+	Error         string      `json:"error,omitempty"`
+	ActiveMode    string      `json:"active_mode,omitempty"`
+	StartedAt     int64       `json:"started_at,omitempty"`
+	Status        *vfs.Status `json:"status,omitempty"` // while mounted or stopping
 	// Starting: what it's doing now (connect, open, mount).
 	Step string `json:"step,omitempty"`
 	// Error: an auto-mount tries again at this time (Unix seconds).
@@ -193,6 +196,15 @@ func (d *Daemon) runStart(id string, ph *runMount, quiet bool) error {
 		return fmt.Errorf("mount %q not found", id)
 	}
 	r, err := d.doStart(m, ph)
+	if errors.Is(err, errLocked) && !quiet {
+		// Not a failure to report: the volume shows as locked, with Unlock.
+		d.mu.Lock()
+		if d.running[id] == ph {
+			delete(d.running, id)
+		}
+		d.mu.Unlock()
+		return err
+	}
 	if err != nil {
 		d.mu.Lock()
 		if d.running[id] == ph {
@@ -242,7 +254,12 @@ func (d *Daemon) doStart(m config.Mount, ph *runMount) (_ *runMount, err error) 
 		wb = time.Duration(m.WriteBackMS) * time.Millisecond
 	}
 	mid, label := m.ID, m.VolumeName
+	remote, err := d.openVolume(context.Background(), c, vol.ID)
+	if err != nil {
+		return nil, err
+	}
 	fsys, err := vfs.New(c, vol, vfs.Options{
+		Cipher:   remote.Cipher,
 		CacheDir: s.CacheDir, Cache: d.cache, DirCacheTTL: 10 * time.Second, WriteBack: wb,
 		ReadAhead: s.ReadAhead, SidecarMin: 64 << 20, OnConflict: m.OnConflict, ReadOnly: m.ReadOnly,
 		FilterJunk: m.FilterJunk, Logger: d.log.With("mount", m.VolumeName),
@@ -253,6 +270,8 @@ func (d *Daemon) doStart(m config.Mount, ph *runMount) (_ *runMount, err error) 
 				d.emitC("conflict", "conflict", mid, label, fmt.Sprintf("%s changed remotely; your version saved as %s", p, detail), p, detail)
 			case "error":
 				d.emitC("error", "commit_failed", mid, label, p+": "+detail, p, detail)
+			case "unreadable":
+				d.emitC("error", "unreadable", mid, label, p+": "+detail, p, detail)
 			case "recovered":
 				d.emitC("recovered", "recovered", mid, label, fmt.Sprintf("recovered unsaved changes to %s (%s)", p, detail), p)
 			case "commit":

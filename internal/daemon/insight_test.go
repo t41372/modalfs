@@ -10,6 +10,7 @@ import (
 	"github.com/t41372/modalfs/internal/config"
 	"github.com/t41372/modalfs/internal/modalapi"
 	"github.com/t41372/modalfs/internal/modalfake"
+	"github.com/t41372/modalfs/internal/volume"
 )
 
 func TestTrafficKeepsAnHourAndRestartsWithTheMount(t *testing.T) {
@@ -83,7 +84,7 @@ func TestUsageMeasuresAVolumeAndKeepsTheResult(t *testing.T) {
 	put("top.txt", 100)
 
 	u := newUsageStore(dir)
-	u.start(c, vol.ID)
+	u.start(&volume.Volume{Client: c, ID: vol.ID})
 	deadline := time.Now().Add(10 * time.Second)
 	for u.view(vol.ID).Running {
 		if time.Now().After(deadline) {

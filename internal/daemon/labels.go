@@ -17,6 +17,7 @@ import (
 	"github.com/t41372/modalfs/internal/fsync"
 	"github.com/t41372/modalfs/internal/modalapi"
 	"github.com/t41372/modalfs/internal/vfs"
+	"github.com/t41372/modalfs/internal/volume"
 )
 
 // Volume labels: a name of the user's choosing for a volume, free of Modal's
@@ -102,11 +103,10 @@ func (s *labelStore) saveLocked() {
 // label file, so a volume whose files are stored encrypted can decrypt and
 // encrypt it here.
 
-// readLabel reads a volume's label from Modal: "" when it has none, or when
-// its file can't be understood (written by something else, or encrypted
-// with a key this Mac doesn't have); the volume's name is shown instead.
-func readLabel(ctx context.Context, c *modalapi.Client, volID string) (string, error) {
-	data, err := c.ReadFile(ctx, volID, labelPath, 64<<10)
+// readLabel reads an unlocked volume's label. Missing labels and unknown
+// plaintext records use the Modal name; damaged encrypted labels are errors.
+func readLabel(ctx context.Context, v *volume.Volume) (string, error) {
+	data, err := v.ReadFile(ctx, labelPath, 64<<10)
 	if modalapi.IsNotFound(err) {
 		return "", nil
 	}
@@ -114,20 +114,22 @@ func readLabel(ctx context.Context, c *modalapi.Client, volID string) (string, e
 		return "", err
 	}
 	var f labelFile
-	if json.Unmarshal(data, &f) != nil {
+	if err := json.Unmarshal(data, &f); err != nil {
+		if v.Cipher != nil {
+			return "", fmt.Errorf("encrypted label has invalid JSON: %w", err)
+		}
 		return "", nil
+	}
+	if v.Cipher != nil && f.V != 1 {
+		return "", errors.New("encrypted label has an unsupported format version")
 	}
 	return f.Label, nil
 }
 
 // writeLabel writes a volume's label to Modal; it returns once Modal has it.
-func writeLabel(ctx context.Context, c *modalapi.Client, volID, label string) error {
+func writeLabel(ctx context.Context, v *volume.Volume, label string) error {
 	data, _ := json.Marshal(labelFile{V: 1, Label: label, UpdatedAt: time.Now().UnixMilli()})
-	_, err := c.Put(ctx, volID, []modalapi.PutFile{{
-		Path: labelPath, Size: int64(len(data)), Hashes: modalapi.HashBlocks(data),
-		Block: func(int) ([]byte, error) { return data, nil },
-	}})
-	return err
+	return v.WriteFile(ctx, labelPath, data)
 }
 
 // refreshLabels reads, in the background, the labels of managed volumes
@@ -164,7 +166,12 @@ func (d *Daemon) readLabelInto(m config.Mount) {
 	c, _, err := d.clientFor(m.AccountID, m.Environment)
 	if err == nil {
 		var label string
-		if label, err = readLabel(ctx, c, m.VolumeID); err == nil {
+		remote, encrypted, openErr := d.inspectVolume(ctx, c, m.VolumeID)
+		err = openErr
+		if err == nil && (!encrypted || remote.Cipher != nil) {
+			label, err = readLabel(ctx, remote)
+		}
+		if err == nil {
 			s.mu.Lock()
 			changed := s.byVol[m.VolumeID].Label != label
 			s.byVol[m.VolumeID] = labelEntry{Label: label, Checked: time.Now().UnixMilli()}
@@ -177,6 +184,9 @@ func (d *Daemon) readLabelInto(m config.Mount) {
 	}
 	// Keep what we had, and don't ask again before the next refresh.
 	d.log.Debug("couldn't read a volume's label", "volume", m.VolumeName, "err", err)
+	if encrypted, _, _ := d.encryptionFlags(m.VolumeID); encrypted {
+		d.emitC("error", "label_read_failed", m.ID, m.VolumeName, "could not read encrypted label: "+err.Error(), err.Error())
+	}
 	s.mu.Lock()
 	e := s.byVol[m.VolumeID]
 	e.Checked = time.Now().UnixMilli()
@@ -213,7 +223,11 @@ func (d *Daemon) setLabel(ctx context.Context, accountID, env, volID, label stri
 	if err != nil {
 		return "", err
 	}
-	if err := writeLabel(ctx, c, volID, label); err != nil {
+	remote, err := d.openVolume(ctx, c, volID)
+	if err != nil {
+		return "", err
+	}
+	if err := writeLabel(ctx, remote, label); err != nil {
 		return "", friendly(err)
 	}
 	d.labels.set(volID, label)

@@ -41,6 +41,7 @@ datasets  work     mounted  /Users/me/ModalVolumes/datasets  0        0 B / 3 B
 - [CLI reference](#cli-reference)
 - [Accounts and pinning](#accounts-and-pinning)
 - [How it works](#how-it-works)
+- [Encrypted volumes](#encrypted-volumes)
 - [Performance](#performance)
 - [Limitations](#limitations)
 - [Security](#security)
@@ -66,6 +67,8 @@ datasets  work     mounted  /Users/me/ModalVolumes/datasets  0        0 B / 3 B
 **Many accounts, never mixed up.** Each mount is pinned to its account and volume ID, so switching Modal CLI profiles or renaming a volume never points a mount somewhere else.
 
 **Names you choose.** Give a volume a label, with spaces, emoji or any language. It's kept in the volume, so everyone using modalfs on it sees the same name, while scripts keep using Modal's.
+
+**End-to-end encryption, if you want it.** An encrypted volume keeps its files, names and label unreadable to Modal. Its key, and nothing else, opens it on any computer.
 
 **A small native app**, a menu bar icon, and a CLI that does everything the app does.
 
@@ -215,6 +218,14 @@ Volumes
   modalfs volume label   NAME [LABEL | --clear]   a name shown instead of NAME, kept in the volume
   modalfs volume rm      NAME [--account A] [--env E] [--yes]
 
+Encrypted volumes
+  modalfs volume create  NAME --encrypt       shows the new volume's key; save it before going on
+  modalfs unlock VOLUME [--remember=false]    unlock with the key (typed, or from stdin);
+                                              remembered on this computer unless --remember=false
+  modalfs lock VOLUME                         forget the key on this computer (unmount first)
+  modalfs volume key     NAME                 show the key, where this computer remembers it
+  modalfs volume decrypt NAME --to FOLDER     copy every file out, decrypted, with only the key
+
 Accounts
   modalfs account add [--label L] [--token-id ID] [--env E]
   modalfs account import [PROFILE...]
@@ -291,6 +302,20 @@ Other details:
 - **Renames** are copy + remove at the manifest level, so atomic saves from editors work.
 - **Conflicts.** Before each commit, modalfs re-checks the remote file. If someone else changed it while you were editing, your version is saved as `name.conflict-YYYYMMDD-HHMMSS.ext`. You can set the policy to *overwrite* instead.
 - **macOS litter.** `.DS_Store` and `._*` files stay in memory and are never uploaded. This is on by default and can be turned off per mount.
+
+## Encrypted volumes
+
+A new volume can be encrypted end to end: its files, their names and its label are encrypted on your computer before they leave it, so Modal, and anyone else who can read the workspace, sees only ciphertext. On your computer the folder works as usual.
+
+Turn on **Encrypt end to end** when you create a volume in the app, or run `modalfs volume create NAME --encrypt`. modalfs then shows the volume's key, a line that starts with `mfs1-`. **Save it, for example in your password manager.** The key and the files on Modal are all it takes to read them, on any computer, even after modalfs's own files are gone. Without the key nobody can read them, not even modalfs: there's no passphrase and no recovery.
+
+- This computer remembers the key (in the keychain on macOS; the secret store or a private file on Linux), so the volume mounts by itself. On another computer it shows as locked: click Unlock and paste the key, or run `modalfs unlock NAME`.
+- Modal Functions can't read an encrypted volume, and remote downloads can't save into one.
+- `modalfs volume decrypt NAME --to FOLDER` copies every file out, decrypted, with only the key: no mount, nothing remembered.
+- Modal still sees how many files and folders there are, the folder shape, sizes, times, and which 8 MiB blocks are identical.
+- A name can be up to 147 bytes (about 49 Chinese characters). Renaming a folder with many files takes one request per file. Only new volumes can be encrypted, and a volume's key can't be changed.
+
+[The format and every trade-off](docs/design/encryption.md) are written down in full, enough to decrypt a volume without modalfs.
 
 ## Performance
 

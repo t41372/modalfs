@@ -81,13 +81,20 @@ func (c *blockCache) path(key string) string {
 // size bytes long, or whose content doesn't match its hash (a damaged disk),
 // is dropped. Writes and commits build on what Get returns, so it checks.
 func (c *blockCache) Get(hash []byte, size int) []byte {
+	return c.get(hash, size, func(b []byte) []byte {
+		h := sha256.Sum256(b)
+		return h[:]
+	})
+}
+
+func (c *blockCache) get(hash []byte, size int, digest func([]byte) []byte) []byte {
 	key, ok := c.touch(hash)
 	if !ok {
 		return nil
 	}
 	b, err := os.ReadFile(c.path(key))
 	if err == nil && len(b) == size {
-		if sum := sha256.Sum256(b); bytes.Equal(sum[:], hash) {
+		if bytes.Equal(digest(b), hash) {
 			return b
 		}
 	}

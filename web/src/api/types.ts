@@ -191,8 +191,11 @@ export interface Volume {
   mount_id?: string
   /** Only when modalfs already knows it: labels aren't read for every volume. */
   label?: string
-  /** Only when modalfs already knows it, like the label. */
+  /** From this computer's records, or the volume's encryption marker on Modal. */
   encrypted?: boolean
+  /** Encrypted, and this computer doesn't have its key. */
+  locked?: boolean
+  key_remembered?: boolean
 }
 
 export interface Profile {

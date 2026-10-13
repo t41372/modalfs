@@ -246,3 +246,11 @@ func statusFromWriteError(err error) NFSStatus {
 	}
 	return NFSStatusIO
 }
+
+// A backend may impose a smaller name limit than the NFS protocol.
+func statusFromNameError(err error, fallback NFSStatus) NFSStatus {
+	if errors.Is(err, syscall.ENAMETOOLONG) {
+		return NFSStatusNameTooLong
+	}
+	return fallback
+}

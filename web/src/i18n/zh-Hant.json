@@ -480,6 +480,8 @@
     "unmounted_ext": "{{a0}} 在 modalfs 之外被卸載",
     "conflict": "{{a0}} 在你編輯時被別人改過，你的版本另存為 {{a1}}",
     "commit_failed": "{{a0}} 上傳失敗，稍後重試：{{a1}}",
+    "unreadable": "無法讀取 {{a0}}：{{a1}}",
+    "label_read_failed": "無法讀取加密 Volume 的標籤：{{a0}}",
     "recovered": "找回上次沒來得及上傳的 {{a0}}，正在上傳",
     "commit": "{{a0}} 已上傳",
     "follow_rename": "Volume 改名為 {{a1}}（原 {{a0}}），掛載自動跟上",

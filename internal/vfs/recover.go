@@ -17,12 +17,14 @@ import (
 // normal conflict rules (a copy is made if the file changed remotely).
 
 type journal struct {
-	Path       string `json:"path"`
-	BaseExists bool   `json:"base_exists"`
-	BaseSize   int64  `json:"base_size"`
-	BaseMtime  int64  `json:"base_mtime"`
-	TruncFloor int64  `json:"trunc_floor"`
-	Size       int64  `json:"size"`
+	Fingerprint string `json:"encryption,omitempty"`
+	ChunkSize   int64  `json:"chunk_size,omitempty"`
+	Path        string `json:"path"`
+	BaseExists  bool   `json:"base_exists"`
+	BaseSize    int64  `json:"base_size"`
+	BaseMtime   int64  `json:"base_mtime"`
+	TruncFloor  int64  `json:"trunc_floor"`
+	Size        int64  `json:"size"`
 }
 
 const journalName = "meta.json"
@@ -34,14 +36,14 @@ func (st *fileState) writeJournalLocked(force bool) {
 		if st.jSize == st.size && st.jFloor == st.truncFloor {
 			return
 		}
-		if numBlocks(st.jSize) == numBlocks(st.size) && time.Since(st.jAt) < time.Second {
+		if st.fs.numBlocks(st.jSize) == st.fs.numBlocks(st.size) && time.Since(st.jAt) < time.Second {
 			return
 		}
 	}
 	if err := os.MkdirAll(st.dir, 0o700); err != nil {
 		return
 	}
-	raw, _ := json.Marshal(journal{Path: st.path, BaseExists: st.baseExists, BaseSize: st.baseSize,
+	raw, _ := json.Marshal(journal{Fingerprint: st.fs.fingerprint(), ChunkSize: st.fs.chunkSize(), Path: st.path, BaseExists: st.baseExists, BaseSize: st.baseSize,
 		BaseMtime: st.baseMtime, TruncFloor: st.truncFloor, Size: st.size})
 	tmp := filepath.Join(st.dir, journalName+".tmp")
 	if os.WriteFile(tmp, raw, 0o600) == nil && os.Rename(tmp, filepath.Join(st.dir, journalName)) == nil {
@@ -79,10 +81,10 @@ func (fs *FS) recover(dirtyRoot string) {
 				}
 				continue
 			}
-			// A complete dirty block is exactly blockSize; any other size is
+			// A complete dirty block is exactly fs.chunkSize(); any other size is
 			// left over from a failed write (older versions) and holds no
 			// user data.
-			if info, err := b.Info(); err != nil || info.Size() != blockSize {
+			if info, err := b.Info(); err != nil || info.Size() != fs.chunkSize() {
 				fs.log.Warn("discarding incomplete dirty block", "path", j.Path, "block", idx)
 				_ = os.Remove(filepath.Join(dir, b.Name()))
 				continue
@@ -92,9 +94,9 @@ func (fs *FS) recover(dirtyRoot string) {
 			// second of appends. Dirty blocks at or past it reveal the
 			// real end (trailing zero bytes are indistinguishable from
 			// padding and are dropped).
-			if (idx+1)*blockSize > j.Size {
-				if end := dataEnd(filepath.Join(dir, b.Name())); end > 0 && idx*blockSize+end > st.size {
-					st.size = idx*blockSize + end
+			if (idx+1)*fs.chunkSize() > j.Size {
+				if end := dataEnd(filepath.Join(dir, b.Name())); end > 0 && idx*fs.chunkSize()+end > st.size {
+					st.size = idx*fs.chunkSize() + end
 				}
 			}
 		}
@@ -132,4 +134,37 @@ func dataEnd(p string) int64 {
 		}
 	}
 	return 0
+}
+
+func (fs *FS) fingerprint() string {
+	if fs.c != nil && fs.c.Cipher != nil {
+		return fs.c.Cipher.Key().Fingerprint()
+	}
+	return ""
+}
+
+// Refuse before recovery can move or discard any dirty block.
+func (fs *FS) checkJournals(root string) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		raw, err := os.ReadFile(filepath.Join(root, e.Name(), journalName))
+		if err != nil {
+			continue
+		}
+		var j journal
+		if json.Unmarshal(raw, &j) != nil {
+			continue
+		}
+		chunk := j.ChunkSize
+		if chunk == 0 {
+			chunk = blockSize
+		}
+		if chunk != fs.chunkSize() || j.Fingerprint != fs.fingerprint() {
+			return fmt.Errorf("pending writes use a different encryption key or chunk size; unlock with the original key; journal kept at %s", filepath.Join(root, e.Name()))
+		}
+	}
+	return nil
 }

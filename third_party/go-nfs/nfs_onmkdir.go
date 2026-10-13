@@ -56,7 +56,7 @@ func onMkdir(ctx context.Context, w *response, userHandle Handler) error {
 	}
 
 	if err := fs.MkdirAll(newFolderPath, attrs.Mode(mkdirDefaultMode)); err != nil {
-		return &NFSStatusError{NFSStatusAccess, err}
+		return &NFSStatusError{statusFromNameError(err, NFSStatusAccess), err}
 	}
 
 	fp := userHandle.ToHandle(fs, newFolder)

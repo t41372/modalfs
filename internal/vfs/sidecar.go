@@ -32,39 +32,43 @@ func sidecarPath(p string) string {
 }
 
 func (fs *FS) writeSidecar(p string, m *manifest) error {
-	sc := sidecarJSON{V: 1, Path: p, Size: m.Size, Mtime: m.Mtime, BlockSize: blockSize}
+	sc := sidecarJSON{V: 1, Path: p, Size: m.Size, Mtime: m.Mtime, BlockSize: int(fs.chunkSize())}
 	for _, h := range m.Hashes {
 		sc.SHA256 = append(sc.SHA256, hex.EncodeToString(h))
 	}
 	data, _ := json.Marshal(sc)
-	_, err := fs.c.Put(fs.ctx, fs.volID, []modalapi.PutFile{{
-		Path: sidecarPath(p), Size: int64(len(data)), Hashes: modalapi.HashBlocks(data),
+	_, err := fs.c.Put(fs.ctx, []modalapi.PutFile{{
+		Path: fs.sidecarPath(p), Size: int64(len(data)), Hashes: fs.c.HashBlocks(data),
 		Block: func(i int) ([]byte, error) {
-			return data[i*blockSize : min((i+1)*blockSize, len(data))], nil
+			return data[int64(i)*fs.chunkSize() : min(int64(i+1)*fs.chunkSize(), int64(len(data)))], nil
 		},
 	}})
 	return err
 }
 
 func (fs *FS) loadSidecar(p string, size, mtime int64) *manifest {
-	sp := sidecarPath(p)
-	urls, sz, err := fs.c.BlockURLs(fs.ctx, fs.volID, sp, 0, 1<<20)
+	sp := fs.sidecarPath(p)
+	urls, sz, err := fs.c.BlockURLs(fs.ctx, sp, 0, 1<<20)
 	if err != nil || sz > 64<<20 {
+		if err != nil && !modalapi.IsNotFound(err) {
+			fs.sidecarError(p, err)
+		}
 		return nil
 	}
 	var data []byte
 	for i, u := range urls {
-		b, err := fs.c.Download(fs.ctx, u, blockLen(sz, int64(i)))
+		b, err := fs.c.Download(fs.ctx, u, fs.blockLen(sz, int64(i)))
 		if err != nil {
+			fs.sidecarError(p, err)
 			return nil
 		}
 		data = append(data, b...)
 	}
 	var sc sidecarJSON
-	if json.Unmarshal(data, &sc) != nil || sc.Size != size || sc.Mtime != mtime || sc.BlockSize != blockSize {
+	if json.Unmarshal(data, &sc) != nil || sc.Size != size || sc.Mtime != mtime || int64(sc.BlockSize) != fs.chunkSize() {
 		return nil
 	}
-	if len(sc.SHA256) != numBlocks(size) {
+	if len(sc.SHA256) != fs.numBlocks(size) {
 		return nil
 	}
 	m := &manifest{Size: size, Mtime: mtime}
@@ -93,4 +97,20 @@ func (fs *FS) loadSidecar(p string, size, mtime int64) *manifest {
 	}
 	fs.mdb.Put(p, m)
 	return m
+}
+
+func (fs *FS) sidecarPath(p string) string {
+	if fs.c.Cipher != nil {
+		return path.Join(MetaDir, "manifests", p)
+	}
+	return sidecarPath(p)
+}
+
+func (fs *FS) sidecarError(p string, err error) {
+	if fs.c.Cipher == nil {
+		return
+	}
+	detail := "could not read or authenticate the encrypted sidecar; reading authenticated file blocks to rebuild hashes: " + err.Error()
+	fs.log.Warn(detail, "path", p)
+	fs.event("unreadable", p, detail)
 }

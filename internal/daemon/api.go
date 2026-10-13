@@ -12,11 +12,14 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/t41372/modalfs/internal/config"
 	"github.com/t41372/modalfs/internal/downloads"
+	"github.com/t41372/modalfs/internal/encryption"
 	"github.com/t41372/modalfs/internal/modalapi"
+	"github.com/t41372/modalfs/internal/volume"
 	"github.com/t41372/modalfs/internal/webui"
 )
 
@@ -26,6 +29,7 @@ var volNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
 
 func (d *Daemon) routes() http.Handler {
 	mux := http.NewServeMux()
+	d.encryptionRoutes(mux)
 	mux.Handle("GET /", webui.Handler())
 
 	// ping takes no locks, so a daemon busy with a long commit still answers it.
@@ -190,10 +194,13 @@ func (d *Daemon) routes() http.Handler {
 	// ----- volumes -----
 	type volView struct {
 		modalapi.VolumeInfo
-		Format  string `json:"format"`
-		Mounted bool   `json:"mounted"`
-		MountID string `json:"mount_id,omitempty"`
-		Label   string `json:"label,omitempty"` // only when known: labels aren't read for every volume
+		Format        string `json:"format"`
+		Mounted       bool   `json:"mounted"`
+		MountID       string `json:"mount_id,omitempty"`
+		Label         string `json:"label,omitempty"` // only when known: labels aren't read for every volume
+		Encrypted     bool   `json:"encrypted,omitempty"`
+		Locked        bool   `json:"locked,omitempty"`
+		KeyRemembered bool   `json:"key_remembered,omitempty"`
 	}
 	mux.HandleFunc("GET /api/accounts/{id}/volumes", func(w http.ResponseWriter, r *http.Request) {
 		acct := r.PathValue("id")
@@ -209,9 +216,29 @@ func (d *Daemon) routes() http.Handler {
 			return
 		}
 		st := d.State()
-		out := []volView{}
-		for _, v := range vs {
-			vv := volView{VolumeInfo: v, Format: strings.ToLower(strings.TrimPrefix(v.Version.String(), "VOLUME_FS_VERSION_")), Label: d.labels.get(v.ID)}
+		out := make([]volView, len(vs))
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, 8)
+		for i, v := range vs {
+			if !v.V2() {
+				continue
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				vv := &out[i]
+				vv.Encrypted, vv.Locked, vv.KeyRemembered = d.listedEncryption(r.Context(), c, v.ID)
+			}()
+		}
+		wg.Wait()
+		for i, v := range vs {
+			vv := &out[i]
+			vv.VolumeInfo, vv.Format = v, strings.ToLower(strings.TrimPrefix(v.Version.String(), "VOLUME_FS_VERSION_"))
+			if !vv.Locked {
+				vv.Label = d.labels.get(v.ID)
+			}
 			if vv.Format == "unspecified" {
 				vv.Format = "v1"
 			}
@@ -221,12 +248,15 @@ func (d *Daemon) routes() http.Handler {
 					vv.Mounted = m.State == StateMounted
 				}
 			}
-			out = append(out, vv)
 		}
 		writeJSON(w, 200, out)
 	})
 	mux.HandleFunc("POST /api/accounts/{id}/volumes", func(w http.ResponseWriter, r *http.Request) {
-		var in struct{ Name, Environment string }
+		var in struct {
+			Name, Environment, Key string
+			Encrypted              bool
+			Remember               *bool
+		}
 		if err := readJSON(r, &in); err != nil {
 			writeErr(w, err)
 			return
@@ -240,10 +270,34 @@ func (d *Daemon) routes() http.Handler {
 			writeErr(w, err)
 			return
 		}
+		var key encryption.Key
+		if in.Encrypted {
+			key, err = encryption.ParseKey(in.Key)
+			if err != nil {
+				writeErr(w, err)
+				return
+			}
+		}
 		v, err := c.CreateVolume(r.Context(), in.Name)
 		if err != nil {
 			writeErr(w, friendly(err))
 			return
+		}
+		if in.Encrypted {
+			d.encryption.mu.Lock()
+			err = d.rememberKey(v.ID, key, in.Remember == nil || *in.Remember)
+			d.encryption.mu.Unlock()
+			remote := &volume.Volume{Client: c, ID: v.ID, Cipher: encryption.New(key)}
+			if err == nil {
+				err = remote.WriteFile(r.Context(), ".modalfs_keep", nil)
+			}
+			if err == nil {
+				err = remote.WriteMarker(r.Context())
+			}
+			if err != nil {
+				writeErr(w, fmt.Errorf("created volume %s (%s), but encryption initialization failed: %w; keep your key and retry recovery or delete this empty volume", v.Name, v.ID, err))
+				return
+			}
 		}
 		d.emitC("info", "vol_created", "", v.Name, "created volume "+v.Name)
 		writeJSON(w, 200, v)
@@ -287,7 +341,16 @@ func (d *Daemon) routes() http.Handler {
 			return
 		}
 		volID := r.PathValue("vol")
-		label, err := readLabel(r.Context(), c, volID)
+		remote, encrypted, err := d.inspectVolume(r.Context(), c, volID)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		if encrypted && remote.Cipher == nil {
+			writeJSON(w, 200, map[string]string{"label": ""})
+			return
+		}
+		label, err := readLabel(r.Context(), remote)
 		if err != nil {
 			writeErr(w, friendly(err))
 			return

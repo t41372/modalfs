@@ -47,6 +47,14 @@ Volumes:
   modalfs volume label NAME [LABEL | --clear]   a name shown instead of NAME, kept in the volume
   modalfs volume rm NAME [--account A] [--env E] [--yes]
 
+Encrypted volumes (Modal sees only ciphertext; lose the key and the files are gone):
+  modalfs volume create NAME --encrypt      shows the new volume's key; save it before going on
+  modalfs unlock VOLUME [--remember=false]  unlock with the key (typed, or from stdin); it's
+                                            remembered on this computer unless --remember=false
+  modalfs lock VOLUME                       forget the key on this computer (unmount first)
+  modalfs volume key NAME                   show the key, where this computer remembers it
+  modalfs volume decrypt NAME --to FOLDER   copy every file out, decrypted, with only the key
+
 Remote downloads (off until enabled; each runs in a Modal Function billed to your account):
   modalfs download add VOLUME[:/FOLDER] URL...   download into a volume while this computer sleeps
   modalfs download ls|show|pause|resume|cancel|logs|rm
@@ -115,6 +123,8 @@ func main() {
 		cmdInfo(args)
 	case "conflicts":
 		cmdConflicts(args)
+	case "unlock", "lock":
+		cmdEncryption(cmd, args)
 	case "volume", "volumes", "vol":
 		cmdVolume(args)
 	case "download", "downloads", "dl":
@@ -575,6 +585,8 @@ func printConflicts(c *daemon.Client, m daemon.MountView) bool {
 }
 
 type volRow struct {
+	Encrypted bool   `json:"encrypted"`
+	Locked    bool   `json:"locked"`
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	CreatedAt int64  `json:"created_at"`
@@ -588,6 +600,14 @@ func listVols(c *daemon.Client, acct, env string) []volRow {
 	return vs
 }
 
+// Actions resolve only identity, so broken encryption metadata cannot prevent
+// recovering data, supplying a replacement key, or forgetting a missing key.
+func lookupVolume(c *daemon.Client, account, env, name string) volRow {
+	var v volRow
+	must(c.Do("GET", "/api/accounts/"+account+"/volumes/lookup?name="+url.QueryEscape(name)+"&env="+url.QueryEscape(env), nil, &v))
+	return v
+}
+
 func cmdVolume(args []string) {
 	if len(args) == 0 {
 		args = []string{"ls"}
@@ -599,27 +619,28 @@ func cmdVolume(args []string) {
 	yes := fl.Bool("yes", false, "don't ask for confirmation")
 	mountIt := fl.Bool("mount", false, "mount right after creating")
 	clear := fl.Bool("clear", false, "remove the label")
+	encrypt := fl.Bool("encrypt", false, "encrypt contents and names; save the displayed key before creating")
+	remember := fl.Bool("remember", true, "remember the encryption key on this computer")
+	to := fl.String("to", "", "local empty folder for decrypted recovery")
 	pos := parseFlags(fl, args[1:])
 	c := client()
 	st := state(c)
 	a := pickAccount(st, *acctF)
-	byName := func(name string) volRow {
-		for _, v := range listVols(c, a.ID, *env) {
-			if v.Name == name {
-				return v
-			}
-		}
-		fatal(fmt.Errorf("no volume %q in %s", name, a.Label))
-		return volRow{}
-	}
+	byName := func(name string) volRow { return lookupVolume(c, a.ID, *env, name) }
 	switch sub {
 	case "ls", "list":
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "NAME\tFORMAT\tCREATED\tID\t")
 		for _, v := range listVols(c, a.ID, *env) {
 			m := ""
+			if v.Encrypted {
+				m = "encrypted"
+			}
+			if v.Locked {
+				m = "locked"
+			}
 			if v.Mounted {
-				m = "mounted"
+				m += " mounted"
 			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", v.Name, v.Format, time.Unix(v.CreatedAt, 0).Format("2006-01-02"), v.ID, m)
 		}
@@ -629,10 +650,60 @@ func cmdVolume(args []string) {
 			fatal(errors.New("usage: modalfs volume create NAME"))
 		}
 		var v volRow
-		must(c.Do("POST", "/api/accounts/"+a.ID+"/volumes", map[string]string{"name": pos[0], "environment": *env}, &v))
+		in := map[string]any{"name": pos[0], "environment": *env}
+		if *encrypt {
+			var fresh struct {
+				Key string `json:"key"`
+			}
+			must(c.Do("POST", "/api/encryption/key", nil, &fresh))
+			fmt.Println("Save this key. Losing it means losing every file. Modal Functions cannot read this volume; remote downloads cannot write to it.")
+			fmt.Println(fresh.Key)
+			if !*yes {
+				fmt.Print("Type saved after saving the key: ")
+				line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+				must(err)
+				if strings.TrimSpace(line) != "saved" {
+					fatal(errors.New("aborted; no volume was created"))
+				}
+			}
+			in["encrypted"], in["key"], in["remember"] = true, fresh.Key, *remember
+		}
+		must(c.Do("POST", "/api/accounts/"+a.ID+"/volumes", in, &v))
 		fmt.Printf("created %s (%s)\n", v.Name, v.ID)
 		if *mountIt {
 			cmdMount([]string{pos[0], "--account", a.ID, "--env", *env})
+		}
+	case "key":
+		if len(pos) != 1 {
+			fatal(errors.New("usage: modalfs volume key NAME"))
+		}
+		v := byName(pos[0])
+		var out struct {
+			Key string `json:"key"`
+		}
+		must(c.Do("GET", "/api/accounts/"+a.ID+"/volumes/"+v.ID+"/key", nil, &out))
+		fmt.Println(out.Key)
+	case "decrypt":
+		if len(pos) != 1 || *to == "" {
+			fatal(errors.New("usage: modalfs volume decrypt NAME --to FOLDER (key from terminal or stdin)"))
+		}
+		v := byName(pos[0])
+		key := readEncryptionKey()
+		dest, err := filepath.Abs(*to)
+		must(err)
+		var out struct {
+			Files  int
+			Bytes  int64
+			Failed []struct{ Path, Error string }
+		}
+		must(c.DoLong("POST", "/api/accounts/"+a.ID+"/volumes/"+v.ID+"/decrypt", map[string]any{"key": key, "to": dest, "environment": *env}, &out))
+		fmt.Printf("recovered %d files (%s) to %s\n", out.Files, human(out.Bytes), dest)
+		if len(out.Failed) > 0 {
+			fmt.Printf("couldn't recover %d:\n", len(out.Failed))
+			for _, f := range out.Failed {
+				fmt.Printf("  %s: %s\n", f.Path, f.Error)
+			}
+			os.Exit(1)
 		}
 	case "rename", "mv":
 		if len(pos) != 2 {

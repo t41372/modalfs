@@ -67,10 +67,17 @@ type Settings struct {
 	DownloadStallMinutes int    `json:"download_stall_minutes,omitempty"` // stop after this long without data (default 10)
 }
 
+type VolumeEncryption struct {
+	VolumeID    string `json:"volume_id"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	SecretStore string `json:"secret_store,omitempty"`
+}
+
 type File struct {
-	Accounts []Account `json:"accounts"`
-	Mounts   []Mount   `json:"mounts"`
-	Settings Settings  `json:"settings"`
+	Encryption []VolumeEncryption `json:"encryption,omitempty"`
+	Accounts   []Account          `json:"accounts"`
+	Mounts     []Mount            `json:"mounts"`
+	Settings   Settings           `json:"settings"`
 }
 
 // Dir is the modalfs config directory (overridable with MODALFS_HOME).
@@ -188,7 +195,7 @@ func WriteAtomic(path string, raw []byte) error {
 func (s *Store) Snapshot() File {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	f := File{Settings: s.f.Settings.WithDefaults()}
+	f := File{Settings: s.f.Settings.WithDefaults(), Encryption: append([]VolumeEncryption{}, s.f.Encryption...)}
 	f.Accounts = append([]Account{}, s.f.Accounts...)
 	f.Mounts = append([]Mount{}, s.f.Mounts...)
 	return f
@@ -199,6 +206,7 @@ func (s *Store) Update(fn func(f *File) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cp := s.f
+	cp.Encryption = append([]VolumeEncryption{}, s.f.Encryption...)
 	cp.Accounts = append([]Account{}, s.f.Accounts...)
 	cp.Mounts = append([]Mount{}, s.f.Mounts...)
 	if err := fn(&cp); err != nil {

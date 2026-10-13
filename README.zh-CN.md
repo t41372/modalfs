@@ -41,6 +41,7 @@ datasets  work     mounted  /Users/me/ModalVolumes/datasets  0        0 B / 3 B
 - [命令行参考](#命令行参考)
 - [账号与绑定](#账号与绑定)
 - [工作原理](#工作原理)
+- [加密 volume](#加密-volume)
 - [性能](#性能)
 - [限制](#限制)
 - [安全](#安全)
@@ -66,6 +67,8 @@ datasets  work     mounted  /Users/me/ModalVolumes/datasets  0        0 B / 3 B
 **多账号，绝不混淆。** 每个挂载都绑定到自己的账号和 volume ID，所以切换 Modal CLI 的 profile 或给 volume 改名，都不会让挂载指向别处。
 
 **名字由你来取。** 可以给 volume 取一个标签，空格、emoji、任何语言都行。标签存在 volume 里，所以每个用 modalfs 打开它的人看到的都一样，脚本则照旧用 Modal 上的名称。
+
+**需要的话可以端到端加密。** 加密的 volume 里，文件、文件名和标签 Modal 都读不出来。只有它的密钥能打开它，在哪台电脑上都一样。
 
 **一个小巧的原生应用**，一个菜单栏图标，以及能做到应用里所有事情的命令行。
 
@@ -215,6 +218,14 @@ Volumes
   modalfs volume label   NAME [LABEL | --clear]   代替 NAME 显示的名字，存在 volume 里
   modalfs volume rm      NAME [--account A] [--env E] [--yes]
 
+加密 volume
+  modalfs volume create  NAME --encrypt       显示新 volume 的密钥；存好之后再继续
+  modalfs unlock VOLUME [--remember=false]    用密钥解锁（手动输入，或从 stdin 读取）；
+                                              这台电脑会记住它，除非加 --remember=false
+  modalfs lock VOLUME                         让这台电脑忘掉密钥（先卸载）
+  modalfs volume key     NAME                 显示密钥（仅限记住了它的电脑）
+  modalfs volume decrypt NAME --to FOLDER     只用密钥，把所有文件解密复制出来
+
 账号
   modalfs account add [--label L] [--token-id ID] [--env E]
   modalfs account import [PROFILE...]
@@ -291,6 +302,20 @@ Volumes
 - **重命名**在清单层面是复制 + 删除，所以编辑器的原子保存可以正常工作。
 - **冲突。** 每次提交前，modalfs 会重新检查远端文件。如果在你编辑期间别人改过它，你的版本会另存为 `name.conflict-YYYYMMDD-HHMMSS.ext`。你也可以把策略改成*覆盖*。
 - **macOS 临时文件。** `.DS_Store` 和 `._*` 文件只留在内存里，从不上传。默认开启，可以按挂载关闭。
+
+## 加密 volume
+
+新建的 volume 可以端到端加密：文件、文件名和 volume 的标签在离开你的电脑之前就加密了，所以 Modal 以及其他能读这个 workspace 的人，看到的都只是密文。在你的电脑上，文件夹照常使用。
+
+在应用里新建 volume 时打开 **端到端加密**，或者运行 `modalfs volume create NAME --encrypt`。modalfs 随后会显示这个 volume 的密钥，是一行以 `mfs1-` 开头的文字。**把它存好，比如存进你的密码管理器。** 有了密钥和 Modal 上的文件，在任何电脑上都能读出它们，即使 modalfs 自己的文件都没了也一样。没有密钥，谁都读不出来，modalfs 也不行：没有口令，也没有找回的办法。
+
+- 这台电脑会记住密钥（macOS 上存在钥匙串里；Linux 上存在系统的密码存储区或一个私有文件里），所以 volume 会自动挂载。在别的电脑上它会显示为已锁定：点“解锁”并粘贴密钥，或者运行 `modalfs unlock NAME`。
+- Modal Function 读不了加密的 volume，远程下载也不能存进去。
+- `modalfs volume decrypt NAME --to FOLDER` 只用密钥就能把所有文件解密复制出来：不需要挂载，也不需要这台电脑记住任何东西。
+- Modal 仍然看得到有多少文件和文件夹、目录结构、大小、时间，以及哪些 8 MiB 块内容相同。
+- 名字最长 147 个字节（大约 49 个汉字）。重命名一个装了很多文件的文件夹，每个文件都要发一次请求。只有新建的 volume 能加密，volume 的密钥也不能更换。
+
+[格式和每一项取舍](docs/design/encryption.md)都完整写下来了，足以在没有 modalfs 的情况下解密一个 volume。
 
 ## 性能
 

@@ -369,6 +369,11 @@ func (s *Server) VolumePutFiles2(_ context.Context, r *pb.VolumePutFiles2Request
 	}
 	var missing []*pb.VolumePutFiles2Response_MissingBlock
 	for fi, f := range r.GetFiles() {
+		for _, component := range strings.Split(clean(f.GetPath()), "/") {
+			if len(component) > 255 {
+				return nil, status.Error(codes.InvalidArgument, "path component exceeds 255 bytes")
+			}
+		}
 		nblocks := (f.GetSize() + BlockSize - 1) / BlockSize
 		if uint64(len(f.GetBlocks())) != nblocks {
 			return nil, status.Errorf(codes.InvalidArgument, "%s: %d blocks for size %d", f.GetPath(), len(f.GetBlocks()), f.GetSize())

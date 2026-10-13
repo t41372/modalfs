@@ -44,13 +44,13 @@ func (fs *FS) Status() Status {
 		if st.gen != st.flushedGen && !st.removed {
 			s.PendingFiles++
 			for idx := range st.dirty {
-				s.PendingBytes += int64(blockLen(st.size, idx))
+				s.PendingBytes += int64(fs.blockLen(st.size, idx))
 			}
 		}
 		st.mu.Unlock()
 	}
-	s.BytesDown = fs.c.BytesDown.Load()
-	s.BytesUp = fs.c.BytesUp.Load()
+	s.BytesDown = fs.c.Client.BytesDown.Load()
+	s.BytesUp = fs.c.Client.BytesUp.Load()
 	s.Commits = fs.ctr.commits.Load()
 	s.Conflicts = fs.ctr.conflicts.Load()
 	s.Errors = fs.ctr.errors.Load()
@@ -88,7 +88,7 @@ func (fs *FS) PendingFiles() []PendingFile {
 		if st.gen != st.flushedGen && !st.removed {
 			p := PendingFile{Path: st.path, Size: st.size}
 			for idx := range st.dirty {
-				p.Bytes += int64(blockLen(st.size, idx))
+				p.Bytes += int64(fs.blockLen(st.size, idx))
 			}
 			if !st.dirtySince.IsZero() {
 				p.Since = st.dirtySince.Unix()
@@ -115,7 +115,7 @@ func (fs *FS) event(kind, p, detail string) {
 		fs.ctr.mu.Unlock()
 	case "conflict":
 		fs.ctr.conflicts.Add(1)
-	case "error":
+	case "error", "unreadable":
 		fs.ctr.errors.Add(1)
 		fs.ctr.mu.Lock()
 		fs.ctr.lastErr, fs.ctr.lastErrAt = p+": "+detail, time.Now()

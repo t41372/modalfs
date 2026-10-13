@@ -55,8 +55,9 @@ type Daemon struct {
 
 	rtMu sync.Mutex // serializes runtime.json writes
 
-	clients clientCache // shared Modal clients for API calls
-	dl      *dlManager  // remote downloads
+	encryption encryptionState
+	clients    clientCache // shared Modal clients for API calls
+	dl         *dlManager  // remote downloads
 
 	traffic   traffic     // each mount's totals over the last hour
 	conflicts conflicts   // conflicts not marked handled yet, by mount
@@ -480,11 +481,12 @@ func (d *Daemon) State() StateView {
 	v.Mounts = []MountView{}
 	for _, m := range f.Mounts {
 		mv := MountView{Mount: m, State: StateStopped, AccountLabel: accts[m.AccountID].Label, Workspace: accts[m.AccountID].Workspace}
+		mv.Encrypted, mv.Locked, mv.KeyRemembered = d.encryptionFlags(m.VolumeID)
 		mv.OpenConflicts = d.conflicts.count(m.ID)
-		if d.labels != nil && m.VolumeID != "" {
+		if d.labels != nil && m.VolumeID != "" && !mv.Locked {
 			mv.Label = d.labels.get(m.VolumeID)
 		}
-		if d.usage != nil && m.VolumeID != "" {
+		if d.usage != nil && m.VolumeID != "" && !mv.Locked {
 			if u, ok := d.usage.last(m.VolumeID); ok {
 				mv.SizeBytes, mv.SizeAt = u.Total, u.At
 			}

@@ -285,6 +285,7 @@ type artifact struct {
 }
 
 type artifactStep struct {
+	Result  string         `json:"result"`
 	AfterMs int64          `json:"after_ms"`
 	Step    string         `json:"step"`
 	Output  string         `json:"output"`
@@ -305,12 +306,13 @@ func newArtifact(t *testing.T, name string) *artifact {
 }
 
 func (a *artifact) step(name, output string, onModal map[string]any) {
-	a.Steps = append(a.Steps, artifactStep{AfterMs: time.Since(a.start).Milliseconds(), Step: name, Output: strings.TrimSpace(output), OnModal: onModal})
+	a.Steps = append(a.Steps, artifactStep{Result: "pass", AfterMs: time.Since(a.start).Milliseconds(), Step: name, Output: strings.TrimSpace(output), OnModal: onModal})
 }
 
 func (a *artifact) pass() { a.Pass = true }
 
 func (a *artifact) write() {
+	a.Pass = a.Pass && !a.t.Failed()
 	b, _ := json.MarshalIndent(a, "", "  ")
 	if err := os.WriteFile(a.path, b, 0o644); err != nil {
 		a.t.Error(err)

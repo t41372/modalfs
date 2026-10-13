@@ -8,7 +8,6 @@ package vfs
 import (
 	"container/list"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -22,7 +21,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/t41372/modalfs/internal/encryption"
 	"github.com/t41372/modalfs/internal/modalapi"
+	"github.com/t41372/modalfs/internal/volume"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -35,6 +36,7 @@ const KeepName = ".modalfs_keep"
 const MetaDir = ".modalfs"
 
 type Options struct {
+	Cipher        *encryption.Cipher
 	CacheDir      string
 	CacheMaxBytes int64
 	DirCacheTTL   time.Duration
@@ -54,7 +56,7 @@ type Options struct {
 	// never uploads it.
 	FilterJunk bool
 	// OnEvent, when set, receives user-visible events
-	// (kind: commit, conflict, error, recovered).
+	// (kind: commit, conflict, error, unreadable, recovered).
 	OnEvent func(kind, path, detail string)
 }
 
@@ -81,7 +83,7 @@ type dirListing struct {
 const dirSweepMin = 256
 
 type FS struct {
-	c     *modalapi.Client
+	c     *volume.Volume
 	volID string
 	opt   Options
 	log   *slog.Logger
@@ -96,7 +98,8 @@ type FS struct {
 	inflight   map[string]bool       // blocks being read ahead, by singleflight key
 	eph        map[string]*ephFile   // FilterJunk: local-only files
 	ephBytes   int64
-	ephTrimmed time.Time // last trim of eph
+	ephTrimmed time.Time       // last trim of eph
+	stray      map[string]bool // encrypted volume: names reported as not decrypting
 
 	ctr   counters
 	reads readTracker // sequential reads, for read-ahead (own lock)
@@ -109,6 +112,23 @@ type FS struct {
 }
 
 func New(c *modalapi.Client, vol modalapi.VolumeInfo, opt Options) (*FS, error) {
+	encrypted, marker, err := volume.Detect(context.Background(), c, vol.ID)
+	if err != nil {
+		return nil, err
+	}
+	if encrypted && opt.Cipher == nil {
+		return nil, errors.New("volume is encrypted and locked; unlock it before mounting")
+	}
+	remote := &volume.Volume{Client: c, ID: vol.ID, Cipher: opt.Cipher}
+	if opt.Cipher != nil {
+		if !encrypted {
+			return nil, errors.New("volume is not encrypted; converting existing volumes is not supported")
+		}
+		if err := remote.VerifyKey(context.Background(), marker); err != nil {
+			return nil, err
+		}
+	}
+
 	if opt.Logger == nil {
 		opt.Logger = slog.Default()
 	}
@@ -144,9 +164,16 @@ func New(c *modalapi.Client, vol modalapi.VolumeInfo, opt Options) (*FS, error) 
 		return nil, fmt.Errorf("manifest db: %w (is another modalfs using this cache dir?)", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	fs := &FS{c: c, volID: vol.ID, opt: opt, log: opt.Logger, cache: bc, mdb: mdb,
+	mdb.chunkSize = remote.ChunkSize()
+	fs := &FS{c: remote, volID: vol.ID, opt: opt, log: opt.Logger, cache: bc, mdb: mdb,
 		dirs: map[string]*dirListing{}, files: map[string]*fileState{}, inflight: map[string]bool{},
-		eph: map[string]*ephFile{}, ctx: ctx, cancel: cancel}
+		eph: map[string]*ephFile{}, stray: map[string]bool{}, ctx: ctx, cancel: cancel}
+	remote.Skipped = fs.reportStray
+	if err := fs.checkJournals(filepath.Join(base, "dirty")); err != nil {
+		mdb.Close()
+		cancel()
+		return nil, err
+	}
 	if !opt.ReadOnly {
 		fs.recover(filepath.Join(base, "dirty"))
 	}
@@ -193,7 +220,7 @@ func (fs *FS) listDir(dir string, fresh bool) (map[string]modalapi.Entry, error)
 	fs.mu.Unlock()
 	v, err, _ := fs.sf.Do(fmt.Sprintf("ls:%s#%d", dir, gen), func() (any, error) {
 		start := time.Now()
-		es, err := fs.c.List(fs.ctx, fs.volID, dir, false)
+		es, err := fs.c.List(fs.ctx, dir, false)
 		if err != nil {
 			return nil, err
 		}
@@ -307,6 +334,11 @@ func (fs *FS) Stat(p string) (Attr, error) {
 	if err != nil {
 		return Attr{}, err
 	}
+	if fs.c.Cipher != nil && !e.IsDir && e.Size == 0 {
+		if _, _, err := fs.remoteBlock(p, 0, e.Mtime, 0, true); err != nil {
+			return Attr{}, err
+		}
+	}
 	return entryAttr(e), nil
 }
 
@@ -363,15 +395,50 @@ func blockLen(size int64, idx int64) int {
 	return int(end - idx*blockSize)
 }
 
+func (fs *FS) blockLen(size int64, idx int64) int {
+	end := min((idx+1)*fs.chunkSize(), size)
+	if end <= idx*fs.chunkSize() {
+		return 0
+	}
+	return int(end - idx*fs.chunkSize())
+}
+
+// reportStray tells the user, once per name, about an entry of an encrypted
+// volume that doesn't decrypt with its key. The mount leaves it out rather
+// than refuse to list the folder it's in.
+func (fs *FS) reportStray(raw string, err error) {
+	fs.mu.Lock()
+	seen := fs.stray[raw]
+	fs.stray[raw] = true
+	fs.mu.Unlock()
+	if seen {
+		return
+	}
+	detail := "left out of the mount: it doesn't decrypt with this volume's key (written by another tool, or damaged): " + err.Error()
+	fs.log.Warn(detail, "path", raw)
+	fs.event("unreadable", raw, detail)
+}
+
+func (fs *FS) chunkSize() int64 {
+	if fs.c == nil {
+		return blockSize
+	}
+	return fs.c.ChunkSize()
+}
+
+func (fs *FS) numBlocks(size int64) int {
+	return int((size + fs.chunkSize() - 1) / fs.chunkSize())
+}
+
 // remoteBlock returns block idx of the remote version (size, mtime) of p.
 func (fs *FS) remoteBlock(p string, size, mtime int64, idx int64, cache bool) ([]byte, []byte, error) {
 	return fs.remoteBlockURL(p, size, mtime, idx, cache, "")
 }
 
 func (fs *FS) remoteBlockURL(p string, size, mtime int64, idx int64, cache bool, url string) ([]byte, []byte, error) {
-	want := blockLen(size, idx)
+	want := fs.blockLen(size, idx)
 	if h := fs.mdb.Hash(p, size, mtime, idx); h != nil {
-		if b := fs.cache.Get(h, want); b != nil {
+		if b := fs.cache.get(h, want, fs.c.HashBlock); b != nil {
 			return b, h, nil
 		}
 	}
@@ -381,7 +448,7 @@ func (fs *FS) remoteBlockURL(p string, size, mtime int64, idx int64, cache bool,
 		urls, rsize := []string{url}, size
 		if url == "" {
 			var err error
-			urls, rsize, err = fs.c.BlockURLs(fs.ctx, fs.volID, p, idx, 1)
+			urls, rsize, err = fs.c.BlockURLs(fs.ctx, p, idx, 1)
 			if err != nil {
 				return nil, err
 			}
@@ -400,12 +467,12 @@ func (fs *FS) remoteBlockURL(p string, size, mtime int64, idx int64, cache bool,
 		if err != nil {
 			return nil, err
 		}
-		h := sha256.Sum256(data)
-		fs.mdb.SetHash(p, size, mtime, int(idx), h[:])
+		h := fs.c.HashBlock(data)
+		fs.mdb.SetHash(p, size, mtime, int(idx), h)
 		if cache {
-			fs.cache.Put(h[:], data)
+			fs.cache.Put(h, data)
 		}
-		return res{data, h[:]}, nil
+		return res{data, h}, nil
 	})
 	if err != nil {
 		return nil, nil, err
@@ -418,7 +485,7 @@ func (fs *FS) remoteBlockURL(p string, size, mtime int64, idx int64, cache bool,
 // far as the read-ahead window and the free prefetch slots allow. It never
 // waits: the downloads run on their own.
 func (fs *FS) prefetch(p string, size, mtime int64, from int64) {
-	to := min(from+int64(fs.opt.ReadAhead), int64(numBlocks(size)))
+	to := min(from+int64(fs.opt.ReadAhead), int64(fs.numBlocks(size)))
 	var want []int64
 	for i := from; i < to; i++ {
 		if h := fs.mdb.Hash(p, size, mtime, i); h == nil || !fs.cache.Has(h) {
@@ -451,7 +518,7 @@ func (fs *FS) prefetch(p string, size, mtime int64, from int64) {
 	go func() {
 		// one control-plane call for the whole window, then parallel downloads
 		first, last := got[0], got[len(got)-1]
-		urls, rsize, err := fs.c.BlockURLs(fs.ctx, fs.volID, p, first, last-first+1)
+		urls, rsize, err := fs.c.BlockURLs(fs.ctx, p, first, last-first+1)
 		for _, i := range got {
 			if err != nil || rsize != size || i-first >= int64(len(urls)) {
 				done(i)
@@ -490,7 +557,7 @@ func (fs *FS) ReadAt(p string, buf []byte, off int64) (int, error) {
 // mtime) of p, from offset inBlk in the block. A cached block is read just
 // for that range; otherwise the whole block is fetched (and cached).
 func (fs *FS) readRemoteBlock(p string, size, mtime int64, idx int64, dst []byte, inBlk int64) error {
-	n := blockLen(size, idx)
+	n := fs.blockLen(size, idx)
 	if inBlk < 0 || inBlk+int64(len(dst)) > int64(n) {
 		return fmt.Errorf("%s: read of [%d, %d) is outside block %d (%d bytes): %w", p, inBlk, inBlk+int64(len(dst)), idx, n, syscall.EIO)
 	}
@@ -515,9 +582,9 @@ func (fs *FS) readRemote(p string, size, mtime int64, buf []byte, off int64) (in
 	end := min(off+int64(len(buf)), size)
 	n := 0
 	for pos := off; pos < end; {
-		idx := pos / blockSize
-		inBlk := pos - idx*blockSize
-		want := min(end-pos, blockSize-inBlk)
+		idx := pos / fs.chunkSize()
+		inBlk := pos - idx*fs.chunkSize()
+		want := min(end-pos, fs.chunkSize()-inBlk)
 		if err := fs.readRemoteBlock(p, size, mtime, idx, buf[n:n+int(want)], inBlk); err != nil {
 			return n, err
 		}
@@ -609,7 +676,19 @@ func (t *readTracker) sequential(p string, idx int64) bool {
 
 // ---------- writes ----------
 
+func (fs *FS) checkPath(p string) error {
+	_, err := fs.c.Path(p)
+	if err != nil {
+		fs.log.Error("cannot store path", "path", p, "err", err)
+		fs.event("error", p, err.Error())
+	}
+	return err
+}
+
 func (fs *FS) getState(p string, create bool) (*fileState, error) {
+	if err := fs.checkPath(p); err != nil {
+		return nil, err
+	}
 	fs.mu.Lock()
 	st := fs.files[p]
 	fs.mu.Unlock()
@@ -790,6 +869,9 @@ func (fs *FS) Close() error {
 
 func (fs *FS) Mkdir(p string) error {
 	p = clean(p)
+	if err := fs.checkPath(p); err != nil {
+		return err
+	}
 	if fs.opt.ReadOnly {
 		return syscall.EROFS
 	}
@@ -799,7 +881,7 @@ func (fs *FS) Mkdir(p string) error {
 	if _, err := fs.dirStat(parentOf(p)); err != nil {
 		return err
 	}
-	_, err := fs.c.Put(fs.ctx, fs.volID, []modalapi.PutFile{{Path: path.Join(p, KeepName), Size: 0}})
+	_, err := fs.c.Put(fs.ctx, []modalapi.PutFile{{Path: path.Join(p, KeepName), Size: 0}})
 	fs.invalidate(parentOf(p))
 	fs.invalidate(p)
 	return err
@@ -835,7 +917,7 @@ func (fs *FS) Remove(p string) error {
 			}
 		}
 		fs.mu.Unlock()
-		err = fs.c.Remove(fs.ctx, fs.volID, p, true)
+		err = fs.c.Remove(fs.ctx, p, true)
 		fs.ephDropTree(p)
 	} else {
 		fs.mu.Lock()
@@ -847,13 +929,13 @@ func (fs *FS) Remove(p string) error {
 			remoteExists = st.discard()
 		}
 		if remoteExists {
-			err = fs.c.Remove(fs.ctx, fs.volID, p, false)
+			err = fs.c.Remove(fs.ctx, p, false)
 			if modalapi.IsNotFound(err) {
 				err = nil
 			}
 		}
 		fs.mdb.Delete(p)
-		go func() { _ = fs.c.Remove(fs.ctx, fs.volID, sidecarPath(p), false) }()
+		go func() { _ = fs.c.Remove(fs.ctx, fs.sidecarPath(p), false) }()
 	}
 	fs.invalidate(parentOf(p))
 	fs.invalidateTree(p)
@@ -862,6 +944,9 @@ func (fs *FS) Remove(p string) error {
 
 func (fs *FS) Rename(oldp, newp string) error {
 	oldp, newp = clean(oldp), clean(newp)
+	if err := fs.checkPath(newp); err != nil {
+		return err
+	}
 	if fs.opt.ReadOnly {
 		return syscall.EROFS
 	}
@@ -924,15 +1009,15 @@ func (fs *FS) Rename(oldp, newp string) error {
 	if !a.IsDir {
 		// VolumeCopyFiles2 is a manifest-level copy (O(#blocks), no data
 		// transfer) and atomically replaces an existing destination file.
-		if err := fs.c.Copy(fs.ctx, fs.volID, []string{oldp}, newp, false); err != nil {
+		if err := fs.c.Copy(fs.ctx, []string{oldp}, newp, false); err != nil {
 			return err
 		}
-		if err := fs.c.Remove(fs.ctx, fs.volID, oldp, false); err != nil && !modalapi.IsNotFound(err) {
+		if err := fs.c.Remove(fs.ctx, oldp, false); err != nil && !modalapi.IsNotFound(err) {
 			return err
 		}
 		go func() {
-			if err := fs.c.Copy(fs.ctx, fs.volID, []string{sidecarPath(oldp)}, sidecarPath(newp), false); err == nil {
-				_ = fs.c.Remove(fs.ctx, fs.volID, sidecarPath(oldp), false)
+			if err := fs.c.Copy(fs.ctx, []string{fs.sidecarPath(oldp)}, fs.sidecarPath(newp), false); err == nil {
+				_ = fs.c.Remove(fs.ctx, fs.sidecarPath(oldp), false)
 			}
 		}()
 	} else {
@@ -942,7 +1027,7 @@ func (fs *FS) Rename(oldp, newp string) error {
 		if err != nil {
 			return err
 		}
-		if _, err := fs.c.Put(fs.ctx, fs.volID, []modalapi.PutFile{{Path: path.Join(newp, KeepName), Size: 0}}); err != nil {
+		if _, err := fs.c.Put(fs.ctx, []modalapi.PutFile{{Path: path.Join(newp, KeepName), Size: 0}}); err != nil {
 			return err
 		}
 		var srcs []string
@@ -952,11 +1037,11 @@ func (fs *FS) Rename(oldp, newp string) error {
 			}
 		}
 		if len(srcs) > 0 {
-			if err := fs.c.Copy(fs.ctx, fs.volID, srcs, newp, true); err != nil {
+			if err := fs.c.Copy(fs.ctx, srcs, newp, true); err != nil {
 				return err
 			}
 		}
-		if err := fs.c.Remove(fs.ctx, fs.volID, oldp, true); err != nil && !modalapi.IsNotFound(err) {
+		if err := fs.c.Remove(fs.ctx, oldp, true); err != nil && !modalapi.IsNotFound(err) {
 			return err
 		}
 	}

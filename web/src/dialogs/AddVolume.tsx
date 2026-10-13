@@ -63,13 +63,14 @@ export function AddVolumeDialog({ open, onOpenChange }: { open: boolean; onOpenC
     return { list: hits.slice(0, SHOWN), matches: hits.length, total: all.length }
   }, [vols.data, query, added, st.mounts, account, envName]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function add(name: string, id: string) {
+  /** A locked volume is only added: its row then offers Unlock. */
+  async function add(name: string, id: string, locked: boolean) {
     setBusy(id)
     try {
-      const r = await api<{ mount: Mount; error?: string }>('POST', '/mounts', { account_id: account, environment: envName, volume_name: name, filter_junk: true, start: true })
+      const r = await api<{ mount: Mount; error?: string }>('POST', '/mounts', { account_id: account, environment: envName, volume_name: name, filter_junk: true, start: !locked })
       setAdded((x) => [...x, id])
       if (r.error) toast.error(r.error)
-      else toast(t('toast.mounting', { name }))
+      else if (!locked) toast(t('toast.mounting', { name }))
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
     } finally {
@@ -162,7 +163,7 @@ export function AddVolumeDialog({ open, onOpenChange }: { open: boolean; onOpenC
                         {t('addVol.added')}
                       </span>
                     ) : (
-                      <Button size="sm" variant="outline" disabled={v.format !== 'v2' || !!busy} onClick={() => add(v.name, v.id)}>
+                      <Button size="sm" variant="outline" disabled={v.format !== 'v2' || !!busy} onClick={() => add(v.name, v.id, !!v.locked)}>
                         {busy === v.id && <Spinner className="size-3" />}
                         {t('addVol.add')}
                       </Button>

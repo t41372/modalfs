@@ -15,7 +15,13 @@ import (
 	"github.com/t41372/modalfs/internal/modalapi"
 )
 
-const MarkerPath = ".modalfs/encryption.json"
+// MetaDir is the root folder modalfs keeps its own files in; its name stays
+// readable in an encrypted volume, and everything in it but the marker is
+// encrypted.
+const MetaDir = ".modalfs"
+
+// MarkerPath is the optional plaintext marker of an encrypted volume.
+const MarkerPath = MetaDir + "/encryption.json"
 
 type Marker struct {
 	Version     int    `json:"version"`
@@ -26,6 +32,11 @@ type Volume struct {
 	Client *modalapi.Client
 	ID     string
 	Cipher *encryption.Cipher
+	// Skipped, when set, is told about each entry of an encrypted volume
+	// that doesn't decrypt with its key: put there by another tool, or
+	// damaged. Listings then leave it out rather than fail, so one stray
+	// name never hides the rest of the volume. Without it, listing fails.
+	Skipped func(raw string, err error)
 }
 
 func (v *Volume) ChunkSize() int64 {
@@ -83,12 +94,21 @@ func (v *Volume) List(ctx context.Context, dir string, recursive bool) ([]modala
 	if err != nil {
 		return nil, err
 	}
+	return v.decodeAll(es)
+}
+
+// decodeAll decrypts a listing's names and sizes, leaving out the marker.
+func (v *Volume) decodeAll(es []modalapi.Entry) ([]modalapi.Entry, error) {
 	out := make([]modalapi.Entry, 0, len(es))
-	for _, e := range es {
-		if v.Cipher != nil && e.Path == MarkerPath {
+	for _, raw := range es {
+		if v.Cipher != nil && raw.Path == MarkerPath {
 			continue
 		}
-		e, err = v.decode(e)
+		e, err := v.decode(raw)
+		if err != nil && v.Skipped != nil {
+			v.Skipped(raw.Path, err)
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -109,17 +129,11 @@ func (v *Volume) Walk(ctx context.Context, dir string, fn func([]modalapi.Entry)
 		if decodeErr != nil {
 			return
 		}
-		out := make([]modalapi.Entry, 0, len(batch))
-		for _, e := range batch {
-			if v.Cipher != nil && e.Path == MarkerPath {
-				continue
-			}
-			e, decodeErr = v.decode(e)
-			if decodeErr != nil {
-				cancel()
-				return
-			}
-			out = append(out, e)
+		out, err := v.decodeAll(batch)
+		if err != nil {
+			decodeErr = err
+			cancel()
+			return
 		}
 		fn(out)
 	})
@@ -301,8 +315,8 @@ func Detect(ctx context.Context, c *modalapi.Client, id string) (bool, *Marker, 
 		return false, nil, err
 	}
 	for _, e := range es {
-		if e.IsDir && e.Path == ".modalfs" {
-			metadata, err := c.List(ctx, id, ".modalfs", false)
+		if e.IsDir && e.Path == MetaDir {
+			metadata, err := c.List(ctx, id, MetaDir, false)
 			if err != nil {
 				return false, nil, err
 			}
@@ -328,59 +342,62 @@ func (v *Volume) WriteMarker(ctx context.Context) error {
 	return raw.WriteFile(ctx, MarkerPath, data)
 }
 
-// VerifyKey authenticates names, which prove possession of the volume key
-// without making a disposable marker, label or sidecar's body mandatory.
+// VerifyKey authenticates root names, which prove possession of the volume key
+// without making a disposable marker, label or sidecar's body mandatory. One
+// name that authenticates is proof; names that don't (put there by another
+// tool, or damaged) are reported when listed, and don't lock the volume.
 func (v *Volume) VerifyKey(ctx context.Context, marker *Marker) error {
 	if marker != nil && marker.Fingerprint != v.Cipher.Key().Fingerprint() {
 		return errors.New("this isn't the right key for this volume")
 	}
-	entries, err := v.Client.List(ctx, v.ID, "", true)
+	entries, err := v.Client.List(ctx, v.ID, "", false)
 	if err != nil {
 		return err
 	}
-	verified := false
-	for _, e := range entries {
-		if e.Path == MarkerPath || e.Path == ".modalfs" || strings.HasPrefix(e.Path, ".modalfs/") {
-			continue
-		}
-		if _, err := v.Cipher.DecodePath(e.Path); err != nil {
-			return fmt.Errorf("this isn't the right key, or an encrypted name is damaged: %w", err)
-		}
-		verified = true
+	if v.anyDecrypts(entries) {
+		return nil
 	}
-	if !verified {
-		for _, e := range entries {
-			if strings.HasPrefix(e.Path, ".modalfs/") && e.Path != MarkerPath {
-				if _, err := v.Cipher.DecodePath(e.Path); err == nil {
-					verified = true
-					break
-				}
-			}
+	metadata, err := v.Client.List(ctx, v.ID, MetaDir, false)
+	if err != nil && !modalapi.IsNotFound(err) {
+		return err
+	}
+	if v.anyDecrypts(metadata) || marker != nil {
+		return nil
+	}
+	for _, e := range append(entries, metadata...) {
+		if strings.HasPrefix(path.Base(e.Path), encryption.NamePrefix) {
+			return errors.New("this isn't the right key for this volume")
 		}
 	}
-	if !verified && marker == nil {
-		return errors.New("no encrypted names remain to verify this key")
-	}
-	return nil
+	return errors.New("no encrypted names remain to verify this key")
 }
 
-// RecoveryEntries omits disposable metadata before interpreting file sizes.
-// Even a truncated sidecar or keep marker cannot prevent user-data recovery.
+// anyDecrypts reports whether an encrypted name in the listing authenticates.
+func (v *Volume) anyDecrypts(entries []modalapi.Entry) bool {
+	for _, e := range entries {
+		if e.Path == MetaDir || !strings.HasPrefix(path.Base(e.Path), encryption.NamePrefix) {
+			continue
+		}
+		if _, err := v.Cipher.DecodePath(e.Path); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// RecoveryEntries lists every user file and folder, leaving out disposable
+// metadata before interpreting sizes, so even a truncated sidecar or keep
+// marker can't prevent recovery. Entries that don't decrypt go to Skipped.
 func (v *Volume) RecoveryEntries(ctx context.Context) ([]modalapi.Entry, error) {
 	entries, err := v.Client.List(ctx, v.ID, "", true)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]modalapi.Entry, 0, len(entries))
+	user := make([]modalapi.Entry, 0, len(entries))
 	for _, e := range entries {
-		if e.Path == ".modalfs" || strings.HasPrefix(e.Path, ".modalfs/") {
-			continue
+		if e.Path != MetaDir && !strings.HasPrefix(e.Path, MetaDir+"/") {
+			user = append(user, e)
 		}
-		e, err = v.decode(e)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, e)
 	}
-	return out, nil
+	return v.decodeAll(user)
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/t41372/modalfs/internal/fsync"
 	"github.com/t41372/modalfs/internal/modalapi"
 	"github.com/t41372/modalfs/internal/vfs"
+	"github.com/t41372/modalfs/internal/volume"
 )
 
 // ---------- traffic ----------
@@ -258,7 +259,8 @@ func (u *usageStore) save() {
 }
 
 // start begins listing a volume unless it's being listed already.
-func (u *usageStore) start(c *modalapi.Client, volID string) {
+func (u *usageStore) start(v *volume.Volume) {
+	volID := v.ID
 	u.mu.Lock()
 	if j := u.jobs[volID]; j != nil && j.cancel != nil {
 		u.mu.Unlock()
@@ -271,7 +273,7 @@ func (u *usageStore) start(c *modalapi.Client, volID string) {
 
 	go func() {
 		defer cancel()
-		res, err := u.walk(ctx, c, volID, j)
+		res, err := u.walk(ctx, v, j)
 		u.mu.Lock()
 		defer u.mu.Unlock()
 		j.cancel = nil
@@ -288,7 +290,7 @@ func (u *usageStore) start(c *modalapi.Client, volID string) {
 	}()
 }
 
-func (u *usageStore) walk(ctx context.Context, c *modalapi.Client, volID string, j *usageJob) (Usage, error) {
+func (u *usageStore) walk(ctx context.Context, v *volume.Volume, j *usageJob) (Usage, error) {
 	select {
 	case u.turn <- struct{}{}:
 	case <-ctx.Done():
@@ -300,7 +302,7 @@ func (u *usageStore) walk(ctx context.Context, c *modalapi.Client, volID string,
 	u.mu.Unlock()
 	folders := map[string]*FolderUsage{}
 	var total, files int64
-	err := c.Walk(ctx, volID, "", func(batch []modalapi.Entry) {
+	err := v.Walk(ctx, "", func(batch []modalapi.Entry) {
 		for _, e := range batch {
 			if e.IsDir {
 				continue
@@ -407,8 +409,9 @@ func (d *Daemon) insightRoutes(mux *http.ServeMux) {
 			return
 		}
 		volID := m.VolumeID
-		if volID == "" {
-			// Never mounted: its ID isn't pinned yet, so there's nothing saved under it.
+		// Never mounted: its ID isn't pinned yet, so there's nothing saved
+		// under it. Locked: what's saved names its folders, which stay hidden.
+		if _, locked, _ := d.encryptionFlags(volID); volID == "" || locked {
 			writeJSON(w, 200, UsageView{})
 			return
 		}
@@ -429,7 +432,12 @@ func (d *Daemon) insightRoutes(mux *http.ServeMux) {
 			writeErr(w, err)
 			return
 		}
-		d.usage.start(c, volID)
+		remote, err := d.openVolume(r.Context(), c, volID)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		d.usage.start(remote)
 		writeJSON(w, 200, d.usage.view(volID))
 	})
 	mux.HandleFunc("DELETE /api/mounts/{id}/usage", func(w http.ResponseWriter, r *http.Request) {

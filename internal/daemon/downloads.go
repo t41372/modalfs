@@ -32,12 +32,13 @@ type dlManager struct {
 	d     *Daemon
 	store *downloads.Store
 	// runnerFor and volumeFor reach Modal; tests replace them.
-	runnerFor  func(accountID, env string) (downloads.Runner, error)
-	volumeFor  func(ctx context.Context, accountID, env, name string) (modalapi.VolumeInfo, error)
-	billingFor func(ctx context.Context, accountID, env string) (Billing, error)
-	poll       time.Duration // how often a running download's records are read
-	stopAfter  time.Duration // how long a pause may take before the call is cancelled
-	quit       <-chan struct{}
+	runnerFor   func(accountID, env string) (downloads.Runner, error)
+	volumeFor   func(ctx context.Context, accountID, env, name string) (modalapi.VolumeInfo, error)
+	checkVolume func(context.Context, string, string, string) error
+	billingFor  func(ctx context.Context, accountID, env string) (Billing, error)
+	poll        time.Duration // how often a running download's records are read
+	stopAfter   time.Duration // how long a pause may take before the call is cancelled
+	quit        <-chan struct{}
 
 	mu        sync.Mutex
 	runners   map[clientKey]*downloads.Modal
@@ -58,6 +59,7 @@ func newDLManager(d *Daemon, dir string, quit <-chan struct{}) (*dlManager, erro
 	m := &dlManager{d: d, store: store, poll: 3 * time.Second, stopAfter: 30 * time.Second, quit: quit,
 		runners: map[clientKey]*downloads.Modal{}, following: map[string]bool{}, stopping: map[string]bool{},
 		status: map[string]downloads.Status{}, history: map[string]*downloads.History{}, live: map[string]*liveFeed{}}
+	m.checkVolume = d.refuseEncryptedDownload
 	m.runnerFor = m.modalRunner
 	m.billingFor = m.readBilling
 	m.volumeFor = func(ctx context.Context, accountID, env, name string) (modalapi.VolumeInfo, error) {
@@ -195,6 +197,9 @@ func (m *dlManager) Add(ctx context.Context, in addRequest) ([]downloads.Job, er
 	if err != nil {
 		return nil, err
 	}
+	if err := m.checkVolume(ctx, a.ID, env, vol.ID); err != nil {
+		return nil, err
+	}
 	var jobs []downloads.Job
 	for _, u := range in.URLs {
 		j, err := downloads.NewJob(a.ID, env, vol.ID, vol.Name, in.Folder, strings.TrimSpace(u), in.Tool, in.Size)
@@ -238,6 +243,10 @@ func (m *dlManager) launch(id string) {
 			j = failed
 		}
 		m.announce(j)
+	}
+	if err := m.checkVolume(ctx, j.AccountID, j.Environment, j.VolumeID); err != nil {
+		fail(err)
+		return
 	}
 	r, err := m.runner(j)
 	if err != nil {
@@ -645,6 +654,9 @@ func (m *dlManager) Resume(ctx context.Context, id string, warp *bool) error {
 	}
 	j, err := m.job(id)
 	if err != nil {
+		return err
+	}
+	if err := m.checkVolume(ctx, j.AccountID, j.Environment, j.VolumeID); err != nil {
 		return err
 	}
 	switch j.State {
@@ -1186,7 +1198,12 @@ func (d *Daemon) downloadRoutes(mux *http.ServeMux) {
 			return
 		}
 		dir := strings.Trim(path.Clean("/"+r.URL.Query().Get("path")), "/")
-		es, err := c.List(r.Context(), r.PathValue("vol"), dir, false)
+		remote, err := d.openVolume(r.Context(), c, r.PathValue("vol"))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		es, err := remote.List(r.Context(), dir, false)
 		if err != nil {
 			writeErr(w, friendly(err))
 			return

@@ -84,7 +84,7 @@ func onRename(ctx context.Context, w *response, userHandle Handler) error {
 		if os.IsPermission(err) {
 			return &NFSStatusError{NFSStatusAccess, err}
 		}
-		return &NFSStatusError{NFSStatusIO, err}
+		return &NFSStatusError{statusFromNameError(err, NFSStatusIO), err}
 	}
 
 	if err := userHandle.InvalidateHandle(fs, oldHandle); err != nil {

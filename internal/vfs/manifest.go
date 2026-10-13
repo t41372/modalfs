@@ -27,8 +27,9 @@ import (
 // (by downloading a block, or from a sidecar), so a crash that loses the
 // last batch only costs a re-download.
 type manifestDB struct {
-	db     *bolt.DB
-	bucket []byte
+	db        *bolt.DB
+	chunkSize int64
+	bucket    []byte
 
 	mu      sync.Mutex
 	lru     *list.List // of *manifestEnt, front = most recent
@@ -91,7 +92,7 @@ func openManifestDB(path, volumeID string) (*manifestDB, error) {
 		db.Close()
 		return nil, err
 	}
-	d := &manifestDB{db: db, bucket: b, lru: list.New(), byPath: map[string]*list.Element{},
+	d := &manifestDB{db: db, chunkSize: blockSize, bucket: b, lru: list.New(), byPath: map[string]*list.Element{},
 		max: manifestCacheBytes, pending: map[string]bool{}, kick: make(chan struct{}, 1), done: make(chan struct{})}
 	go d.flusher()
 	return d, nil
@@ -229,8 +230,11 @@ func (d *manifestDB) SetHash(path string, size, mtime int64, idx int, h []byte) 
 	defer d.mu.Unlock()
 	m := d.lookupLocked(path)
 	if m == nil || m.Size != size || m.Mtime != mtime {
-		m = &manifest{Size: size, Mtime: mtime, Hashes: make([][]byte, numBlocks(size))}
+		m = &manifest{Size: size, Mtime: mtime, Hashes: make([][]byte, (size+d.chunkSize-1)/d.chunkSize)}
 		d.storeLocked(path, m)
+	}
+	if size == 0 && idx == 0 && len(m.Hashes) == 0 {
+		m.Hashes = make([][]byte, 1)
 	}
 	if idx < 0 || idx >= len(m.Hashes) {
 		return

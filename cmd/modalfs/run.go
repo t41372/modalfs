@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/t41372/modalfs/internal/config"
+	"github.com/t41372/modalfs/internal/encryption"
 	"github.com/t41372/modalfs/internal/fusefront"
 	"github.com/t41372/modalfs/internal/modalapi"
 	"github.com/t41372/modalfs/internal/nfsfront"
@@ -62,6 +63,7 @@ func runLegacy(cmd string, argv []string) {
 	onConflict := fl.String("on-conflict", "keep-both", "keep-both | overwrite, when a file changed remotely while edited locally")
 	readOnly := fl.Bool("read-only", false, "mount read-only")
 	create := fl.Bool("create", false, "create the volume (v2) if missing")
+	keyStdin := fl.Bool("key-stdin", false, "read an encrypted volume key from terminal or stdin")
 	verbose := fl.Bool("v", false, "verbose logging")
 	debugFuse := fl.Bool("debug-fuse", false, "log every FUSE op")
 	fl.Usage = func() { fmt.Fprint(os.Stderr, legacyUsage); fl.PrintDefaults() }
@@ -107,7 +109,14 @@ func runLegacy(cmd string, argv []string) {
 	if err != nil {
 		fatal(err)
 	}
+	var cipher *encryption.Cipher
+	if *keyStdin {
+		key, err := encryption.ParseKey(readEncryptionKey())
+		must(err)
+		cipher = encryption.New(key)
+	}
 	v, err := vfs.New(client, vol, vfs.Options{
+		Cipher:   cipher,
 		CacheDir: *cacheDir, CacheMaxBytes: cs, DirCacheTTL: *dirTTL, WriteBack: *writeBack, MaxPending: *maxPending, FilterJunk: !*keepJunk,
 		ReadAhead: *readAhead, SidecarMin: sm, OnConflict: *onConflict, ReadOnly: *readOnly, Logger: log,
 	})

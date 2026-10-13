@@ -1,7 +1,7 @@
 package vfs
 
 import (
-	"crypto/sha256"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -13,7 +13,9 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
+	"github.com/t41372/modalfs/internal/encryption"
 	"github.com/t41372/modalfs/internal/fsync"
 	"github.com/t41372/modalfs/internal/modalapi"
 )
@@ -30,17 +32,17 @@ type snapshot struct {
 	floor                           int64          // lowest size the live file reached since
 }
 
-func (sn *snapshot) cleanIsRemote(idx int64) bool {
-	return sn.baseExists && idx < int64(numBlocks(sn.baseSize)) && idx*blockSize < sn.truncFloor
+func (sn *snapshot) cleanIsRemote(idx, chunkSize int64) bool {
+	return sn.baseExists && idx < (sn.baseSize+chunkSize-1)/chunkSize && idx*chunkSize < sn.truncFloor
 }
 
 // fileState holds local, not-yet-committed modifications of one file.
 //
 // Invariants:
 //   - dirty[i] => dir/i holds the full current content of block i, padded
-//     with zeros up to blockSize (sparse file).
+//     with zeros up to the plaintext chunk size (sparse file).
 //   - a clean block i reads from the remote base version iff
-//     i*blockSize < truncFloor (truncFloor = lowest size reached since base);
+//     the chunk starts below truncFloor (truncFloor = lowest size reached since base);
 //     otherwise it reads as zeros.
 //   - the base version's partial last block, and any block a truncate cut
 //     through, is always dirty, so clean blocks keep their base length.
@@ -149,10 +151,10 @@ func copyFile(src, dst string) error {
 	return os.Rename(tmp, dst)
 }
 
-func (st *fileState) baseBlocks() int64 { return int64(numBlocks(st.baseSize)) }
+func (st *fileState) baseBlocks() int64 { return int64(st.fs.numBlocks(st.baseSize)) }
 
 func (st *fileState) cleanIsRemote(idx int64) bool {
-	return st.baseExists && idx < st.baseBlocks() && idx*blockSize < st.truncFloor
+	return st.baseExists && idx < st.baseBlocks() && idx*st.fs.chunkSize() < st.truncFloor
 }
 
 // ensureDirtyLocked materialises block idx into a local dirty block file.
@@ -201,7 +203,7 @@ func (st *fileState) ensureDirtyFromLocked(idx int64, fullCover bool, base []byt
 		}
 	}
 	if err == nil {
-		err = f.Truncate(blockSize)
+		err = f.Truncate(st.fs.chunkSize())
 	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
@@ -237,7 +239,7 @@ func (st *fileState) dropIfUnchangedLocked() {
 }
 
 func (st *fileState) readBlockLocked(idx int64) ([]byte, error) {
-	n := blockLen(st.size, idx)
+	n := st.fs.blockLen(st.size, idx)
 	if st.dirty[idx] {
 		buf := make([]byte, n)
 		f, err := os.Open(st.blockFile(idx))
@@ -267,15 +269,15 @@ func (st *fileState) fetchBase(off, end int64, skipFull bool) (map[int64][]byte,
 	st.mu.Lock()
 	ver := [2]int64{st.baseSize, st.baseMtime}
 	var need []int64
-	for idx := off / blockSize; idx*blockSize < end; idx++ {
+	for idx := off / st.fs.chunkSize(); idx*st.fs.chunkSize() < end; idx++ {
 		if st.dirty[idx] || !st.cleanIsRemote(idx) {
 			continue
 		}
 		if skipFull {
 			// a write that covers the block's whole base content needs nothing
-			inBlk := max(off-idx*blockSize, 0)
-			want := min(end, (idx+1)*blockSize) - (idx*blockSize + inBlk)
-			if inBlk == 0 && want >= int64(blockLen(min(st.baseSize, st.truncFloor), idx)) {
+			inBlk := max(off-idx*st.fs.chunkSize(), 0)
+			want := min(end, (idx+1)*st.fs.chunkSize()) - (idx*st.fs.chunkSize() + inBlk)
+			if inBlk == 0 && want >= int64(st.fs.blockLen(min(st.baseSize, st.truncFloor), idx)) {
 				continue
 			}
 		}
@@ -307,9 +309,9 @@ func (st *fileState) readAt(buf []byte, off int64) (int, error) {
 		type part struct{ idx, inBlk, at, n int64 }
 		var remote []part
 		for pos := off; pos < end; {
-			idx := pos / blockSize
-			inBlk := pos - idx*blockSize
-			want := min(end-pos, blockSize-inBlk)
+			idx := pos / st.fs.chunkSize()
+			inBlk := pos - idx*st.fs.chunkSize()
+			want := min(end-pos, st.fs.chunkSize()-inBlk)
 			if !st.dirty[idx] && st.cleanIsRemote(idx) {
 				remote = append(remote, part{idx, inBlk, pos - off, want})
 			}
@@ -345,9 +347,9 @@ func (st *fileState) fillLocalLocked(buf []byte, off int64) (int, error) {
 	end := min(off+int64(len(buf)), st.size)
 	n := 0
 	for pos := off; pos < end; {
-		idx := pos / blockSize
-		inBlk := pos - idx*blockSize
-		want := min(end-pos, blockSize-inBlk)
+		idx := pos / st.fs.chunkSize()
+		inBlk := pos - idx*st.fs.chunkSize()
+		want := min(end-pos, st.fs.chunkSize()-inBlk)
 		switch {
 		case st.dirty[idx]:
 			f, err := os.Open(st.blockFile(idx))
@@ -376,8 +378,8 @@ func (st *fileState) growLocked(newSize int64) error {
 	if newSize <= st.size {
 		return nil
 	}
-	if st.size%blockSize != 0 {
-		if err := st.ensureDirtyLocked(st.size/blockSize, false); err != nil {
+	if st.size%st.fs.chunkSize() != 0 {
+		if err := st.ensureDirtyLocked(st.size/st.fs.chunkSize(), false); err != nil {
 			return err
 		}
 	}
@@ -418,12 +420,12 @@ func (st *fileState) writeAt(data []byte, off int64) (n int, err error) {
 		return 0, err
 	}
 	for pos := off; pos < end; {
-		idx := pos / blockSize
-		inBlk := pos - idx*blockSize
-		want := min(end-pos, blockSize-inBlk)
+		idx := pos / st.fs.chunkSize()
+		inBlk := pos - idx*st.fs.chunkSize()
+		want := min(end-pos, st.fs.chunkSize()-inBlk)
 		baseLen := int64(0)
 		if st.cleanIsRemote(idx) {
-			baseLen = int64(blockLen(min(st.baseSize, st.truncFloor), idx))
+			baseLen = int64(st.fs.blockLen(min(st.baseSize, st.truncFloor), idx))
 		}
 		full := inBlk == 0 && want >= baseLen
 		if err := st.ensureDirtyFromLocked(idx, full, pre[idx]); err != nil {
@@ -486,7 +488,7 @@ func (st *fileState) truncate(newSize int64) (err error) {
 		}
 	} else if newSize < st.size {
 		for idx := range st.dirty {
-			if idx*blockSize >= newSize {
+			if idx*st.fs.chunkSize() >= newSize {
 				if err := st.preserveLocked(idx, true); err != nil {
 					return err
 				}
@@ -497,8 +499,8 @@ func (st *fileState) truncate(newSize int64) (err error) {
 		if st.snap != nil {
 			st.snap.floor = min(st.snap.floor, newSize)
 		}
-		if newSize%blockSize != 0 {
-			idx := newSize / blockSize
+		if newSize%st.fs.chunkSize() != 0 {
+			idx := newSize / st.fs.chunkSize()
 			if err := st.ensureDirtyLocked(idx, false); err != nil {
 				return err
 			}
@@ -511,7 +513,7 @@ func (st *fileState) truncate(newSize int64) (err error) {
 			if err != nil {
 				return err
 			}
-			_, err = f.WriteAt(make([]byte, blockSize-newSize%blockSize), newSize%blockSize)
+			_, err = f.WriteAt(make([]byte, st.fs.chunkSize()-newSize%st.fs.chunkSize()), newSize%st.fs.chunkSize())
 			if cerr := f.Close(); err == nil {
 				err = cerr
 			}
@@ -584,6 +586,24 @@ func conflictName(p string) string {
 	return fmt.Sprintf("%s.conflict-%s%s", strings.TrimSuffix(p, ext), time.Now().Format("20060102-150405"), ext)
 }
 
+func (fs *FS) conflictName(p string) string {
+	if fs.c.Cipher == nil {
+		return conflictName(p)
+	}
+	suffix := ".conflict-" + time.Now().Format("20060102-150405") + "-" + rand.Text()
+	ext := path.Ext(p)
+	if len(ext) > encryption.MaxNameBytes-len(suffix)-1 {
+		ext = ""
+	}
+	stem := strings.TrimSuffix(path.Base(p), ext)
+	budget := encryption.MaxNameBytes - len(suffix) - len(ext)
+	stem = stem[:min(len(stem), budget)]
+	for !utf8.ValidString(stem) && len(stem) > 0 {
+		stem = stem[:len(stem)-1]
+	}
+	return path.Join(path.Dir(p), stem+suffix+ext)
+}
+
 // flush commits the file. It takes a snapshot under the lock, then hashes
 // and uploads without it, so the file (and the mount) stay usable while a
 // large commit runs; changes made meanwhile go into the next commit.
@@ -629,7 +649,7 @@ func (st *fileState) flush() error {
 	if err == nil {
 		changed := !sn.baseExists || cur.Size != sn.baseSize || cur.Mtime != sn.baseMtime
 		if changed && fs.opt.OnConflict != "overwrite" {
-			target = conflictName(path)
+			target = fs.conflictName(path)
 		}
 	}
 
@@ -668,14 +688,14 @@ func (st *fileState) flush() error {
 		return nil
 	}
 	put := func(to string, check func() error) (int, error) {
-		return fs.c.PutChecked(fs.ctx, fs.volID, []modalapi.PutFile{{
+		return fs.c.PutChecked(fs.ctx, []modalapi.PutFile{{
 			Path: to, Size: sn.size, Hashes: hashes,
 			Block: func(i int) ([]byte, error) { return st.readSnapshotBlock(sn, int64(i)) },
 		}}, check)
 	}
 	uploaded, err := put(target, recheck)
 	if errors.Is(err, errLateConflict) {
-		target = conflictName(path)
+		target = fs.conflictName(path)
 		fs.log.Warn("remote file changed while uploading; saving local version as conflict copy", "path", path, "copy", target)
 		fs.event("conflict", path, target)
 		var more int
@@ -704,7 +724,7 @@ func (st *fileState) flush() error {
 
 	if deleted {
 		// removed while it was uploading: don't leave the upload behind
-		if err := fs.c.Remove(fs.ctx, fs.volID, target, false); err != nil && !modalapi.IsNotFound(err) {
+		if err := fs.c.Remove(fs.ctx, target, false); err != nil && !modalapi.IsNotFound(err) {
 			fs.log.Warn("could not remove a file deleted during its commit", "path", target, "err", err)
 		}
 		fs.invalidate(parentOf(target))
@@ -735,7 +755,7 @@ var (
 // can only be read while it's still the version the edit was made on.
 func (st *fileState) snapshotHashes(sn *snapshot, cur modalapi.Entry, curOK bool) ([][]byte, error) {
 	fs := st.fs
-	n := int64(numBlocks(sn.size))
+	n := int64(st.fs.numBlocks(sn.size))
 	hashes := make([][]byte, n)
 	var unknown []int64
 	var base *manifest
@@ -757,8 +777,7 @@ func (st *fileState) snapshotHashes(sn *snapshot, cur modalapi.Entry, curOK bool
 				if err != nil {
 					return nil, err
 				}
-				sum := sha256.Sum256(data)
-				h = sum[:]
+				h = fs.c.HashBlock(data)
 				st.mu.Lock()
 				if !sn.saved[i] && st.dirty[i] { // still the content just hashed
 					st.hashes[i] = h
@@ -766,17 +785,16 @@ func (st *fileState) snapshotHashes(sn *snapshot, cur modalapi.Entry, curOK bool
 				st.mu.Unlock()
 			}
 			hashes[i] = h
-		case sn.cleanIsRemote(i):
+		case sn.cleanIsRemote(i, fs.chunkSize()):
 			if base != nil && int(i) < len(base.Hashes) && base.Hashes[i] != nil {
 				hashes[i] = base.Hashes[i]
 			} else {
 				unknown = append(unknown, i)
 			}
 		default:
-			l := blockLen(sn.size, i)
+			l := st.fs.blockLen(sn.size, i)
 			if zeroHashes[l] == nil {
-				h := sha256.Sum256(make([]byte, l))
-				zeroHashes[l] = h[:]
+				zeroHashes[l] = fs.c.HashBlock(make([]byte, l))
 			}
 			hashes[i] = zeroHashes[l]
 		}
@@ -839,7 +857,7 @@ func (st *fileState) isDeleted() bool {
 
 // readSnapshotBlock returns block idx as the snapshot has it.
 func (st *fileState) readSnapshotBlock(sn *snapshot, idx int64) ([]byte, error) {
-	n := blockLen(sn.size, idx)
+	n := st.fs.blockLen(sn.size, idx)
 	if sn.dirty[idx] {
 		st.mu.Lock()
 		defer st.mu.Unlock()
@@ -861,7 +879,7 @@ func (st *fileState) readSnapshotBlock(sn *snapshot, idx int64) ([]byte, error) 
 		}
 		return buf, nil
 	}
-	if sn.cleanIsRemote(idx) {
+	if sn.cleanIsRemote(idx, st.fs.chunkSize()) {
 		data, _, err := st.fs.remoteBlock(st.path, sn.baseSize, sn.baseMtime, idx, true)
 		if err != nil {
 			return nil, err
@@ -896,7 +914,7 @@ func (st *fileState) finishCommitLocked(sn *snapshot, target string, mtime int64
 	if st.gen == sn.gen {
 		for i := range sn.dirty {
 			if int(i) < len(hashes) {
-				fs.cache.Adopt(hashes[i], st.blockFile(i), int64(blockLen(sn.size, i)))
+				fs.cache.Adopt(hashes[i], st.blockFile(i), int64(st.fs.blockLen(sn.size, i)))
 			}
 		}
 		_ = os.RemoveAll(st.dir)
@@ -917,7 +935,7 @@ func (st *fileState) finishCommitLocked(sn *snapshot, target string, mtime int64
 	// Written to while it uploaded. The snapshot's own copies are committed
 	// data now; the live blocks hold the newer changes.
 	for i := range sn.saved {
-		if int(i) < len(hashes) && fs.cache.Adopt(hashes[i], st.snapFile(i), int64(blockLen(sn.size, i))) {
+		if int(i) < len(hashes) && fs.cache.Adopt(hashes[i], st.snapFile(i), int64(st.fs.blockLen(sn.size, i))) {
 			continue
 		}
 		_ = os.Remove(st.snapFile(i))
@@ -978,7 +996,7 @@ func (st *fileState) sync() error {
 // version the edit is based on is surely still there.
 func (st *fileState) prehashBase(size, mtime int64) {
 	fs := st.fs
-	n := int64(numBlocks(size))
+	n := int64(st.fs.numBlocks(size))
 	m := fs.mdb.Get(st.path, size, mtime)
 	sem := make(chan struct{}, 4)
 	var wg sync.WaitGroup
@@ -987,7 +1005,7 @@ func (st *fileState) prehashBase(size, mtime int64) {
 			continue
 		}
 		st.mu.Lock()
-		skip := st.removed || st.baseSize != size || st.baseMtime != mtime || (st.dirty[i] && i*blockSize >= st.truncFloor)
+		skip := st.removed || st.baseSize != size || st.baseMtime != mtime || (st.dirty[i] && i*st.fs.chunkSize() >= st.truncFloor)
 		st.mu.Unlock()
 		if skip || fs.closed.Load() {
 			break
@@ -1019,7 +1037,7 @@ func (st *fileState) park(sn *snapshot, why error) {
 	}
 	var blocks []string
 	for i := range st.dirty {
-		blocks = append(blocks, fmt.Sprintf("  %d: bytes %d to %d", i, i*blockSize, min((i+1)*blockSize, st.size)))
+		blocks = append(blocks, fmt.Sprintf("  %d: bytes %d to %d", i, i*st.fs.chunkSize(), min((i+1)*st.fs.chunkSize(), st.size)))
 	}
 	sort.Strings(blocks)
 	note := fmt.Sprintf(`modalfs couldn't save changes to %q.
@@ -1029,12 +1047,12 @@ Your edit changed only part of the file, and to save it modalfs needed the
 parts you didn't change, which it never read. Saving your blocks on top of
 the new version would have mixed two versions, so nothing was saved.
 
-Each numbered file here is one 8 MiB block of the file as you left it,
-starting at byte number x 8388608. The edited blocks are:
+Each numbered file here is one %d-byte chunk of the file as you left it,
+starting at its number multiplied by %d. The edited blocks are:
 %s
 
 meta.json describes the file. The file was %d bytes long.
-`, st.path, why, strings.Join(blocks, "\n"), st.size)
+`, st.path, why, fs.chunkSize(), fs.chunkSize(), strings.Join(blocks, "\n"), st.size)
 	_ = os.WriteFile(filepath.Join(dest, "README.txt"), []byte(note), 0o600)
 	st.removed = true
 	if st.timer != nil {
