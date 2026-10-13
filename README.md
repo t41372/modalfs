@@ -255,6 +255,7 @@ Background process
   modalfs quit [--now]                        commit everything, unmount, stop the daemon;
                                               --now stops at once (pending writes upload at the next mount)
   modalfs service install|uninstall           start at login (LaunchAgent / systemd user unit)
+  modalfs cache clear                         delete the local block cache (changes not yet uploaded are kept)
 
 Without the daemon (scripts, debugging)
   modalfs run VOLUME MOUNTPOINT [flags]       foreground mount until Ctrl-C
@@ -310,6 +311,7 @@ A new volume can be encrypted end to end: its files, their names and its label a
 Turn on **Encrypt end to end** when you create a volume in the app, or run `modalfs volume create NAME --encrypt`. modalfs then shows the volume's key, a line that starts with `mfs1-`. **Save it, for example in your password manager.** The key and the files on Modal are all it takes to read them, on any computer, even after modalfs's own files are gone. Without the key nobody can read them, not even modalfs: there's no passphrase and no recovery.
 
 - This computer remembers the key (in the keychain on macOS; the secret store or a private file on Linux), so the volume mounts by itself. On another computer it shows as locked: click Unlock and paste the key, or run `modalfs unlock NAME`.
+- Encryption protects what's on Modal, not this computer: the cache, changes not yet uploaded and conflict copies stay readable here. Forgetting the key (`modalfs lock`) doesn't remove them; clear the cache (Settings, or `modalfs cache clear`) before handing the computer to someone else.
 - Modal Functions can't read an encrypted volume, and remote downloads can't save into one.
 - `modalfs volume decrypt NAME --to FOLDER` copies every file out, decrypted, with only the key: no mount, nothing remembered.
 - Modal still sees how many files and folders there are, the folder shape, sizes, times, and which 8 MiB blocks are identical.

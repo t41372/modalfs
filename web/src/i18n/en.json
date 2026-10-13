@@ -772,7 +772,7 @@
     "menuLockLive": "Unmount to forget the key",
     "lockLive": "Unmount it first.",
     "lockQ": "Forget the key to {{name}} on this computer?",
-    "lockP": "The volume stays as it is on Modal. To use it here again, you'll paste the key, so make sure it's saved somewhere else.",
+    "lockP": "The volume stays as it is on Modal. To use it here again, you'll paste the key, so make sure it's saved somewhere else. Files already cached on this computer stay readable; Settings → Clear cache removes them.",
     "lock": "Forget the key",
     "keepUnlocked": "Keep it",
     "lockedToast": "This computer no longer has the key to {{name}}",

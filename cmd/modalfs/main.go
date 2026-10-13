@@ -75,6 +75,8 @@ Background process:
   modalfs quit [--now]                      commit everything, unmount, stop the daemon; --now
                                             doesn't wait: the rest is uploaded at the next mount
   modalfs service install|uninstall         start at login (LaunchAgent / systemd user unit)
+  modalfs cache clear                       delete the local block cache (changes not yet
+                                            uploaded are kept)
 
 Without the daemon:
   modalfs run VOLUME MOUNTPOINT [flags]     foreground mount until Ctrl-C (see modalfs run -h)
@@ -133,6 +135,12 @@ func main() {
 		cmdAccount(args)
 	case "quit", "stop":
 		cmdQuit(args)
+	case "cache":
+		if len(args) != 1 || args[0] != "clear" {
+			fatal(errors.New("usage: modalfs cache clear"))
+		}
+		must(client().Do("POST", "/api/cache/clear", nil, nil))
+		fmt.Println("cache cleared")
 	case "service":
 		if len(args) != 1 {
 			fatal(errors.New("usage: modalfs service install|uninstall"))

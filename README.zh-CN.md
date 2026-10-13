@@ -255,6 +255,7 @@ Volumes
   modalfs quit [--now]                        提交所有内容、卸载、停止后台进程；
                                               --now 立即停止（待上传的写入在下次挂载时上传）
   modalfs service install|uninstall           登录时启动（LaunchAgent / systemd 用户单元）
+  modalfs cache clear                         删除本地块缓存（还没上传的修改会保留）
 
 不经过后台进程（脚本、调试）
   modalfs run VOLUME MOUNTPOINT [flags]       在前台挂载，直到 Ctrl-C
@@ -310,6 +311,7 @@ Volumes
 在应用里新建 volume 时打开 **端到端加密**，或者运行 `modalfs volume create NAME --encrypt`。modalfs 随后会显示这个 volume 的密钥，是一行以 `mfs1-` 开头的文字。**把它存好，比如存进你的密码管理器。** 有了密钥和 Modal 上的文件，在任何电脑上都能读出它们，即使 modalfs 自己的文件都没了也一样。没有密钥，谁都读不出来，modalfs 也不行：没有口令，也没有找回的办法。
 
 - 这台电脑会记住密钥（macOS 上存在钥匙串里；Linux 上存在系统的密码存储区或一个私有文件里），所以 volume 会自动挂载。在别的电脑上它会显示为已锁定：点“解锁”并粘贴密钥，或者运行 `modalfs unlock NAME`。
+- 加密保护的是 Modal 上的数据，不是这台电脑：缓存、还没上传的修改和冲突副本在这里仍然读得到。忘记密钥（`modalfs lock`）不会删掉它们；把电脑交给别人之前，请清除缓存（在设置里，或运行 `modalfs cache clear`）。
 - Modal Function 读不了加密的 volume，远程下载也不能存进去。
 - `modalfs volume decrypt NAME --to FOLDER` 只用密钥就能把所有文件解密复制出来：不需要挂载，也不需要这台电脑记住任何东西。
 - Modal 仍然看得到有多少文件和文件夹、目录结构、大小、时间，以及哪些 8 MiB 块内容相同。
