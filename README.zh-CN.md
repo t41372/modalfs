@@ -5,7 +5,8 @@
 <h1 align="center">modalfs</h1>
 
 <p align="center">
-  <b>在 macOS 和 Linux 上把 Modal Volume 挂载成本地文件夹，不启动任何 Modal 计算资源。</b>
+  <b>把 Modal Volume 挂载成 Mac 上的文件夹。</b><br>
+  文件按需流式读取，几 TB 的数据也能马上打开，不占满你的硬盘。
 </p>
 
 <p align="center"><a href="README.md">English</a> · 简体中文</p>
@@ -16,7 +17,7 @@
 
 ---
 
-有了 modalfs，访达、编辑器、`ffmpeg` 和 AI agent 都能把 [Modal Volume](https://modal.com/docs/guide/volumes) 当成普通文件夹来用。读取直接从 Modal 的块存储流式获取；写入从你的电脑提交，只上传你改过的 8 MiB 块。挂载**从不启动 Sandbox、Function 或容器**，所以不花计算费用。唯一会启动的功能是[远程下载](#远程下载)，你打开之前它一直是关着的。
+modalfs 在 macOS 或 Linux 上把 [Modal Volume](https://modal.com/docs/guide/volumes) 挂载成普通文件夹。访达、编辑器、`ffmpeg` 和你的 agent 都像用其他文件夹一样用它，数据则一直在 Modal 上，你在 Modal 上跑的任务读到的也是同一批文件。
 
 ```console
 $ modalfs volume create datasets
@@ -50,16 +51,21 @@ datasets  work     mounted  /Users/me/ModalVolumes/datasets  0        0 B / 3 B
 
 ## 特点
 
-- **只在你要求时才用计算。** 挂载、浏览和同步只调用 Modal 的控制面 API 和签名的块存储 URL，Modal 那边什么都不运行。唯一的例外是你添加的远程下载。
-- **macOS 上不需要内核扩展。** modalfs 在本机提供 NFSv3 服务，由 macOS 自带的 NFS 客户端挂载。Linux 用 FUSE。如果你更喜欢 macFUSE，也可以用。
-- **按需、按范围读取。** 打开一个 100 GiB 的文件、从中间读 4 KiB，只会下载一个 8 MiB 块。顺序读取会并行预读。
-- **块级写入。** Volume v2 按内容寻址。改动 100 GiB 文件里的 4 KiB，只上传一个 8 MiB 块并提交新的清单。重命名和复制只改清单，不传数据。
-- **创建、重命名、删除 volume**，这些 Modal 网页控制台目前还做不到。
-- **多账号，每个挂载各自绑定。** modalfs 有自己的账号列表，不理会 Modal CLI 当前启用的 profile，所以切换 profile 不会把挂载换到别的工作区。
-- **崩溃也不丢的回写。** 没上传的修改会记在本地日志里，下次启动时提交，即使经历了 `kill -9`。应用保存（关闭或 fsync）的数据，在应用收到“已保存”之前就已写入磁盘，所以断电也不会丢。
-- **上传时照常可用。** 13 GB 的文件会在后台上传，边写边传；上传期间访达、读取和其他文件都照常工作。
-- **远程下载。** 粘贴一个链接，Modal Function 就会把它下载到 volume 里，你的电脑睡眠或关机时也照样进行，可用 gopeed、aria2 或 yt-dlp。有实时速度图，Modal 换容器时会自己接着下载。打开之前一直是关着的。
-- **一个小巧的原生应用**，配套的命令行，登录时启动和自动挂载。
+**文件马上打开。** modalfs 只流式读取应用实际读到的部分，直接来自 Modal 的块存储。从 100 GiB 文件中间读 4 KiB，只取一个 8 MiB 块；从头读到尾时会并行预读。
+
+**保存时只上传改过的部分。** 改动 100 GiB 文件里的 4 KiB，只上传一个 8 MiB 块。重命名和复制完全不传数据。大文件在后台上传，期间文件夹照常可用。
+
+**你现在用的应用都能直接用。** 它就是普通文件夹，访达、VS Code、Jupyter、`ffmpeg`、Blender 都不需要额外设置。macOS 上不需要内核扩展，由系统自带的 NFS 客户端挂载；Linux 用 FUSE。
+
+**你在 Modal 上的任务看到的是同一批文件。** 挂载同一个 volume 的 Function 能读到你保存的内容，它提交的修改几秒内就会出现在你的文件夹里。
+
+**直接下载到 volume 里。** 粘贴一个链接，Modal 就会把它下载到 volume 里，你的 Mac 睡眠时也照样进行：网页文件、种子、YouTube 和其他视频网站都行，还有实时速度图。这是可选功能，打开之前一直是关着的，因为它是唯一会在 Modal 上运行计算的功能。
+
+**什么都不会丢。** 修改会记在日志里，直到 Modal 收到为止，崩溃和断电也不例外。同一个文件两边都改过时，两个版本都会保留。
+
+**多账号，绝不混淆。** 每个挂载都绑定到自己的账号和 volume ID，所以切换 Modal CLI 的 profile 或给 volume 改名，都不会让挂载指向别处。
+
+**一个小巧的原生应用**，一个菜单栏图标，以及能做到应用里所有事情的命令行。
 
 ## 安装
 

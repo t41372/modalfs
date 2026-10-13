@@ -5,7 +5,8 @@
 <h1 align="center">modalfs</h1>
 
 <p align="center">
-  <b>Mount Modal Volumes as local folders on macOS and Linux, without starting any Modal compute.</b>
+  <b>Mount Modal Volumes as folders on your Mac.</b><br>
+  Files stream on demand, so terabytes open instantly without filling your disk.
 </p>
 
 <p align="center">English · <a href="README.zh-CN.md">简体中文</a></p>
@@ -16,7 +17,7 @@
 
 ---
 
-modalfs lets Finder, your editor, `ffmpeg` and AI agents work with a [Modal Volume](https://modal.com/docs/guide/volumes) as an ordinary folder. Reads stream directly from Modal's block store. Writes are committed from your machine, and only the 8 MiB blocks you changed get uploaded. Mounting **never starts a Sandbox, Function or container**, so it costs no compute. The one feature that does, [remote downloads](#remote-downloads), is off until you turn it on.
+modalfs mounts a [Modal Volume](https://modal.com/docs/guide/volumes) as an ordinary folder on macOS or Linux. Finder, your editor, `ffmpeg` and your agents use it like any other folder, while the data stays on Modal, where your Modal jobs read the same files.
 
 ```console
 $ modalfs volume create datasets
@@ -50,16 +51,21 @@ datasets  work     mounted  /Users/me/ModalVolumes/datasets  0        0 B / 3 B
 
 ## Highlights
 
-- **Compute only when you ask for it.** Mounting, browsing and syncing only call Modal's control-plane API and the signed block-store URLs; nothing runs on Modal's side. The one exception is a remote download you add.
-- **No kernel extension on macOS.** modalfs serves NFSv3 on localhost and macOS's built-in NFS client mounts it. Linux uses FUSE. macFUSE also works if you prefer it.
-- **Lazy, ranged reads.** Opening a 100 GiB file and reading 4 KiB from the middle downloads one 8 MiB block. Sequential reads prefetch in parallel.
-- **Block-level writes.** Volume v2 is content-addressed. Changing 4 KiB inside a 100 GiB file uploads one 8 MiB block and commits a new manifest. Renames and copies change only manifests, with no data transfer.
-- **Create, rename and delete volumes**, which the Modal web dashboard doesn't offer today.
-- **Multiple accounts, pinned per mount.** modalfs keeps its own account list and ignores the Modal CLI's active profile, so switching profiles never moves a mount to another workspace.
-- **Crash-safe write-back.** Unsaved edits are journaled locally and committed on the next start, even after `kill -9`. Data an app has saved (closed or fsynced) is on disk before the app hears it's saved, so it survives a power loss too.
-- **Stays usable while it uploads.** A 13 GB copy uploads in the background, in parts as it's written; Finder, reads and other files keep working meanwhile.
-- **Remote downloads.** Paste a link and a Modal Function downloads it into a volume while your computer sleeps or is off, with gopeed, aria2 or yt-dlp. A live speed chart, and it carries on by itself when Modal moves the container. Off until you turn it on.
-- **A small native app**, a matching CLI, start-at-login and auto-mount.
+**Files open instantly.** modalfs streams only the parts of a file an app reads, straight from Modal's block store. Reading 4 KiB from the middle of a 100 GiB file fetches one 8 MiB block; reading from start to end prefetches ahead in parallel.
+
+**Saving uploads only what changed.** Change 4 KiB of a 100 GiB file and one 8 MiB block goes up. Renames and copies move no data at all. A big copy uploads in the background while the folder stays usable.
+
+**Works with the apps you already use.** It's a normal folder, so Finder, VS Code, Jupyter, `ffmpeg` and Blender need nothing extra. No kernel extension on macOS: the built-in NFS client mounts it. Linux uses FUSE.
+
+**Your Modal jobs see the same files.** A Function that mounts the volume reads what you saved, and what it commits shows up in your folder within seconds.
+
+**Download straight into a volume.** Paste a link and Modal downloads it into a volume while your Mac sleeps: web files, torrents, YouTube and other video sites, with a live speed chart. Optional, and off until you turn it on, since it's the one feature that runs compute on Modal.
+
+**Nothing gets lost.** Edits are journaled until Modal has them, through crashes and power loss. When a file changed on both sides, both versions are kept.
+
+**Many accounts, never mixed up.** Each mount is pinned to its account and volume ID, so switching Modal CLI profiles or renaming a volume never points a mount somewhere else.
+
+**A small native app**, a menu bar icon, and a CLI that does everything the app does.
 
 ## Install
 
