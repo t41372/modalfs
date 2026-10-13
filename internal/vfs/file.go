@@ -88,6 +88,13 @@ type fileState struct {
 	snapDone   chan struct{} // closed when that commit ends
 	prehashing bool          // prehashBase started for this state
 
+	// The conflict copy this file's earlier commits went to, as they left
+	// it on Modal. A long write committed in parts keeps saving to it, so
+	// the copy ends up whole instead of one partial copy per part.
+	// Guarded by commitMu.
+	conflictCopy        string
+	copySize, copyMtime int64
+
 	// held is the disk this file's pending changes take, as counted in the
 	// shared cache's pending bytes (see accountLocked).
 	held int64
@@ -651,6 +658,19 @@ func (fs *FS) conflictName(p string) string {
 	return path.Join(path.Dir(p), stem+suffix+ext)
 }
 
+// copyTarget names the conflict copy a commit that conflicts goes to: the
+// one this file's earlier parts went to, if it's still as they left it, or
+// a new one. Called with commitMu held.
+func (st *fileState) copyTarget(path string) string {
+	if st.conflictCopy != "" {
+		e, err := st.fs.remoteStat(st.conflictCopy, true)
+		if err == nil && e.Size == st.copySize && e.Mtime == st.copyMtime {
+			return st.conflictCopy
+		}
+	}
+	return st.fs.conflictName(path)
+}
+
 // flush commits the file. It takes a snapshot under the lock, then hashes
 // and uploads without it, so the file (and the mount) stay usable while a
 // large commit runs; changes made meanwhile go into the next commit.
@@ -701,12 +721,12 @@ func (st *fileState) flush() error {
 	if err == nil {
 		changed := !sn.baseExists || cur.Size != sn.baseSize || cur.Mtime != sn.baseMtime
 		if changed && fs.opt.OnConflict != "overwrite" {
-			target = fs.conflictName(path)
+			target = st.copyTarget(path)
 		}
 	}
 
 	hashes, err := st.snapshotHashes(sn, cur, err == nil)
-	if err == nil && target != path {
+	if err == nil && target != path && target != st.conflictCopy {
 		fs.log.Warn("remote file changed while editing; saving local version as conflict copy", "path", path, "copy", target)
 		fs.event("conflict", path, target)
 	}
@@ -749,9 +769,11 @@ func (st *fileState) flush() error {
 	uploaded, err := put(target, recheck)
 	fs.noteUpload(uploaded, time.Since(putAt))
 	if errors.Is(err, errLateConflict) {
-		target = fs.conflictName(path)
-		fs.log.Warn("remote file changed while uploading; saving local version as conflict copy", "path", path, "copy", target)
-		fs.event("conflict", path, target)
+		target = st.copyTarget(path)
+		if target != st.conflictCopy {
+			fs.log.Warn("remote file changed while uploading; saving local version as conflict copy", "path", path, "copy", target)
+			fs.event("conflict", path, target)
+		}
 		var more int
 		more, err = put(target, nil) // the blocks are all there now
 		uploaded += more
@@ -769,6 +791,9 @@ func (st *fileState) flush() error {
 	}
 	m := &manifest{Size: sn.size, Mtime: e.Mtime, Hashes: hashes}
 	fs.mdb.Put(target, m)
+	if target != path {
+		st.conflictCopy, st.copySize, st.copyMtime = target, sn.size, e.Mtime
+	}
 
 	st.mu.Lock()
 	committed = true

@@ -464,6 +464,79 @@ func TestRenameFolderWithPendingWrites(t *testing.T) {
 	}
 }
 
+// conflictCopies lists the conflict copies of name ("shared.bin" ->
+// "shared.conflict-*.bin") at the top of the volume.
+func (e *env) conflictCopies(stem string) []string {
+	e.t.Helper()
+	es, err := e.client.List(context.Background(), e.vol.ID, "", false)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	var out []string
+	for _, en := range es {
+		if strings.HasPrefix(en.Path, stem+".conflict-") {
+			out = append(out, en.Path)
+		}
+	}
+	return out
+}
+
+// Someone else changes a file while a long write to it is committed in
+// parts: every part after the conflict goes to the same conflict copy, which
+// ends up holding all of ours. No partial copies are left beside it.
+func TestConflictWhileStillWriting(t *testing.T) {
+	original := randomBytes(t, 4*MiB)
+	e := setup(t, modalfake.Options{UpBytesPerSec: 5 * MiB}, []string{"-write-back", "2s", "-max-pending", "2s"}, func(c *modalapi.Client, volID string) {
+		putRemote(t, c, volID, "shared.bin", original)
+	})
+	time.Sleep(1100 * time.Millisecond) // Modal's mtimes are in seconds
+	f, err := os.OpenFile(filepath.Join(e.mnt, "shared.bin"), os.O_RDWR|os.O_TRUNC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ours := randomBytes(t, 48*MiB)
+	if _, err := f.Write(ours[:24*MiB]); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsync.File(f); err != nil {
+		t.Fatal(err)
+	}
+	e.waitUploading(30 * time.Second) // the first part is on its way
+	putRemote(t, e.client, e.vol.ID, "shared.bin", original)
+	for off := 24 * MiB; off < len(ours); off += 4 * MiB { // keep writing past -max-pending
+		if _, err := f.Write(ours[off : off+4*MiB]); err != nil {
+			t.Fatal(err)
+		}
+		if err := fsync.File(f); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Minute)
+	var copies []string
+	for {
+		copies = e.conflictCopies("shared")
+		if len(copies) == 1 {
+			if got, err := e.remote(copies[0]); err == nil && sum(got) == sum(ours) {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("conflict copies %v: want one holding all %d MiB written", copies, len(ours)/MiB)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	if got, err := e.remote("shared.bin"); err != nil || sum(got) != sum(original) {
+		t.Fatalf("the other writer's version was overwritten (err %v)", err)
+	}
+	if again := e.conflictCopies("shared"); len(again) != 1 {
+		t.Fatalf("conflict copies %v after the write ended: want just %s", again, copies[0])
+	}
+}
+
 // A file that keeps being written for longer than -max-pending is committed
 // in parts while it's written, so a long copy is mostly uploaded by the time
 // it ends instead of starting to upload then.
