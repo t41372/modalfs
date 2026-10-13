@@ -252,7 +252,13 @@ The destination folder only ever receives finished files. The local mount sees t
 - **The Modal token is used only by the daemon and the deploy Sandbox** (as an ephemeral Secret, gone with the Sandbox). The download Function never gets it; it uses the container's own credentials.
 - **Links with credentials stay in the daemon's job store** and the call's arguments; `job.json` on the volume has them stripped.
 - **The tunnel is public but needs the job's random token.** Downloader APIs listen on `127.0.0.1` with random secrets.
-- **A yt-dlp cookies file travels in the call's arguments** and is written to the container's `/tmp`, never to the volume.
+- **A yt-dlp cookies file travels in the call's arguments** and is written to a folder in the container's `/tmp` that only the downloader user can read, never to the volume, and removed when yt-dlp stops.
+- **The downloaders can't use the workspace's API.** Any process in a Modal container that can open `/run/modal.sock` has the whole workspace's API, with no token: every volume (read, write, delete), apps, Functions and Sandboxes, in every environment (verified; a separate environment isolates nothing). The agent needs it for the tunnel and the 24-hour hand-over; gopeed, aria2, yt-dlp (fetched fresh every run) and ffmpeg don't. So they run as a user of their own (`dl`, in the image), with an environment that has nothing of the agent's, owning only the job's `work/` and gopeed's `state/gopeed/data/`; the volume root, the records and the rest stay root's. The agent:
+  - refuses to start a downloader if that user can open the socket (a check every run, in case Modal changes how containers authenticate);
+  - reads the downloaders' log files only if they're plain files that user owns, so a planted link can't copy one of the agent's files into the record;
+  - kills everything left running as that user before it moves the finished files, and moves only plain files with one link (os.walk without following links, `safe_join`, `unique_path`), then gives them to root.
+  - The live test's self-test runs, as that user inside a real download Function and given the agent's `MODAL_*` variables: connect to the socket, list volumes, read, write and delete another volume, spawn a Function, create a Sandbox, read `/proc/1/environ`, write the volume root and the job's record. Every one fails (the API calls never get an answer), while the agent lists volumes in 0.3 s. No file it can read holds the job's token or cookies.
+  - What remains: the downloaders can still use the network and write the job's `work/`; a kernel or gVisor escape to root would undo this. Modal's `restrict_modal_access=True` would also shut out root, but takes the tunnel and the hand-over with it.
 
 ## Testing
 

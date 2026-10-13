@@ -119,6 +119,7 @@ class Origin:
 class AgentTest(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="mfs-agent-")
+        os.chmod(self.root, 0o755)  # like a volume: the downloader user (if any) can enter it
         self.addCleanup(shutil.rmtree, self.root, True)
         self.procs = []
         self.addCleanup(self.kill_all)
@@ -400,6 +401,15 @@ class PathTest(unittest.TestCase):
         os.symlink("/etc/passwd", os.path.join(work, "passwd"))
         self.assertEqual([os.path.basename(p) for p in app.downloaded_files(work)], ["movie.mp4"])
 
+    def test_hard_links_are_not_moved(self):
+        work = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, work)
+        elsewhere = os.path.join(work, "..", os.path.basename(work) + "-secret")
+        open(elsewhere, "w").close()
+        self.addCleanup(os.remove, elsewhere)
+        os.link(elsewhere, os.path.join(work, "looks-downloaded.bin"))
+        self.assertEqual(list(app.downloaded_files(work)), [])
+
     def test_unique_path(self):
         base = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, base)
@@ -412,6 +422,115 @@ class PathTest(unittest.TestCase):
     def test_strip_credentials(self):
         self.assertEqual(app.strip_credentials("https://u:p@host/a/b?sig=1#f"), "https://host/a/b")
         self.assertEqual(app.strip_credentials("magnet:?xt=urn:btih:abc&tr=https://t/passkey"), "magnet:?xt=urn:btih:abc")
+
+
+class SandboxTest(unittest.TestCase):
+    def test_environment_has_nothing_of_the_agents(self):
+        os.environ["MODAL_TASK_ID"] = "ta-test"
+        os.environ["MODALFS_SECRET"] = "x"
+        self.addCleanup(os.environ.pop, "MODAL_TASK_ID")
+        self.addCleanup(os.environ.pop, "MODALFS_SECRET")
+        env = app.Sandbox().env()
+        self.assertFalse([k for k in env if k.startswith(("MODAL", "MODALFS"))], env)
+        self.assertIn("PATH", env)
+        self.assertIn("HOME", env)
+
+    def test_gopeed_database_moves_to_its_own_folder(self):
+        # An older agent kept gopeed's database in state/gopeed itself; a
+        # download it started must still resume.
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        state = os.path.join(d, "gopeed")
+        os.makedirs(os.path.join(state, "logs"))
+        for name in ("gopeed.db", "task-id"):
+            open(os.path.join(state, name), "w").close()
+        app.Gopeed({}, os.path.join(d, "work"), state, os.path.join(d, "log"), app.Sandbox())
+        self.assertEqual(sorted(os.listdir(state)), ["data", "task-id"])
+        self.assertEqual(sorted(os.listdir(os.path.join(state, "data"))), ["gopeed.db", "logs"])
+
+    def test_logs_through_links_are_refused(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        target = os.path.join(d, "agent-secret")
+        with open(target, "w") as f:
+            f.write("secret")
+        os.symlink(target, os.path.join(d, "core.log"))
+        with self.assertRaises(OSError):
+            app.Sandbox().open_untrusted(os.path.join(d, "core.log"))
+        self.assertEqual(app.tail(os.path.join(d, "core.log"), opener=app.Sandbox().open_untrusted), [])
+
+
+# The downloaders as their own user, as in Modal: Linux, as root, with
+# MODALFS_DOWNLOADER_USER naming an unprivileged user (the CI and the Debian
+# container the agent is tested in set it up).
+DL_USER = os.environ.get("MODALFS_DOWNLOADER_USER")
+AS_ROOT = sys.platform.startswith("linux") and os.geteuid() == 0 and DL_USER
+
+
+@unittest.skipUnless(AS_ROOT, "needs root on Linux and MODALFS_DOWNLOADER_USER")
+class DownloaderUserTest(AgentTest):
+    def setUp(self):
+        super().setUp()
+        import pwd
+        self.user = pwd.getpwnam(DL_USER)
+
+    def test_runs_as_its_own_user(self):
+        # A fake downloader that reports who it is and what it can see.
+        probe = os.path.join(self.root, "whoami-downloader")
+        with open(probe, "w") as f:
+            f.write("#!/bin/sh\nid -u > /tmp/dl-probe; env >> /tmp/dl-probe\n"
+                    "touch \"$4\"/../status.json 2>>/tmp/dl-probe || echo denied >> /tmp/dl-probe\n")
+        os.chmod(probe, 0o755)
+        sb = app.LocalEnv().sandbox()
+        os.environ["MODAL_TASK_ID"] = "ta-secret"
+        self.addCleanup(os.environ.pop, "MODAL_TASK_ID")
+        work = os.path.join(self.root, "work")
+        os.makedirs(work)
+        sb.own(work)
+        log = os.path.join(self.root, "log")
+        p = app.start_process([probe, "a", "b", "c", work], log, sb)
+        p.wait(10)
+        with open("/tmp/dl-probe") as f:
+            seen = f.read()
+        os.remove("/tmp/dl-probe")
+        self.assertTrue(seen.startswith(str(self.user.pw_uid)), seen)
+        self.assertNotIn("MODAL_TASK_ID", seen)
+        self.assertIn("denied", seen)
+        self.assertEqual(os.stat(work).st_uid, self.user.pw_uid)
+
+    @unittest.skipUnless(ARIA2, "aria2c isn't installed")
+    def test_aria2_downloads_as_its_user(self):
+        origin = Origin(8 * MiB)
+        self.addCleanup(origin.close)
+        summary = self.finish(self.start(self.job(origin, tool="aria2")))
+        self.assertEqual(summary["state"], "done")
+        self.check_file(origin)
+        path = os.path.join(self.root, "Downloads", "file.bin")
+        self.assertEqual(os.stat(path).st_uid, 0, "a finished file is the agent's, not the downloader's")
+        self.assertEqual(os.stat(self.jobdir()).st_uid, 0)
+
+    @unittest.skipUnless(GOPEED, "gopeed isn't installed (just agent-tools)")
+    def test_gopeed_pause_and_resume_as_its_user(self):
+        self.pause_and_resume("gopeed", rate=8 * MiB)
+
+    @unittest.skipUnless(ARIA2, "aria2c isn't installed")
+    def test_aria2_pause_and_resume_as_its_user(self):
+        self.pause_and_resume("aria2", rate=256 * 1024)
+
+    def test_a_planted_link_is_not_followed(self):
+        # Whatever the downloader leaves in work/, the agent moves only plain
+        # files it can see there, never through links, never out of the volume.
+        origin = Origin(4 * MiB)
+        self.addCleanup(origin.close)
+        job = self.job(origin, tool="aria2")
+        work = os.path.join(self.jobdir(), "work")
+        os.makedirs(work)
+        os.symlink("/etc", os.path.join(work, "etc"))
+        os.symlink("/etc/shadow", os.path.join(work, "shadow"))
+        if ARIA2:
+            summary = self.finish(self.start(job))
+            self.assertEqual(summary["state"], "done")
+            self.assertEqual(sorted(os.listdir(os.path.join(self.root, "Downloads"))), ["file.bin"])
 
 
 if __name__ == "__main__":

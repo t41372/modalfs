@@ -26,11 +26,13 @@ import hmac
 import http.server
 import json
 import os
+import pwd
 import re
 import secrets
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -56,6 +58,7 @@ KICK_AFTER = 60.0  # seconds without progress before the downloader is restarted
 RETRIES = 5  # times a failed download is continued before giving up on the tool
 PROGRESS_RESETS_RETRIES = 64 << 20  # bytes downloaded after an error that make it a fresh start
 CONTROL_FILES = (".aria2", ".part", ".ytdl", ".part-Frag")
+DOWNLOADER_USER = "dl"  # in the Function's image: the downloaders run as it
 
 # Tests shorten STATUS_EVERY, SPEED_CHUNK and KICK_AFTER through the job
 # (status_every, speed_chunk, kick_after); modalfs doesn't.
@@ -109,9 +112,9 @@ def http_json(method, url, body=None, headers=None, timeout=10):
         return json.loads(r.read() or b"null")
 
 
-def tail(path, lines=50):
+def tail(path, lines=50, opener=None):
     try:
-        with open(path, "rb") as f:
+        with (opener or (lambda p: open(p, "rb")))(path) as f:
             f.seek(0, 2)
             f.seek(max(0, f.tell() - 64 * 1024))
             return f.read().decode("utf-8", "replace").splitlines()[-lines:]
@@ -152,6 +155,107 @@ def write_file(path, data):
         os.fsync(f.fileno())
 
 
+class Sandbox:
+    """Who the downloaders run as. In Modal the agent is root, and any
+    process in the container that can open /run/modal.sock has the
+    workspace's whole API: every volume, apps, Functions, Sandboxes. The
+    downloaders and what they run (yt-dlp is fetched fresh every run) get a
+    user of their own that can't open it, an environment with nothing of the
+    agent's in it, and write access only to the job's work/ and their own
+    state folders. Outside Modal, or not as root, only the environment is
+    cleaned (user is None)."""
+
+    PASS_ENV = ("PATH", "LANG", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR", "http_proxy", "https_proxy",
+                "no_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY")
+
+    def __init__(self, user=None):
+        self.user = user  # a pwd entry, or None
+        if user is not None:
+            self.uid, self.gid, self.home = user.pw_uid, user.pw_gid, user.pw_dir
+        else:
+            self.uid = self.gid = None
+            self.home = os.environ.get("HOME", "/tmp")
+
+    def env(self):
+        env = {k: os.environ[k] for k in self.PASS_ENV if k in os.environ}
+        env.setdefault("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        env.setdefault("LANG", "C.UTF-8")
+        env["HOME"] = self.home
+        return env
+
+    def popen_args(self):
+        args = {"env": self.env()}
+        if self.user is not None:
+            args.update(user=self.uid, group=self.gid, extra_groups=[])
+        return args
+
+    def own(self, *paths):
+        """Hands paths (whole trees) to the downloader user, never following links."""
+        if self.user is None:
+            return
+        for top in paths:
+            os.lchown(top, self.uid, self.gid)
+            for dirpath, dirnames, filenames in os.walk(top, followlinks=False):
+                for name in dirnames + filenames:
+                    os.lchown(os.path.join(dirpath, name), self.uid, self.gid)
+
+    def private_dir(self):
+        """A folder only the downloader user can read (for a cookies file)."""
+        path = tempfile.mkdtemp(prefix="modalfs-dl-")
+        os.chmod(path, 0o700)
+        self.own(path)
+        return path
+
+    def kill_all(self):
+        """Ends every process left running as the downloader user: one that
+        left its process group must not still be writing to work/ while the
+        agent moves the files out of it."""
+        if self.user is None:
+            return
+        for _ in range(3):
+            found = False
+            for pid in os.listdir("/proc"):
+                if not pid.isdigit():
+                    continue
+                try:
+                    if os.stat(f"/proc/{pid}").st_uid == self.uid:
+                        os.kill(int(pid), signal.SIGKILL)
+                        found = True
+                except (FileNotFoundError, ProcessLookupError):
+                    pass
+            if not found:
+                return
+            time.sleep(0.2)
+
+    def open_untrusted(self, path):
+        """Opens a file the downloader user may have written (its logs), for
+        reading by the agent: a regular file only, not through a link, and,
+        when it runs as its own user, one that user owns. A link or hard link
+        to a file of the agent's (/proc/1/environ, say) would otherwise end
+        up in the job's log on the volume."""
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or (self.user is not None and (st.st_uid != self.uid or st.st_nlink != 1)):
+            os.close(fd)
+            raise PermissionError(f"{path} isn't a file the downloader wrote")
+        return os.fdopen(fd, "rb")
+
+    def check(self):
+        """Fails the run if the downloader user can reach Modal's API after
+        all: better no download than one that silently runs with the keys to
+        the workspace (if Modal ever changes how containers authenticate)."""
+        if self.user is None or not os.path.exists("/run/modal.sock"):
+            return
+        probe = ("import socket\ns = socket.socket(socket.AF_UNIX)\n"
+                 "try:\n    s.connect('/run/modal.sock')\n    print('reachable')\n"
+                 "except OSError as e:\n    print('blocked', e.errno)\n")
+        r = subprocess.run([sys.executable, "-I", "-c", probe], capture_output=True, text=True, timeout=30,
+                           cwd="/", **self.popen_args())
+        if not r.stdout.startswith("blocked"):
+            raise RuntimeError("the downloader user can reach Modal's API (/run/modal.sock); refusing to run "
+                               f"third-party downloaders with it: {r.stdout.strip()} {r.stderr.strip()[-200:]}")
+
+
 def stop_process(proc, sig=signal.SIGINT, timeout=10):
     if proc is None or proc.poll() is not None:
         return
@@ -165,17 +269,19 @@ def stop_process(proc, sig=signal.SIGINT, timeout=10):
         proc.wait(5)
 
 
-def start_process(argv, log_path, cwd=None):
+def start_process(argv, log_path, sandbox, cwd=None):
     # Own process group: Modal's SIGINT goes to the agent, which pauses the
     # tool through its API instead of letting the signal kill it mid-write.
+    # The log is opened here, by the agent, outside anything the tool can write.
     with open(log_path, "ab") as log:
         return subprocess.Popen(
             argv,
-            cwd=cwd,
+            cwd=cwd or sandbox.home,
             start_new_session=True,
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=subprocess.STDOUT,
+            **sandbox.popen_args(),
         )
 
 
@@ -188,8 +294,10 @@ class Tool:
 
     name = ""
 
-    def __init__(self, job, work, state, log):
-        self.job, self.work, self.state, self.log = job, work, state, log
+    def __init__(self, job, work, state, log, sandbox):
+        # state/ is the agent's; what the tool itself writes goes in work/
+        # and, for gopeed, state/data/, which belong to the downloader user
+        self.job, self.work, self.state, self.log, self.sandbox = job, work, state, log, sandbox
         os.makedirs(state, exist_ok=True)
 
     def start(self):
@@ -228,11 +336,18 @@ class Tool:
 class Gopeed(Tool):
     name = "gopeed"
 
-    def __init__(self, job, work, state, log, binary="gopeed"):
-        super().__init__(job, work, state, log)
+    def __init__(self, job, work, state, log, sandbox, binary="gopeed"):
+        super().__init__(job, work, state, log, sandbox)
         self.binary = binary
         self.proc = None
         self.task_file = os.path.join(state, "task-id")
+        self.data = os.path.join(state, "data")  # gopeed's database and logs
+        if not os.path.isdir(self.data):
+            # an older agent kept the database in state/ itself
+            os.makedirs(self.data)
+            for name in os.listdir(state):
+                if name not in ("task-id", "data"):
+                    os.rename(os.path.join(state, name), os.path.join(self.data, name))
 
     def api(self, method, path, body=None):
         r = http_json(method, f"{self.base}{path}", body, {"X-Api-Token": self.token})
@@ -247,8 +362,9 @@ class Gopeed(Tool):
         # The web build insists on a username and password whenever an API
         # token is set; nothing but the agent can reach it anyway.
         argv = [self.binary, "-A", "127.0.0.1", "-P", str(port), "-T", self.token,
-                "-u", "modalfs", "-p", secrets.token_hex(16), "-d", self.state]
-        self.proc = start_process(argv, self.log, cwd=self.state)
+                "-u", "modalfs", "-p", secrets.token_hex(16), "-d", self.data]
+        self.sandbox.own(self.work, self.data)
+        self.proc = start_process(argv, self.log, self.sandbox, cwd=self.data)
         if not wait_until(self.alive, 30):
             raise RuntimeError("gopeed didn't start: " + " | ".join(tail(self.log, 5)))
         cfg = self.api("GET", "/api/v1/config")
@@ -269,7 +385,7 @@ class Gopeed(Tool):
             elif task["status"] != "done":
                 self.api("PUT", f"/api/v1/tasks/{self.id}/continue")
         if not self.id:
-            clear_dir(self.work)
+            clear_dir(self.work, self.sandbox)
             extra = {"connections": int(self.job.get("connections", 16))}
             self.id = self.api("POST", "/api/v1/tasks", {
                 "req": {"url": self.job["url"]},
@@ -299,10 +415,11 @@ class Gopeed(Tool):
 
     def logs(self):
         # with a storage dir, gopeed logs to <storage>/logs/core.log, not stdout
-        return [self.log, os.path.join(self.state, "logs", "core.log")]
+        return [self.log, os.path.join(self.data, "logs", "core.log")]
 
     def last_error(self):
-        for line in reversed(tail(self.logs()[1], 200) + tail(self.log, 200)):
+        core = tail(self.logs()[1], 200, self.sandbox.open_untrusted)
+        for line in reversed(core + tail(self.log, 200)):
             m = re.search(r'error="(.*)"', line)
             if m:
                 return m.group(1)
@@ -325,7 +442,7 @@ class Gopeed(Tool):
         self.stop()
         with contextlib.suppress(FileNotFoundError):
             os.remove(self.task_file)
-        clear_dir(self.work)
+        clear_dir(self.work, self.sandbox)
 
     def stop(self):
         stop_process(self.proc)
@@ -334,8 +451,8 @@ class Gopeed(Tool):
 class Aria2(Tool):
     name = "aria2"
 
-    def __init__(self, job, work, state, log, binary="aria2c"):
-        super().__init__(job, work, state, log)
+    def __init__(self, job, work, state, log, sandbox, binary="aria2c"):
+        super().__init__(job, work, state, log, sandbox)
         self.binary = binary
         self.proc = None
 
@@ -354,7 +471,8 @@ class Aria2(Tool):
                 "--bt-save-metadata=true", "--console-log-level=warn", "--summary-interval=0"]
         if self.job.get("limit"):
             argv.append(f"--max-overall-download-limit={self.job['limit']}")
-        self.proc = start_process(argv, self.log)
+        self.sandbox.own(self.work)
+        self.proc = start_process(argv, self.log, self.sandbox)
         if not wait_until(self.alive, 30):
             raise RuntimeError("aria2 didn't start: " + " | ".join(tail(self.log, 5)))
         # Added again on every run: aria2 resumes from the .aria2 control
@@ -408,8 +526,8 @@ class YtDlp(Tool):
     name = "yt-dlp"
     MARK = "MODALFS "
 
-    def __init__(self, job, work, state, log, binary="yt-dlp"):
-        super().__init__(job, work, state, log)
+    def __init__(self, job, work, state, log, sandbox, binary="yt-dlp"):
+        super().__init__(job, work, state, log, sandbox)
         self.binary = binary
         self.proc = None
         self.lock = threading.Lock()
@@ -431,11 +549,18 @@ class YtDlp(Tool):
                 "--no-color", "--progress-template", f"download:{self.MARK}%(progress)j",
                 "-o", "%(title).150B [%(id)s].%(ext)s"]
         if self.job.get("cookies"):
-            path = os.path.join("/tmp", "modalfs-cookies.txt")  # never on the volume
+            # never on the volume; readable by the downloader user alone, and
+            # gone when this run of yt-dlp ends (stop() and pause())
+            self.cookie_dir = self.sandbox.private_dir()
+            path = os.path.join(self.cookie_dir, "cookies.txt")
             write_file(path, self.job["cookies"])
+            os.chmod(path, 0o600)
+            self.sandbox.own(path)
             argv += ["--cookies", path]
-        self.proc = subprocess.Popen(argv, start_new_session=True, stdin=subprocess.DEVNULL,
-                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.sandbox.own(self.work)
+        self.proc = subprocess.Popen(argv, cwd=self.sandbox.home, start_new_session=True, stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                     **self.sandbox.popen_args())
         threading.Thread(target=self.read, args=(self.proc,), daemon=True).start()
 
     def read(self, proc):
@@ -474,6 +599,9 @@ class YtDlp(Tool):
     def pause(self):
         self.paused = True
         stop_process(self.proc, signal.SIGINT, 30)
+        if getattr(self, "cookie_dir", None):
+            shutil.rmtree(self.cookie_dir, ignore_errors=True)
+            self.cookie_dir = None
 
     def resume(self):
         self.paused = False
@@ -490,9 +618,10 @@ class YtDlp(Tool):
 TOOLS = {"gopeed": Gopeed, "aria2": Aria2, "yt-dlp": YtDlp}
 
 
-def clear_dir(path):
-    shutil.rmtree(path, ignore_errors=True)
+def clear_dir(path, sandbox):
+    shutil.rmtree(path, ignore_errors=True)  # never follows links
     os.makedirs(path, exist_ok=True)
+    sandbox.own(path)
 
 
 # ---------------------------------------------------------------- record
@@ -750,10 +879,18 @@ class LocalEnv:
     def spawn_successor(self, job):
         raise RuntimeError("continuing in a new Function is only possible on Modal")
 
+    def sandbox(self):
+        # the tests run the agent as root in a Linux container with this set
+        name = os.environ.get("MODALFS_DOWNLOADER_USER")
+        if name and os.geteuid() == 0:
+            return Sandbox(pwd.getpwnam(name))
+        return Sandbox()
+
 
 class Agent:
     def __init__(self, job, root, env):
         self.job, self.root, self.env = job, root, env
+        self.sandbox = env.sandbox()
         self.jobdir = os.path.join(root, ".modalfs", "downloads", job["id"])
         self.work = os.path.join(self.jobdir, "work")
         self.state = os.path.join(self.jobdir, "state")
@@ -800,7 +937,8 @@ class Agent:
         cls = TOOLS.get(name)
         if cls is None:
             raise Stop("failed", f"unknown downloader {name!r}")
-        return cls(self.job, self.work, os.path.join(self.state, name), self.log, binary=self.env.binary(name))
+        return cls(self.job, self.work, os.path.join(self.state, name), self.log, self.sandbox,
+                   binary=self.env.binary(name))
 
     def download(self):
         rec, job = self.record, self.job
@@ -817,6 +955,7 @@ class Agent:
         stall_limit = float(job.get("stall_limit", 600))
         kick_after = float(job.get("kick_after", KICK_AFTER))
         try:
+            self.sandbox.check()
             tool.start()
             rec.update(state="running", tool=name)
             self.sampler = threading.Thread(target=self.sample_loop, daemon=True)
@@ -935,8 +1074,9 @@ class Agent:
         if tool is not None:
             with contextlib.suppress(Exception):
                 tool.stop()
+        self.sandbox.kill_all()
         if state in ("failed", "stalled"):
-            fields["log_tail"] = [line for path in self.logs() for line in tail(path, 25)]
+            fields["log_tail"] = [line for path in self.logs() for line in tail(path, 25, self.opener(path))]
         if state == "failed":
             self.record.event("failed", message=message)
         if not getattr(self, "copied", False):
@@ -949,17 +1089,24 @@ class Agent:
         tool = getattr(self, "tool", None)
         return tool.logs() if tool else [self.log]
 
+    def opener(self, path):
+        """How the agent opens a log: its own as is, one the downloader
+        wrote only if it's what it seems (Sandbox.open_untrusted)."""
+        return (lambda p: open(p, "rb")) if path == self.log else self.sandbox.open_untrusted
+
     def copy_log(self):
         # the logs live outside the volume while the tool runs (/tmp in
         # Modal, or its state folder, removed when the download finishes)
-        with open(os.path.join(self.jobdir, "log.txt"), "a") as out:
+        with open(os.path.join(self.jobdir, "log.txt"), "ab") as out:
             for path in self.logs():
-                with contextlib.suppress(OSError), open(path, errors="replace") as f:
-                    out.write(f"--- {os.path.basename(path)}\n")
+                with contextlib.suppress(OSError), self.opener(path)(path) as f:
+                    out.write(f"--- {os.path.basename(path)}\n".encode())
                     shutil.copyfileobj(f, out)
 
     def finish(self, tool):
         tool.stop()
+        # nothing of the downloader's may still run while its files are moved
+        self.sandbox.kill_all()
         self.record.update(state="finishing")
         root = os.path.realpath(self.root)
         dest = safe_join(root, self.job.get("folder", ""))
@@ -969,7 +1116,9 @@ class Agent:
             rel = os.path.relpath(src, self.work)
             target = unique_path(safe_join(dest, rel))
             os.makedirs(os.path.dirname(target), exist_ok=True)
-            os.rename(src, target)
+            os.rename(src, target)  # src itself is a plain file (downloaded_files)
+            if self.sandbox.user is not None:
+                os.lchown(target, os.getuid(), os.getgid())
             entry = {"path": os.path.relpath(target, root), "size": os.path.getsize(target)}
             if self.job.get("hash", True):
                 entry["sha256"] = sha256(target)
@@ -985,10 +1134,16 @@ class Agent:
 
 
 def downloaded_files(work):
+    """The finished files in work/: plain files only. A link, or a hard link
+    to a file elsewhere on the volume, is never moved into the destination;
+    os.walk doesn't enter linked folders."""
     for dirpath, dirnames, filenames in os.walk(work, followlinks=False):
         for f in filenames:
             path = os.path.join(dirpath, f)
-            if is_control_file(f) or os.path.islink(path):
+            if is_control_file(f):
+                continue
+            st = os.lstat(path)
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
                 continue
             yield path
 
@@ -1023,7 +1178,101 @@ def sha256(path):
     return h.hexdigest()
 
 
+# What the live test runs as the downloader user, inside a real download
+# Function (job["selftest"] == "isolation"): everything it tries must fail.
+# It's given the agent's MODAL_* variables, the worst case of a downloader
+# that learned them somehow; the socket is what it lacks.
+ISOLATION_PROBE = r'''
+import glob, json, os, socket, sys, threading
+other, app, jobdir = sys.argv[1:4]
+out = {}
+def attempt(name, fn, timeout=20):
+    res = {}
+    def run():
+        try:
+            res["allowed"] = repr(fn())[:200]
+        except BaseException as e:
+            res["blocked"] = f"{type(e).__name__}: {e}"[:300]
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(timeout)
+    out[name] = res or {"blocked": f"no answer in {timeout} s"}
+def connect():
+    s = socket.socket(socket.AF_UNIX)
+    s.connect("/run/modal.sock")
+    return "connected"
+def write(path):
+    with open(path, "w") as f:
+        f.write("x")
+    return path
+attempt("connect to /run/modal.sock", connect)
+attempt("read /proc/1/environ", lambda: open("/proc/1/environ", "rb").read(64))
+attempt("write the volume's root", lambda: write("/vol/modalfs-probe"))
+attempt("write the agent's record", lambda: write(os.path.join(jobdir, "status.json")))
+import modal
+attempt("list volumes", lambda: [v.name for v in modal.Volume.objects.list()][:3])
+attempt("read another volume", lambda: modal.Volume.from_name(other).listdir("/"))
+def upload():
+    with modal.Volume.from_name(other).batch_upload() as b:
+        b.put_file(__file__ if os.path.exists(__file__) else "/etc/hostname", "/probe")
+    return "uploaded"
+attempt("write another volume", upload)
+attempt("delete another volume", lambda: modal.Volume.objects.delete(other))
+attempt("spawn a Function", lambda: modal.Function.from_name(app, "download").spawn({"selftest": "noop"}).object_id)
+def sandbox():
+    sb = modal.Sandbox.create("true", app=modal.App.lookup(app))
+    sb.terminate()
+    return sb.object_id
+attempt("create a Sandbox", sandbox)
+readable = {}
+for pattern in ("/proc/[0-9]*/environ", "/proc/[0-9]*/cmdline", "/tmp/**", "/home/**", "/run/**", "/__modal/**"):
+    for p in glob.glob(pattern, recursive=True):
+        if p.startswith("/__modal/volumes") or not os.path.isfile(p):
+            continue
+        try:
+            with open(p, "rb") as f:
+                readable[p] = f.read(1 << 16).decode("utf-8", "replace")
+        except OSError:
+            pass
+print(json.dumps({"attempts": out, "readable": readable}))
+'''
+
+
+def selftest(job, root, env):
+    if job["selftest"] == "noop":
+        return {"selftest": "noop"}
+    if job["selftest"] != "isolation":
+        raise RuntimeError(f"unknown self-test {job['selftest']!r}")
+    agent = Agent(job, root, env)
+    sb = agent.sandbox
+    os.makedirs(agent.jobdir, exist_ok=True)
+    write_file(os.path.join(agent.jobdir, "status.json"), "{}")
+    args = sb.popen_args()
+    args["env"].update({k: v for k, v in os.environ.items() if k.startswith("MODAL_")})
+    # and Modal's client, which the Function's own Python has on its path
+    args["env"]["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
+    r = subprocess.run([sys.executable, "-c", ISOLATION_PROBE, job.get("other_volume", ""), job.get("app", APP_NAME),
+                        agent.jobdir], capture_output=True, text=True, timeout=600, cwd=sb.home, **args)
+    try:
+        found = json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return {"selftest": "isolation", "error": r.stderr[-2000:], "user": sb.uid}
+    secrets_seen = [p for p, text in found["readable"].items()
+                    if job["live_token"] in text or (job.get("cookies") and job["cookies"] in text)]
+    # The control: the same API call as the agent, which must work (so the
+    # timeouts above are the downloader user being shut out, not a slow API).
+    t = now()
+    try:
+        control = f"root listed {len(list(modal.Volume.objects.list()))} volumes in {now() - t:.1f} s"
+    except Exception as e:
+        control = f"root couldn't list volumes either: {e}"
+    return {"selftest": "isolation", "user": sb.uid, "control": control, "attempts": found["attempts"],
+            "secrets_readable": secrets_seen, "readable_files": len(found["readable"])}
+
+
 def run_job(job, root, env):
+    if job.get("selftest"):
+        return selftest(job, root, env)
     agent = Agent(job, root, env)
     previous = {}
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -1047,6 +1296,8 @@ if modal is not None:
         modal.Image.debian_slim(python_version="3.12")
         .apt_install("aria2", "ffmpeg", "curl", "unzip", "ca-certificates")
         .run_commands(
+            # the user the downloaders run as (Sandbox)
+            f"useradd --system --create-home --home-dir /home/{DOWNLOADER_USER} --shell /usr/sbin/nologin {DOWNLOADER_USER}",
             f"curl -fsSL -o /tmp/g.zip https://github.com/GopeedLab/gopeed/releases/download/{GOPEED_VERSION}/gopeed-web-{GOPEED_VERSION}-linux-amd64.zip",
             f"echo '{GOPEED_SHA256}  /tmp/g.zip' | sha256sum -c -",
             "cd /tmp && unzip -q g.zip && mv gopeed-web-*/gopeed /usr/local/bin/gopeed && rm -rf /tmp/g.zip /tmp/gopeed-web-*",
@@ -1076,6 +1327,9 @@ if modal is not None:
 
         def binary(self, tool):
             return {"aria2": "aria2c"}.get(tool, tool)
+
+        def sandbox(self):
+            return Sandbox(pwd.getpwnam(DOWNLOADER_USER))
 
         def task_id(self):
             return os.environ.get("MODAL_TASK_ID", "")

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	modal "github.com/modal-labs/modal-client/go"
 	"github.com/t41372/modalfs/internal/modalapi"
 )
 
@@ -97,6 +98,7 @@ func TestLive(t *testing.T) {
 	}
 	t.Logf("an unchanged agent isn't deployed again (checked in %v)", time.Since(t0).Round(time.Millisecond))
 
+	t.Run("downloaders can't reach Modal", l.isolation)
 	t.Run("live stream", func(t *testing.T) { l.liveStream(t, "gopeed", hugeURL) })
 	t.Run("live stream aria2", func(t *testing.T) { l.liveStream(t, "aria2", hugeURL) })
 	t.Run("gopeed survives preemption", l.preemption)
@@ -344,4 +346,66 @@ func (l *live) simple(t *testing.T, tool, url, sha string, size int64) {
 		t.Fatalf("files %+v", s.Files)
 	}
 	t.Logf("%s: %s, events %s", tool, s.Files[0].Path, strings.Join(l.events(t, j), " "))
+}
+
+// isolation runs the agent's self-test in a real download Function: as the
+// user the downloaders run as, with the agent's MODAL_* variables, it tries
+// the Modal API (volumes, another scratch volume, a spawn, a Sandbox), the
+// volume outside its work folder, and every file it can read for the job's
+// secrets. Everything must fail.
+func (l *live) isolation(t *testing.T) {
+	ctx := context.Background()
+	other, err := l.api.CreateVolume(ctx, fmt.Sprintf("modalfs-dl-other-%d", time.Now().Unix()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := l.api.DeleteVolume(ctx, other.ID); err != nil {
+			t.Errorf("couldn't delete the second scratch volume %s: %v", other.Name, err)
+		}
+	})
+	j := l.job(t, smallURL, "aria2")
+	j.Cookies = "# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tFALSE\t0\tsid\tcookie-" + randomToken()
+	args := j.args(l.m.App, 15*time.Minute)
+	args["selftest"] = "isolation"
+	args["other_volume"] = other.Name
+	fn, err := l.m.sdk.Functions.FromName(ctx, l.m.App, "download", &modal.FunctionFromNameParams{Environment: l.m.cfg.Environment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	timeout := 15 * time.Minute
+	bound, err := fn.WithOptions(&modal.FunctionWithOptionsParams{
+		Timeout: &timeout, Volumes: map[string]*modal.Volume{"/vol": {VolumeID: j.VolumeID}},
+	}).Instance(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call, err := bound.Spawn(ctx, []any{args}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := l.result(t, call.FunctionCallID, 15*time.Minute)
+	out, _ := json.MarshalIndent(sum, "", "  ")
+	t.Logf("self-test:\n%s", out)
+	if fmt.Sprint(sum["user"]) == "0" || sum["user"] == nil {
+		t.Fatalf("the probe ran as root or didn't run: %v", sum["error"])
+	}
+	if c := fmt.Sprint(sum["control"]); !strings.HasPrefix(c, "root listed") {
+		t.Fatalf("the control failed, so the timeouts prove nothing: %s", c)
+	}
+	attempts, _ := sum["attempts"].(map[string]any)
+	if len(attempts) < 10 {
+		t.Fatalf("only %d attempts reported", len(attempts))
+	}
+	for name, a := range attempts {
+		if r, _ := a.(map[string]any); r["allowed"] != nil {
+			t.Errorf("as the downloader user, %q worked: %v", name, r["allowed"])
+		}
+	}
+	if s, _ := sum["secrets_readable"].([]any); len(s) > 0 {
+		t.Errorf("the downloader user can read the job's secrets in %v", s)
+	}
+	if entries, err := l.api.List(ctx, other.ID, "/", true); err != nil || len(entries) > 0 {
+		t.Errorf("the other volume changed: %v %v", entries, err)
+	}
 }
