@@ -417,6 +417,7 @@ func (d *Daemon) anyStarting() bool {
 
 type StateView struct {
 	Version   string           `json:"version"`
+	Build     string           `json:"build,omitempty"` // the commit it was built from
 	Platform  string           `json:"platform"`
 	Accounts  []config.Account `json:"accounts"`
 	Mounts    []MountView      `json:"mounts"`
@@ -439,7 +440,7 @@ type CacheView struct {
 func (d *Daemon) State() StateView {
 	f := d.store.Snapshot()
 	n, sz := d.cache.Stats()
-	v := StateView{Version: Version, Platform: platform(), Accounts: f.Accounts, Settings: f.Settings, BootID: d.bootID,
+	v := StateView{Version: Version, Build: Build, Platform: platform(), Accounts: f.Accounts, Settings: f.Settings, BootID: d.bootID,
 		Cache: CacheView{Blocks: n, Bytes: sz, Max: d.cache.Max()}, Service: serviceStatus(), ConfigDir: config.Dir()}
 	if v.Accounts == nil {
 		v.Accounts = []config.Account{}

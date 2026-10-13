@@ -243,7 +243,8 @@ export function SettingsPage() {
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-card-border pt-4">
         <span className="flex items-center gap-1 text-[12.5px] text-muted-foreground">
           <span data-selectable className="font-mono text-[12px]">
-            modalfs {st.version} · {st.platform}
+            modalfs {st.version}
+            {st.build && ` · ${st.build}`} · {st.platform}
           </span>
           <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => api('POST', '/open', { target: 'logs' }).catch(() => {})}>
             {t('settings.openLogs')}

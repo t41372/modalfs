@@ -212,7 +212,7 @@ func main() {
 			TitleBar:             mac.TitleBarHiddenInset(),
 			WebviewIsTransparent: true,
 			WindowIsTranslucent:  true,
-			About:                &mac.AboutInfo{Title: "modalfs", Message: "Modal Volumes as local folders.\nVersion " + daemon.Version},
+			About:                &mac.AboutInfo{Title: "modalfs", Message: "Modal Volumes as local folders.\nVersion " + daemon.VersionBuild()},
 		},
 		Linux: &linux.Options{Icon: icon, ProgramName: "modalfs", WebviewGpuPolicy: linux.WebviewGpuPolicyOnDemand},
 	})

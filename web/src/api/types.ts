@@ -131,6 +131,8 @@ export interface Settings {
 
 export interface State {
   version: string
+  /** The commit the daemon was built from, "-dirty" when the tree had changes. */
+  build?: string
   platform: string
   accounts: Account[]
   mounts: Mount[]

@@ -82,7 +82,7 @@ func main() {
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 	case "version", "--version":
-		fmt.Println("modalfs", daemon.Version, runtime.GOOS+"/"+runtime.GOARCH)
+		fmt.Println("modalfs", daemon.VersionBuild(), runtime.GOOS+"/"+runtime.GOARCH)
 	case "daemon":
 		lvl := slog.LevelInfo
 		if os.Getenv("MODALFS_DEBUG") != "" {
