@@ -26,7 +26,7 @@ Read-ahead is bounded (it starts after three blocks read in a row and shares a l
 
 ### BitTorrent uploads while it downloads
 
-gopeed and aria2 send pieces to other peers while they download a torrent, even with seeding off (the container exits as soon as the data is complete). Modal's terms (§1.5) forbid peer-to-peer file sharing, so a torrent download risks the account. **Fix:** a download-only client (anacrolix/torrent with `NoUpload`, MPL-2.0), or the container's traffic through a proxy or tunnel such as Cloudflare WARP. `docs/design/remote-downloads.md`.
+gopeed and aria2 send pieces to other peers while they download a torrent, even with seeding off (the container exits as soon as the data is complete). Modal's terms (§1.5) forbid peer-to-peer file sharing, so a torrent download risks the account, and its peers see the container's address. The Cloudflare WARP option doesn't help: neither tool sends its peer traffic through a proxy, so torrents can't use it and connect directly (the app and CLI say so). **Fix:** a download-only client that proxies its peers (anacrolix/torrent with `NoUpload`, MPL-2.0, or libtorrent), run in the WARP namespace, with UDP through the proxy. `docs/design/remote-downloads.md`.
 
 ### gopeed gives up on some servers
 
@@ -34,7 +34,11 @@ When a server answers a range request with the whole file (HTTP 200 instead of 2
 
 ### YouTube blocks most datacenter addresses
 
-yt-dlp in a Modal container is often refused by YouTube ("Sign in to confirm you're not a bot"). A cookies file from a signed-in browser helps sometimes. **Fix:** none on modalfs's side short of a residential proxy.
+yt-dlp in a Modal container is often refused by YouTube ("Sign in to confirm you're not a bot"): every direct try in the spike was, and 3 of 5 later ones. So YouTube links go through Cloudflare WARP unless you choose Direct, which got past the check in 10 of 12 live runs that connected (direct: 2 of 5): YouTube can flag WARP's addresses too, depending on where a run leaves Cloudflare. A cookies file from a signed-in browser also helps. **Fix:** none certain on modalfs's side short of a residential proxy.
+
+### Cloudflare WARP is free, unofficial and slower
+
+The WARP option uses Cloudflare's free consumer WARP, registered with wgcf, an unofficial client, from a cloud server. Its terms license it for a device you own or control, and Cloudflare can limit or block use at its discretion, including new registrations from one network (modalfs registers once per volume and keeps the identity). It's also slower than direct: about 5–25 MB/s against up to 300 MB/s, depending on where a run leaves Cloudflare. A download through WARP never goes direct when WARP fails; it stops and offers to retry without it. **Fix:** Cloudflare's paid products (WARP Connector, Zero Trust) need the official client, which can't run in a Function. `internal/downloads/remote/warp/`.
 
 ### A spend limit isn't recognised for certain
 

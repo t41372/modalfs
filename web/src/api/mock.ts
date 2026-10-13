@@ -6,6 +6,7 @@
 // URL parameters set what the screenshots need: ?lang=en|zh-Hant|zh-Hans and
 // ?theme=light|dark.
 
+import { isTorrent, warpByDefault } from '@/lib/links'
 import type { Account, Billing, Conflict, DaemonEvent, Download, DownloadEvent, Environment, Identity, Mount, PendingFile, Profile, Sample, State, TrafficSample, Usage, Volume } from './types'
 
 const HOME = '/Users/you'
@@ -412,6 +413,19 @@ function addMockDownload(o: { id: string; url: string; name: string; tool: Downl
     status(m, { state: 'running', done, total: 18.1 * GB, speed: m.live[m.live.length - 1][2], attempt: 1 })
   }
 
+  // Running through Cloudflare WARP: a YouTube video (Blender's Big Buck Bunny), slower than direct.
+  {
+    const m = addMockDownload({ id: 'dl-bbb', url: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ', name: 'Big Buck Bunny 60fps 4K - Official Blender Foundation Short Film [aqz-KE-bpKQ].webm', tool: 'yt-dlp', folder: 'video', volume: 'datasets', created: t0 - 64, state: 'running' })
+    m.d.warp = true
+    const a = profile(16e6, 11)
+    m.events.push({ ev: 'start', t: t0 - 62, attempt: 1 }, { ev: 'warp', t: t0 - 57, colo: 'IAD', ip: '2a09:bac1:76a0::3e:12', leak_check: { tcp: 'blocked', udp: 'blocked', dns: 'blocked' } })
+    m.live = []
+    const done = run(m.live, t0 - 55, t0, 0, a)
+    m.speedAt = a
+    m.runStart = t0 - 55
+    status(m, { state: 'running', done, total: 2.1 * GB, speed: m.live[m.live.length - 1][2], attempt: 1, warp: { colo: 'IAD', ip: '2a09:bac1:76a0::3e:12' } })
+  }
+
   // Paused by the user.
   {
     const m = addMockDownload({ id: 'dl-weights', url: 'https://files.example.net/models/weights-7b.safetensors', name: 'weights-7b.safetensors', tool: 'gopeed', folder: 'models', volume: 'checkpoints', created: t0 - 7300, state: 'paused' })
@@ -477,6 +491,12 @@ function addMockDownload(o: { id: string; url: string; name: string; tool: Downl
   const done = run(ck.history, s1, s1 + 60, 0, profile(50e6, 9))
   ck.events.push({ ev: 'start', t: s1, attempt: 1 })
   ck.d.status = { state: 'running', tool: 'aria2', url: ck.d.url, name: ck.d.name, done, total: 14.2e9, speed: 0, attempt: 1, t: s1 + 60 }
+  // To go through Cloudflare WARP, which couldn't be reached: nothing was downloaded directly instead.
+  const w = addMockDownload({ id: 'dl-warpfail', url: 'https://www.youtube.com/watch?v=eRsGyueVLvQ', name: 'Sintel [eRsGyueVLvQ]', tool: 'yt-dlp', folder: 'video', volume: 'datasets', created: t0 - 2400, state: 'failed' })
+  w.d.warp = true
+  w.d.error = "Cloudflare WARP: couldn't connect (nothing came back through the tunnel in 40 s (last: context deadline exceeded))"
+  w.d.error_kind = 'warp'
+  w.events.push({ ev: 'start', t: t0 - 2390, attempt: 1 }, { ev: 'failed', t: t0 - 2340, message: w.d.error })
   // Running as far as the daemon knows, but nothing heard from its container for a while.
   const q = addMockDownload({ id: 'dl-quiet', url: 'https://data.example.org/audio/librispeech-960h.tar', name: 'librispeech-960h.tar', tool: 'gopeed', folder: 'audio', volume: 'datasets', created: t0 - 500, state: 'starting' })
   q.d.silent = 480
@@ -550,7 +570,10 @@ async function downloadsRoute(method: string, p: string, url: URL, body: Body): 
     const urls = (body.urls as string[]) || []
     const added = urls.map((u, i) => {
       const name = u.replace(/[?#].*$/, '').split('/').filter(Boolean).pop() || 'download'
+      const warp = body.warp === undefined ? warpByDefault(u) : !!body.warp
+      if (warp && isTorrent(u)) fail(`${u} is a torrent: Cloudflare WARP can't carry BitTorrent (its peers are reached directly), so add it without WARP`)
       const x = addMockDownload({ id: `dl-new${mockDownloads.length}${i}`, url: u, name, tool: (body.tool as Download['tool']) || 'gopeed', folder: String(body.folder || ''), volume: String(body.volume), created: now(), state: 'preparing' })
+      if (warp) x.d.warp = true
       setTimeout(() => startMock(x, 1), 1500)
       return clone(x.d)
     })
@@ -585,6 +608,7 @@ async function downloadsRoute(method: string, p: string, url: URL, body: Body): 
       x.d.state = 'preparing'
       x.d.error = undefined
       x.d.error_kind = undefined
+      if (body.warp !== undefined) x.d.warp = !!body.warp
       setTimeout(() => startMock(x, (s?.attempt ?? 0) + 1), 1200)
     } else {
       if (ENDED_MOCK.has(x.d.state)) {
@@ -623,6 +647,10 @@ function startMock(x: MockDownload, attempt: number) {
   x.live = [[t, done, 0]]
   x.d.state = 'running'
   x.d.status = { state: 'running', tool: x.d.tool, url: x.d.url, name: x.d.name, done, total: x.d.status?.total ?? 6.4e9, speed: 0, attempt, t }
+  if (x.d.warp) {
+    x.events.push({ ev: 'warp', t: t + 3, colo: 'IAD', ip: '2a09:bac1:76a0::3e:12' })
+    x.d.status.warp = { colo: 'IAD', ip: '2a09:bac1:76a0::3e:12' }
+  }
   emit('info', x.d.volume_name, 'dl_started', [x.d.name, `${x.d.volume_name}:/${x.d.folder}`])
 }
 

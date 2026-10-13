@@ -771,3 +771,53 @@ func TestBillingHelpers(t *testing.T) {
 		}
 	}
 }
+
+// YouTube links go through Cloudflare WARP unless asked otherwise; a WARP
+// failure is told apart, and resuming can turn WARP off.
+func TestDownloadWARP(t *testing.T) {
+	x := newDLTest(t, true)
+	yt := x.add("https://www.youtube.com/watch?v=aqz-KE-bpKQ")
+	plain := x.add("https://example.com/a.bin")
+	if !yt.WARP || plain.WARP {
+		t.Fatalf("defaults: youtube %v, plain %v", yt.WARP, plain.WARP)
+	}
+	var out []DownloadView
+	code, body := x.do("POST", "/api/downloads", map[string]any{
+		"account": "acct-1", "volume": "media", "urls": []string{"https://example.com/b.bin"}, "warp": true,
+	}, &out)
+	if code != 200 || len(out) != 1 || !out[0].WARP {
+		t.Fatalf("asked for WARP: %d %s", code, body)
+	}
+	code, body = x.do("POST", "/api/downloads", map[string]any{
+		"account": "acct-1", "volume": "media", "urls": []string{"magnet:?xt=urn:btih:" + strings.Repeat("0", 40)}, "warp": true,
+	}, nil)
+	if code == 200 || !strings.Contains(body, "BitTorrent") {
+		t.Fatalf("a torrent through WARP: %d %s", code, body)
+	}
+
+	x.waitState(yt.ID, "starting")
+	calls := x.job(yt.ID).Calls
+	x.r.mu.Lock()
+	sent := x.r.calls[calls[0]].job
+	x.r.mu.Unlock()
+	if !sent.WARP {
+		t.Fatalf("the Function isn't asked for WARP: %+v", sent)
+	}
+	x.r.end(calls[0], map[string]any{"state": "failed", "error": "Cloudflare WARP: couldn't connect (no handshake)"})
+	if f := x.waitState(yt.ID, "failed"); f.ErrorKind != downloads.WhyWARP {
+		t.Fatalf("a WARP failure: %+v", f)
+	}
+	if code, body := x.do("POST", "/api/downloads/"+yt.ID+"/resume", map[string]any{"warp": false}, nil); code != 200 {
+		t.Fatalf("resume without WARP: %d %s", code, body)
+	}
+	if v := x.waitState(yt.ID, "starting"); v.WARP || v.ErrorKind != "" {
+		t.Fatalf("after resuming without WARP: %+v", v)
+	}
+	calls = x.job(yt.ID).Calls
+	x.r.mu.Lock()
+	sent = x.r.calls[calls[len(calls)-1]].job
+	x.r.mu.Unlock()
+	if sent.WARP {
+		t.Fatal("the new run still asks for WARP")
+	}
+}

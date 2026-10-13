@@ -21,10 +21,11 @@ into a volume, so your computer can sleep meanwhile. Billed to your account.
   modalfs download enable|disable           turn remote downloads on or off
   modalfs download add VOLUME[:/FOLDER] URL...
         [--downloader gopeed|aria2|yt-dlp] [--size small|medium|large] [--cookies FILE]
-        [--account A] [--env E]
+        [--warp | --no-warp] [--account A] [--env E]
   modalfs download ls
   modalfs download show ID [--follow]       progress, attempts and interruptions, speed
-  modalfs download pause|resume ID
+  modalfs download pause ID
+  modalfs download resume ID [--warp | --no-warp]
   modalfs download cancel ID [--keep]       stop it and delete the partial files (--keep keeps them)
   modalfs download logs ID                  the downloader's log, saved when a run ends
   modalfs download rm ID                    forget it and delete its records (finished files stay)
@@ -33,6 +34,12 @@ into a volume, so your computer can sleep meanwhile. Billed to your account.
 
 The downloader is yt-dlp for video sites and gopeed for everything else;
 if gopeed keeps failing on a link, the download switches to aria2 by itself.
+
+--warp sends a download through Cloudflare WARP, for sites that block
+cloud servers: slower, and the downloader can reach nothing else (if WARP
+can't be reached, the download fails; it never goes direct instead).
+YouTube links use it unless --no-warp. Torrents can't: BitTorrent connects
+to its peers directly, which shows them the container's address.
 ID can be the start of an ID shown by ls.
 `
 
@@ -56,7 +63,17 @@ func cmdDownload(args []string) {
 	follow := fl.Bool("follow", false, "keep showing progress until it stops")
 	fl.BoolVar(follow, "f", false, "same as --follow")
 	keep := fl.Bool("keep", false, "keep the partial files")
+	warp := fl.Bool("warp", false, "through Cloudflare WARP")
+	noWARP := fl.Bool("no-warp", false, "not through Cloudflare WARP")
 	pos := parseFlags(fl, args[1:])
+	if *warp && *noWARP {
+		fatal(errors.New("--warp and --no-warp can't go together"))
+	}
+	warpChoice := func(in map[string]any) {
+		if *warp || *noWARP {
+			in["warp"] = *warp
+		}
+	}
 	c := client()
 	switch sub {
 	case "enable", "on":
@@ -73,6 +90,7 @@ func cmdDownload(args []string) {
 		st := state(c)
 		a := pickAccount(st, *acctF)
 		in := map[string]any{"account": a.ID, "environment": *env, "volume": vol, "folder": folder, "urls": pos[1:], "tool": *tool, "size": *size}
+		warpChoice(in)
 		if *cookies != "" {
 			b, err := os.ReadFile(*cookies)
 			must(err)
@@ -81,7 +99,11 @@ func cmdDownload(args []string) {
 		var out []daemon.DownloadView
 		must(c.Do("POST", "/api/downloads", in, &out))
 		for _, v := range out {
-			fmt.Printf("%s  %s → %s:/%s (%s, %s)\n", v.ID, v.Name, v.VolumeName, v.Folder, v.Tool, v.Size)
+			via := ""
+			if v.WARP {
+				via = ", through Cloudflare WARP"
+			}
+			fmt.Printf("%s  %s → %s:/%s (%s, %s%s)\n", v.ID, v.Name, v.VolumeName, v.Folder, v.Tool, v.Size, via)
 		}
 		fmt.Println("Preparing the downloader in your Modal workspace (up to a minute when modalfs is new or updated). Follow it with `modalfs download show ID -f`.")
 	case "ls", "list":
@@ -107,12 +129,20 @@ func cmdDownload(args []string) {
 	case "pause", "resume", "cancel":
 		id := downloadID(c, pos)
 		var v daemon.DownloadView
-		must(c.Do("POST", "/api/downloads/"+id+"/"+sub, map[string]any{"keep": *keep}, &v))
+		in := map[string]any{"keep": *keep}
+		if sub == "resume" {
+			warpChoice(in)
+		}
+		must(c.Do("POST", "/api/downloads/"+id+"/"+sub, in, &v))
 		switch sub {
 		case "pause":
 			fmt.Printf("pausing %s; its state is saved, and `modalfs download resume %s` continues it\n", v.Name, v.ID)
 		case "resume":
-			fmt.Printf("resuming %s\n", v.Name)
+			if v.WARP {
+				fmt.Printf("resuming %s, through Cloudflare WARP\n", v.Name)
+			} else {
+				fmt.Printf("resuming %s\n", v.Name)
+			}
 		case "cancel":
 			if v.State == downloads.StateCancelled {
 				fmt.Printf("cancelled %s\n", v.Name)
@@ -188,6 +218,15 @@ func showDownload(c *daemon.Client, id string) {
 		row("Note", silentText(v))
 	}
 	row("Downloader", fmt.Sprintf("%s, %s", v.Tool, v.Size))
+	if v.WARP {
+		via := "on"
+		if s := v.Status; s != nil && s.WARP != nil && s.WARP.Colo != "" {
+			via = "on, leaving Cloudflare in " + s.WARP.Colo
+		}
+		row("Cloudflare WARP", via)
+	} else if downloads.IsBitTorrent(v.URL) {
+		row("Network", "direct: BitTorrent shows its peers the container's address")
+	}
 	if s := v.Status; s != nil {
 		row("Progress", dlProgress(s))
 		if s.Speed > 0 {
@@ -361,6 +400,8 @@ func eventLine(e downloads.Event) string {
 		return fmt.Sprintf("no data for %ds; reconnecting", num("seconds"))
 	case "continued":
 		return "reached the Function's time limit; continued in a new one"
+	case "warp":
+		return fmt.Sprintf("connected through Cloudflare WARP (%s)", str("colo"))
 	case "failed":
 		return "failed: " + str("message")
 	case "finished":
@@ -382,6 +423,8 @@ func whyText(kind string) string {
 	switch kind {
 	case downloads.WhyBilling:
 		return "Modal says the workspace is out of credit or over its spend limit. Raise the limit or add credit on Modal's Usage & Billing page (`modalfs download spend` shows the link), then resume it."
+	case downloads.WhyWARP:
+		return "It was to go through Cloudflare WARP, and WARP couldn't be used, so nothing was downloaded directly instead. Resume it to try WARP again, or `modalfs download resume ID --no-warp` to download without it."
 	case downloads.WhyUnexplained:
 		return "Modal stopped it without saying why. One cause is a workspace over its spend limit or out of credit: check Modal's Usage & Billing page (`modalfs download spend` shows the link), then resume it."
 	}

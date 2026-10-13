@@ -1,7 +1,7 @@
 import { Collapsible as CollapsiblePrimitive } from '@base-ui/react/collapsible'
 import { useQuery } from '@tanstack/react-query'
 import { cn } from 'cn'
-import { ChevronDown, ChevronRight, CornerLeftUp, Folder, FolderPlus, Info } from 'lucide-react'
+import { ChevronDown, ChevronRight, CornerLeftUp, Folder, FolderPlus, Globe, Info } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -17,9 +17,11 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { AddVolumeDialog } from '@/dialogs/AddVolume'
-import { hourlyFor } from '@/lib/downloads'
+import { hourlyFor, isTorrent, warpByDefault } from '@/lib/downloads'
 
 type ToolChoice = 'auto' | DownloadTool
+/** How a download reaches the site: auto is Cloudflare WARP for YouTube, direct for the rest. */
+type Network = 'auto' | 'warp' | 'direct'
 const OTHER = '__other__'
 
 /** Paste links, pick one of modalfs's volumes and a folder in it, and download them there in Modal. */
@@ -32,6 +34,7 @@ export function AddDownloadDialog({ open, onOpenChange }: { open: boolean; onOpe
   const [tool, setTool] = useState<ToolChoice>('auto')
   const [size, setSize] = useState<DownloadSize>('small')
   const [cookies, setCookies] = useState<{ name: string; text: string } | null>(null)
+  const [net, setNet] = useState<Network>('auto')
   const [addingVolume, setAddingVolume] = useState(false)
   const [picking, setPicking] = useState(false)
 
@@ -45,6 +48,7 @@ export function AddDownloadDialog({ open, onOpenChange }: { open: boolean; onOpe
     setTool('auto')
     setSize(st.settings.download_size || 'small')
     setCookies(null)
+    setNet('auto')
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
   const mount = usable.find((m) => m.id === mountId)
   useEffect(() => setFolder(''), [mountId])
@@ -55,6 +59,9 @@ export function AddDownloadDialog({ open, onOpenChange }: { open: boolean; onOpe
     .map((l) => l.trim())
     .filter(Boolean)
   const bad = urls.find((u) => !/^(https?|ftp):\/\/\S+$/i.test(u) && !/^magnet:\?\S+$/i.test(u))
+  const torrents = urls.filter(isTorrent).length
+  const viaWarp = net === 'warp' ? urls.length - torrents : net === 'auto' ? urls.filter(warpByDefault).length : 0
+  const warpTorrent = net === 'warp' && torrents > 0
   const acct = st.accounts.find((a) => a.id === mount?.account_id)
   const many = new Set(usable.map((m) => m.account_id)).size > 1
   const price = hourlyFor(size, billing.data)
@@ -66,7 +73,7 @@ export function AddDownloadDialog({ open, onOpenChange }: { open: boolean; onOpe
         onOpenChange={onOpenChange}
         title={t('dl.addTitle')}
         submit={urls.length > 1 ? t('dl.startN', { count: urls.length }) : t('dl.start')}
-        canSubmit={urls.length > 0 && !bad && !!mount}
+        canSubmit={urls.length > 0 && !bad && !warpTorrent && !!mount}
         aside={
           <Hint text={t('dl.costHint2', { workspace: acct?.workspace || acct?.label || '…' })}>
             <span className="inline-flex items-center gap-1 text-[12px] text-muted-foreground tabular">
@@ -85,13 +92,33 @@ export function AddDownloadDialog({ open, onOpenChange }: { open: boolean; onOpe
             tool: tool === 'auto' ? '' : tool,
             size,
             cookies: cookies?.text ?? '',
+            ...(net === 'auto' ? {} : { warp: net === 'warp' }),
           })
           refreshDownloads()
           refreshState()
           toast(t('dl.added', { count: added.length }))
         }}
       >
-        <Field label={t('dl.links')} htmlFor="dl-links" hint={bad ? undefined : t('dl.linksHint')} error={bad ? t('dl.notALink', { link: bad }) : undefined}>
+        <Field
+          label={t('dl.links')}
+          htmlFor="dl-links"
+          hint={
+            bad || warpTorrent ? undefined : viaWarp || torrents ? (
+              <span className="flex flex-col gap-0.5">
+                {viaWarp > 0 && (
+                  <span className="flex items-center gap-1.5">
+                    <Globe className="size-3.5 shrink-0" />
+                    {net === 'auto' ? t('dl.warpAuto', { count: viaWarp }) : t('dl.warpAll', { count: viaWarp })}
+                  </span>
+                )}
+                {torrents > 0 && t('dl.torrentDirect', { count: torrents })}
+              </span>
+            ) : (
+              t('dl.linksHint')
+            )
+          }
+          error={bad ? t('dl.notALink', { link: bad }) : warpTorrent ? t('dl.noWarpTorrent') : undefined}
+        >
           <textarea
             id="dl-links"
             value={links}
@@ -167,6 +194,18 @@ export function AddDownloadDialog({ open, onOpenChange }: { open: boolean; onOpe
                     { value: 'gopeed', label: 'gopeed' },
                     { value: 'aria2', label: 'aria2' },
                     { value: 'yt-dlp', label: 'yt-dlp' },
+                  ]}
+                />
+              </Field>
+              <Field label={t('dl.network')} hint={t(`dl.netHint.${net}`)}>
+                <Segmented<Network>
+                  label={t('dl.network')}
+                  value={net}
+                  onChange={setNet}
+                  options={[
+                    { value: 'auto', label: t('downloads.auto') },
+                    { value: 'warp', label: 'Cloudflare WARP' },
+                    { value: 'direct', label: t('dl.direct') },
                   ]}
                 />
               </Field>

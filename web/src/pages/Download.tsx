@@ -1,6 +1,6 @@
 import { cn } from 'cn'
 import type { TFunction } from 'i18next'
-import { ChevronLeft, Copy, ExternalLink, FileText, MoreHorizontal, Pause, Play, RotateCcw, Trash2, TriangleAlert, X } from 'lucide-react'
+import { ChevronLeft, Copy, ExternalLink, FileText, Globe, MoreHorizontal, Pause, Play, RotateCcw, Trash2, TriangleAlert, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -19,7 +19,7 @@ import { duration } from '@/components/StopProgress'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { BUSY, dollars, ENDED, happenings, hourlyFor, permanent, progressText, RESUMABLE, RUNNING, runSeconds, SILENT_WARN, series, speed, type Tone, when } from '@/lib/downloads'
+import { BUSY, dollars, ENDED, happenings, hourlyFor, isTorrent, permanent, progressText, RESUMABLE, RUNNING, runSeconds, SILENT_WARN, series, speed, type Tone, when } from '@/lib/downloads'
 import { bytes } from '@/lib/format'
 import { openExternal } from '@/lib/platform'
 import { downloadGlyph } from './Downloads'
@@ -47,7 +47,9 @@ function DownloadPage({ d }: { d: Download }) {
   const [range, setRange] = useState<Range>('all')
   const [logOpen, setLogOpen] = useState(false)
   const billing = useBilling(d.account_id, d.environment)
-  const act = useAction(({ action }: { action: 'pause' | 'resume' }) => api('POST', `/downloads/${d.id}/${action}`, {}).finally(refreshDownloads))
+  const act = useAction(({ action, warp }: { action: 'pause' | 'resume'; warp?: boolean }) =>
+    api('POST', `/downloads/${d.id}/${action}`, warp === undefined ? {} : { warp }).finally(refreshDownloads),
+  )
 
   const s = live.view?.status ?? d.status
   const points = useMemo(() => series(records.history, running ? live.samples : []), [records.history, live.samples, running])
@@ -88,6 +90,7 @@ function DownloadPage({ d }: { d: Download }) {
           <Chip mono hint={d.url} className="max-w-[18rem]">
             {d.url.replace(/^https?:\/\//, '')}
           </Chip>
+          <NetworkChip d={d} s={s} />
         </span>
       }
       actions={
@@ -138,7 +141,9 @@ function DownloadPage({ d }: { d: Download }) {
         </>
       }
     >
-      {(d.state === 'failed' || d.state === 'stalled') && (d.error || s?.log_tail?.length) && <Problem d={d} s={s} billing={billing.data} />}
+      {(d.state === 'failed' || d.state === 'stalled') && (d.error || s?.log_tail?.length) && (
+        <Problem d={d} s={s} billing={billing.data} withoutWarp={() => act.mutate({ action: 'resume', warp: false })} busy={act.isPending} />
+      )}
       {silent && <Silent d={d} billing={billing.data} />}
 
       {ran && (
@@ -246,6 +251,20 @@ function DownloadPage({ d }: { d: Download }) {
               {s?.tool || d.tool}
               {s?.tool && s.tool !== d.tool && <span className="text-muted-foreground"> {t('downloads.insteadOf', { tool: d.tool })}</span>}
             </dd>
+            <dt className="text-muted-foreground">{t('dl.network')}</dt>
+            <dd>
+              {d.warp ? (
+                <>
+                  Cloudflare WARP
+                  {s?.warp?.colo && <span className="text-muted-foreground"> · {t('dl.warpColo', { colo: s.warp.colo })}</span>}
+                </>
+              ) : (
+                <>
+                  {t('dl.direct')}
+                  {isTorrent(d.url) && <span className="text-muted-foreground"> · {t('dl.torrentPeers')}</span>}
+                </>
+              )}
+            </dd>
             <dt className="text-muted-foreground">{t('dl.size')}</dt>
             <dd>
               {t(`downloads.sizes.${d.size}`)}
@@ -345,8 +364,25 @@ async function forget(id: string) {
   }
 }
 
+/** Through Cloudflare WARP (and where it leaves Cloudflare), or, for a torrent, that its peers see the container. Nothing for an ordinary direct download. */
+function NetworkChip({ d, s }: { d: Download; s?: DownloadStatus }) {
+  const { t } = useTranslation()
+  if (d.warp) {
+    return (
+      <Chip hint={t('dl.warpHint')}>
+        <span className="flex items-center gap-1.5">
+          <Globe className="text-muted-foreground" />
+          {s?.warp?.colo ? `WARP · ${s.warp.colo}` : 'WARP'}
+        </span>
+      </Chip>
+    )
+  }
+  if (isTorrent(d.url)) return <Chip hint={t('dl.torrentPeers')}>{t('dl.direct')}</Chip>
+  return null
+}
+
 /** Why it failed, in plain words, with Modal's own message under it when Modal was the reason. */
-function Problem({ d, s, billing }: { d: Download; s?: DownloadStatus; billing?: Billing }) {
+function Problem({ d, s, billing, withoutWarp, busy }: { d: Download; s?: DownloadStatus; billing?: Billing; withoutWarp: () => void; busy: boolean }) {
   const { t } = useTranslation()
   const kind = d.error_kind
   const gone = permanent(d)
@@ -355,14 +391,25 @@ function Problem({ d, s, billing }: { d: Download; s?: DownloadStatus; billing?:
       <TriangleAlert className="mt-0.5 size-4 shrink-0" />
       <div className="min-w-0">
         <div className="font-medium text-pretty">{kind ? t(`downloads.why.${kind}`) : gone ? t('dl.goneLong') : d.error || t(`dl.state.${d.state}`)}</div>
-        {(kind || gone) && d.error && <div className="mt-1 font-mono text-[11px] break-words text-destructive/80">{t('downloads.modalSaid', { message: d.error })}</div>}
+        {(kind || gone) && d.error && (
+          <div className="mt-1 font-mono text-[11px] break-words text-destructive/80">{kind === 'warp' ? d.error : t('downloads.modalSaid', { message: d.error })}</div>
+        )}
         {!kind && s?.log_tail && s.log_tail.length > 0 && (
           <details className="mt-1.5">
             <summary className="cursor-pointer text-[12px] text-destructive/80">{t('dl.lastLines')}</summary>
             <pre className="mt-1 max-h-28 overflow-auto font-mono text-[11px] whitespace-pre-wrap text-destructive/80">{s.log_tail.slice(-6).join('\n')}</pre>
           </details>
         )}
-        {kind && <BillingLink billing={billing} className="mt-2" />}
+        {kind === 'warp' ? (
+          <Hint text={t('dl.withoutWarpHint')}>
+            <Button variant="outline" size="sm" className="mt-2 bg-background/60" disabled={busy} onClick={withoutWarp}>
+              <RotateCcw />
+              {t('dl.withoutWarp')}
+            </Button>
+          </Hint>
+        ) : (
+          kind && <BillingLink billing={billing} className="mt-2" />
+        )}
       </div>
     </div>
   )

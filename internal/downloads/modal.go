@@ -124,6 +124,11 @@ func (m *Modal) deploy(ctx context.Context, version string) error {
 	if err := sb.Filesystem.WriteBytes(ctx, remote.App, "/app/app.py", nil); err != nil {
 		return fmt.Errorf("copying the app into the deploy Sandbox: %w", err)
 	}
+	for name, b := range remote.Files() {
+		if err := sb.Filesystem.WriteBytes(ctx, b, "/app/"+name, nil); err != nil {
+			return fmt.Errorf("copying %s into the deploy Sandbox: %w", name, err)
+		}
+	}
 	proc, err := sb.Exec(ctx, []string{"modal", "deploy", "/app/app.py"}, &modal.SandboxExecParams{Workdir: "/app"})
 	if err != nil {
 		return err

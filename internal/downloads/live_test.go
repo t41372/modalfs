@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -106,6 +107,36 @@ func TestLive(t *testing.T) {
 	t.Run("continues past the time limit", l.respawn)
 	t.Run("aria2", func(t *testing.T) { l.simple(t, "aria2", bigURL, bigSHA256, 1000000000) })
 	t.Run("yt-dlp", func(t *testing.T) { l.simple(t, "yt-dlp", smallURL, "", 104857600) })
+	t.Run("through WARP: gopeed", func(t *testing.T) { l.warp(t, "gopeed", bigURL, bigSHA256, nil) })
+	t.Run("through WARP: aria2", func(t *testing.T) { l.warp(t, "aria2", smallURL, "", nil) })
+	t.Run("through WARP: YouTube", func(t *testing.T) {
+		// Big Buck Bunny (Blender Foundation, CC BY 3.0), 360p as one file
+		l.warp(t, "yt-dlp", "https://www.youtube.com/watch?v=aqz-KE-bpKQ", "", map[string]any{"format": "bv*[height<=360]+ba/b[height<=360]/b"})
+	})
+	t.Run("through WARP: another endpoint when the first is dead", func(t *testing.T) {
+		l.warp(t, "aria2", smallURL, "", map[string]any{"warp_endpoint": "192.0.2.1:2408,engage.cloudflareclient.com:2408"})
+	})
+	t.Run("WARP unreachable: nothing goes direct", l.warpUnreachable)
+	if n := os.Getenv("MODALFS_LIVE_YOUTUBE_TRIES"); n != "" {
+		// how often YouTube lets WARP through, direct for comparison
+		tries, _ := strconv.Atoi(n)
+		for i := 0; i < tries; i++ {
+			t.Run(fmt.Sprintf("YouTube through WARP, try %d", i+1), func(t *testing.T) {
+				l.warp(t, "yt-dlp", "https://www.youtube.com/watch?v=aqz-KE-bpKQ", "", map[string]any{"format": "bv*[height<=360]+ba/b[height<=360]/b"})
+			})
+			t.Run(fmt.Sprintf("YouTube direct, try %d", i+1), func(t *testing.T) {
+				j := l.job(t, "https://www.youtube.com/watch?v=aqz-KE-bpKQ", "yt-dlp")
+				sum := l.result(t, l.spawn(t, j, map[string]any{"format": "bv*[height<=360]+ba/b[height<=360]/b"}), 10*time.Minute)
+				if sum["state"] != "done" {
+					msg := fmt.Sprint(sum["error"])
+					if len(msg) > 200 {
+						msg = msg[:200] + "…"
+					}
+					t.Fatalf("direct: %v: %s", sum["state"], msg)
+				}
+			})
+		}
+	}
 }
 
 func (l *live) job(t *testing.T, url, tool string) Job {
@@ -346,6 +377,110 @@ func (l *live) simple(t *testing.T, tool, url, sha string, size int64) {
 		t.Fatalf("files %+v", s.Files)
 	}
 	t.Logf("%s: %s, events %s", tool, s.Files[0].Path, strings.Join(l.events(t, j), " "))
+}
+
+// spawn starts a call with arguments only tests give (a self-test, a bogus
+// WARP endpoint, a yt-dlp format).
+func (l *live) spawn(t *testing.T, j Job, extra map[string]any) string {
+	ctx := context.Background()
+	args := j.args(l.m.App, 15*time.Minute)
+	for k, v := range extra {
+		args[k] = v
+	}
+	fn, err := l.m.sdk.Functions.FromName(ctx, l.m.App, "download", &modal.FunctionFromNameParams{Environment: l.m.cfg.Environment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	timeout := 15 * time.Minute
+	bound, err := fn.WithOptions(&modal.FunctionWithOptionsParams{
+		Timeout: &timeout, Volumes: map[string]*modal.Volume{"/vol": {VolumeID: j.VolumeID}},
+	}).Instance(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call, err := bound.Spawn(ctx, []any{args}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("call %s", call.FunctionCallID)
+	return call.FunctionCallID
+}
+
+// warp downloads through Cloudflare WARP and checks it left through
+// Cloudflare and that the downloader's namespace had no other way out.
+func (l *live) warp(t *testing.T, tool, url, sha string, extra map[string]any) {
+	j := l.job(t, url, tool)
+	j.WARP = true
+	t0 := time.Now()
+	call := l.spawn(t, j, extra)
+	sum := l.result(t, call, 15*time.Minute)
+	took := time.Since(t0)
+	s, err := ReadStatus(context.Background(), l.m.Volume(j), j)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev, err := ReadEvents(context.Background(), l.m.Volume(j), j)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range ev {
+		if e.Kind != "warp" {
+			continue
+		}
+		found = true
+		checks, _ := e.Fields["leak_check"].(map[string]any)
+		if len(checks) != 3 {
+			t.Errorf("leak check: %v", checks)
+		}
+		for way, r := range checks {
+			if !strings.HasPrefix(fmt.Sprint(r), "blocked") {
+				t.Errorf("the downloader's namespace let %s out: %v", way, r)
+			}
+		}
+		t.Logf("WARP: colo %v, ip %v, endpoint %v, leak check %v", e.Fields["colo"], e.Fields["ip"], e.Fields["endpoint"], checks)
+	}
+	if !found {
+		t.Error("no warp event")
+	}
+	if sum["state"] != "done" {
+		msg := s.Error
+		if len(msg) > 300 {
+			msg = msg[:300] + "…"
+		}
+		t.Fatalf("%s through WARP: %v; %s", tool, sum["state"], msg)
+	}
+	if len(s.Files) != 1 || sha != "" && s.Files[0].SHA256 != sha {
+		t.Fatalf("files %+v", s.Files)
+	}
+	if s.WARP == nil || s.WARP.Colo == "" {
+		t.Fatalf("the status doesn't say where it left Cloudflare: %+v", s.WARP)
+	}
+	t.Logf("%s through WARP: %s, %.1f MB in %v (%.1f MB/s including start-up)", tool, s.Files[0].Path,
+		float64(s.Files[0].Size)/1e6, took.Round(time.Second), float64(s.Files[0].Size)/1e6/took.Seconds())
+}
+
+// warpUnreachable: a WARP that can't be reached fails the download, and
+// nothing is downloaded directly instead.
+func (l *live) warpUnreachable(t *testing.T) {
+	j := l.job(t, smallURL, "aria2")
+	j.WARP = true
+	j.Folder = "NoWARP" // a folder of its own: other subtests download the same file
+	sum := l.result(t, l.spawn(t, j, map[string]any{"warp_endpoint": "192.0.2.1:2408"}), 10*time.Minute)
+	s, err := ReadStatus(context.Background(), l.m.Volume(j), j)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("result %v", sum)
+	if sum["state"] != "failed" || !strings.HasPrefix(fmt.Sprint(sum["error"]), WARPError) {
+		t.Fatalf("want a WARP failure, got %v", sum)
+	}
+	if s.Done != 0 || len(s.Files) != 0 {
+		t.Fatalf("something was downloaded: %+v", s)
+	}
+	if es, err := l.api.List(context.Background(), l.vol.ID, "NoWARP", true); err == nil && len(es) > 0 {
+		t.Fatalf("something arrived anyway: %+v", es)
+	}
 }
 
 // isolation runs the agent's self-test in a real download Function: as the

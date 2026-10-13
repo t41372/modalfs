@@ -286,3 +286,34 @@ func TestWhy(t *testing.T) {
 		t.Error("ImageIDIn found an ID in nothing")
 	}
 }
+
+func TestWARPDefaults(t *testing.T) {
+	for link, want := range map[string]bool{
+		"https://www.youtube.com/watch?v=x":     true,
+		"https://youtu.be/x":                    true,
+		"https://m.youtube.com/shorts/x":        true,
+		"https://example.com/youtube.com/a.bin": false,
+		"https://vimeo.com/1":                   false,
+		"https://youtube.com.evil.example/x":    false,
+		"magnet:?xt=urn:btih:00":                false,
+		"https://example.com/a.torrent?x=1":     false,
+	} {
+		if got := DefaultWARP(link); got != want {
+			t.Errorf("DefaultWARP(%q) = %v", link, got)
+		}
+	}
+	if !IsBitTorrent("https://example.com/A.TORRENT") || IsBitTorrent("https://example.com/a.bin") {
+		t.Error("IsBitTorrent")
+	}
+}
+
+func TestWARPReachesTheFunction(t *testing.T) {
+	j := Job{ID: "dl-1", URL: "https://youtu.be/x", Tool: "yt-dlp", Size: "small", WARP: true}
+	if j.args("app", time.Hour)["warp"] != true {
+		t.Fatal("a WARP job's call doesn't ask for WARP")
+	}
+	j.WARP = false
+	if _, ok := j.args("app", time.Hour)["warp"]; ok {
+		t.Fatal("a direct job's call mentions WARP")
+	}
+}

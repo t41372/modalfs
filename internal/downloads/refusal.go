@@ -17,7 +17,15 @@ const (
 	// (an image build "terminated due to external shut-down", a container
 	// gone without the agent's last word). A spend limit is one cause.
 	WhyUnexplained = "unexplained"
+	// WhyWARP: the download asked for Cloudflare WARP, and WARP couldn't be
+	// reached (or couldn't be made the downloader's only way out). The agent
+	// never falls back to a direct download; the user can retry without it.
+	WhyWARP = "warp"
 )
+
+// WARPError starts every failure the agent reports because of WARP
+// (app.py's WARP_ERROR).
+const WARPError = "Cloudflare WARP"
 
 var billingWords = []string{
 	"spend limit", "spending limit", "budget", "credit", "billing", "payment",

@@ -7,6 +7,8 @@ import { intlTag } from '@/i18n'
 import { duration as span } from '@/components/StopProgress'
 import { bytes } from './format'
 
+export { isTorrent, warpByDefault } from './links'
+
 /** Roughly what a download's Function costs an hour while it runs, in US dollars (Modal's rates for a Function's cores and memory). */
 export const HOURLY: Record<DownloadSize, number> = { small: 0.0099, medium: 0.0198, large: 0.063 }
 
@@ -264,6 +266,9 @@ export function happenings(events: DownloadEvent[], t: TFunction, lang: string):
         out.push({ t: e.t, tone: 'warn', text: t('downloads.ev.error', { tool: str(e.tool) || t('downloads.theDownloader'), message, count: n }) })
         break
       }
+      case 'warp':
+        out.push({ t: e.t, tone: 'neutral', text: t('downloads.ev.warp', { colo: str(e.colo) || '?' }) })
+        break
       case 'fallback':
         out.push({ t: e.t, tone: 'warn', text: t('downloads.ev.fallback', { tool: str(e.tool) || 'aria2' }), label: t('downloads.mark.fallback') })
         break

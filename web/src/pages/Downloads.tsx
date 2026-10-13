@@ -218,6 +218,11 @@ function DownloadRow({ d }: { d: Download }) {
               → {d.volume_name}:/{d.folder}
             </span>
             {size && <span className="shrink-0 tabular">{size}</span>}
+            {d.warp && (
+              <span className="shrink-0 rounded bg-muted px-1 text-[10.5px] font-medium tracking-wide" title={t('dl.warpHint')}>
+                WARP
+              </span>
+            )}
           </span>
           {why && <span className="mt-0.5 block truncate text-[12px] text-destructive">{why}</span>}
           {going && pct !== undefined && <Bar pct={pct} tone={d.state === 'running' ? 'brand' : d.state === 'interrupted' ? 'warn' : 'muted'} className="mt-2 h-1 max-w-md" />}

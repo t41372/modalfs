@@ -264,7 +264,8 @@
     },
     "whyShort": {
       "billing": "Modal: out of credit or over the spend limit",
-      "unexplained": "Modal didn't start it; check the spend limit"
+      "unexplained": "Modal didn't start it; check the spend limit",
+      "warp": "Cloudflare WARP couldn't be used"
     },
     "gone": "The link is gone (HTTP 4xx)",
     "goneLong": "The server says the file isn't there. Trying again won't help: check the link.",
@@ -316,7 +317,7 @@
     "noVolumes": "Mount a volume once, then it can be picked here.",
     "willSave": "Saves to",
     "neverOverwrites": "an existing file is never replaced",
-    "advanced": "Downloader and container",
+    "advanced": "Downloader, network and container",
     "start": "Start download",
     "startN_one": "Start {{count}} download",
     "startN_other": "Start {{count}} downloads",
@@ -326,7 +327,26 @@
     "costLine_other": "About ${{price}}/h each while they run",
     "costHint2": "Billed to {{workspace}}'s Modal account by the second. It stops when the download ends or is paused.",
     "folder": "Folder",
-    "saveHere": "Save here"
+    "saveHere": "Save here",
+    "network": "Network",
+    "direct": "Direct",
+    "netHint": {
+      "auto": "YouTube through Cloudflare WARP, as YouTube often refuses cloud servers; everything else direct.",
+      "warp": "Through Cloudflare WARP, for sites that block cloud servers. Slower. If WARP can't be reached, the download stops: it never goes direct instead.",
+      "direct": "Straight from Modal's network: the fastest."
+    },
+    "warpAuto_one": "Goes through Cloudflare WARP (YouTube often refuses cloud servers). Slower.",
+    "warpAuto_other": "{{count}} links go through Cloudflare WARP (YouTube often refuses cloud servers). Slower.",
+    "warpAll_one": "Goes through Cloudflare WARP. Slower.",
+    "warpAll_other": "{{count}} links go through Cloudflare WARP. Slower.",
+    "torrentDirect_one": "A torrent connects to its peers directly: they see the container's address.",
+    "torrentDirect_other": "{{count}} torrents connect to their peers directly: they see the container's address.",
+    "noWarpTorrent": "Torrents can't go through Cloudflare WARP: BitTorrent reaches its peers directly. Choose Automatic or Direct.",
+    "warpHint": "Through Cloudflare WARP: sites see Cloudflare's address, not Modal's. Slower than direct.",
+    "warpColo": "leaves Cloudflare in {{colo}}",
+    "torrentPeers": "BitTorrent connects to its peers directly, so they see the container's address",
+    "withoutWarp": "Retry without WARP",
+    "withoutWarpHint": "Downloads straight from Modal's network. A site that blocks cloud servers, like YouTube, may refuse it."
   },
   "downloads": {
     "auto": "Automatic",
@@ -388,7 +408,8 @@
       "failed": "Failed: {{message}}",
       "finishedOne": "Finished and saved as {{path}}.",
       "finished_one": "Finished: {{count}} file saved.",
-      "finished_other": "Finished: {{count}} files saved."
+      "finished_other": "Finished: {{count}} files saved.",
+      "warp": "Connected through Cloudflare WARP, leaving in {{colo}}"
     },
     "insteadOf": "(instead of {{tool}})",
     "perHour": "about ${{price}} an hour",
@@ -396,7 +417,8 @@
     "logEmpty": "The log is empty.",
     "why": {
       "billing": "Modal says this workspace is out of credit or has hit its spend limit, so it won't run the download. Raise the limit or add credit on Modal's Usage & Billing page, then resume it.",
-      "unexplained": "Modal stopped this without saying why. One cause is a workspace that has hit its spend limit or run out of credit, when Modal won't start containers. Check Modal's Usage & Billing page, then try again."
+      "unexplained": "Modal stopped this without saying why. One cause is a workspace that has hit its spend limit or run out of credit, when Modal won't start containers. Check Modal's Usage & Billing page, then try again.",
+      "warp": "This download was to go through Cloudflare WARP, and WARP couldn't be used, so nothing was downloaded directly instead. Try again, or retry without WARP."
     },
     "modalSaid": "Modal said: {{message}}",
     "silent": "No word from the download's container for {{time}}. Modal may still be starting or moving it. If this goes on, the workspace may have hit its spend limit or run out of credit, and Modal won't start one.",

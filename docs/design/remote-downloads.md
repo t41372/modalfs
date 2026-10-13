@@ -304,3 +304,43 @@ What the open questions turned out to be:
   - Using the Modal SDK's Function and Sandbox APIs adds its own dependencies (CBOR, JWT, a pickle reader) to go.mod. It's the module modalfs already used for its protos.
 - **Deploying through a Sandbox** took 50 s the first time (building the Sandbox's image) and 6–10 s after that. Checking that the agent is current takes one API call.
 - **ffmpeg comes from Debian's package,** not a static build; yt-dlp only needs it to merge formats.
+
+## Cloudflare WARP (added 2026-10-12)
+
+A download can go through Cloudflare WARP: for sites that refuse cloud servers (YouTube above all), and so sites see Cloudflare's address, not Modal's. The user decided: build it for HTTP, FTP and yt-dlp; YouTube links use it unless the user says otherwise, everything else goes direct; no BitTorrent protection for now; and the grey area of using free WARP from a server through an unofficial client is accepted.
+
+### What the spike found
+
+- **The official client can't run in a Function:** its installer can't set file capabilities, and `warp-cli` times out talking to its daemon. The container has no `CAP_NET_ADMIN`, and netlink and nftables aren't there. Cloudflare's Zero Trust uses the same daemon.
+- **wireproxy and sing-box fail too:** gVisor rejects a socket option the standard WireGuard UDP socket sets ("Unable to update bind: operation not supported"), and sing-box wants netlink.
+- **What works:** wireguard-go over a plain UDP socket with gVisor's userspace TCP stack, with a bigger UDP buffer (8 MiB) and MTU 1280 (1200 moved nothing). That's `internal/downloads/remote/warp/`, about 400 lines. Registering an identity with wgcf takes about 4 s; UDP to Cloudflare's endpoint (port 2408) works from Modal.
+- **No proxy setting covers BitTorrent:** gopeed's engine proxies only HTTP trackers and web seeds, and aria2's peers, DHT and UDP trackers ignore its proxy. So with a proxy alone, a torrent would still show the container's address to its peers.
+- **`unshare -Urn` works as the downloader user:** a network namespace with only loopback, where nothing gets out but through a socket bridged in. That's what makes "nothing goes direct" true for any tool.
+
+### How it works
+
+- **Identity:** wgcf registers one WARP account per volume, kept in `.modalfs/warp/` (mode 700, root's alone), and the agent registers again only when the one it has stops connecting (at most once a run). A refusal for too many registrations fails the job with "try again later". wgcf stays a binary (pinned and checksummed) because Cloudflare's API checks the official app's TLS handshake, which wgcf imitates and keeps up with.
+- **Proxy:** `modalfs-warp` runs as root, started by the agent for a WARP job only. It brings the tunnel up, fetches Cloudflare's trace page through it to prove it works (`warp=on`, and the colo it leaves from), trying the profile's endpoint and then three other Cloudflare addresses and ports, about 20 s each (in one live run the profile's endpoint never answered); then it serves SOCKS5 and HTTP CONNECT on a unix socket that only the downloader's group may connect to. It's built from source in the image with a pinned Go, its modules checked against `go.sum`; nothing of the build stays in the image, and none of it is in modalfs's own binaries or `go.mod`.
+- **Isolation:** each downloader runs as `dl` under `unshare -Urn` (`NS_SCRIPT`): loopback up, socat bridging `127.0.0.1:1080` to the proxy's socket, and for gopeed and aria2 a second socat bringing their control API back out to the agent. gopeed uses SOCKS5, aria2 HTTP CONNECT (`--proxy-method=tunnel`), yt-dlp `socks5h://` with its native downloader (ffmpeg, which it hands some formats to, has no SOCKS; inside the namespace it couldn't reach anything anyway). Before every WARP run the agent runs a probe in a namespace like the downloader's: TCP, UDP and DNS out must all fail, or the run fails.
+- **Never a silent fallback:** if WARP can't be reached, or the namespace can't be made, the job fails with a message starting "Cloudflare WARP". The daemon marks it (`error_kind: warp`), and the app and CLI offer to retry without WARP; the user chooses. Torrents can't be added with WARP.
+- **What's recorded:** a `warp` event with the colo, the exit address and the probe's results, and `warp` in `status.json`, which the app shows as a WARP chip with the colo.
+
+### Measured on Modal (example-workspace)
+
+- **Deploy:** the image with the Go build took 1 min 30 s the first time; unchanged, it isn't deployed again.
+- **gopeed, 1,000 MB from datapacket:** finished with the right SHA-256 in 2 min 1 s and 2 min 27 s from the call's start, 7–8 MB/s overall (leaving from CDG, then SIN). Direct, aria2 took 14 s for it in the first spike.
+- **aria2, 100 MB from Linode:** 20–48 s from the call's start (IAD, BOM, AMS).
+- **The probe, every run:** TCP and UDP "Network is unreachable", DNS "Temporary failure in name resolution".
+- **A dead first endpoint** (a bogus address listed first): the proxy moved on to the next one and the download finished.
+- **WARP unreachable** (only a bogus endpoint): the job failed with a "Cloudflare WARP" message after about a minute (one try, a new identity, one more try), with nothing downloaded and nothing in the destination.
+- **YouTube** (Big Buck Bunny, 360p, about 25 MB), each run in a fresh container, all in one evening:
+  - **Through WARP:** 13 runs. In 10 YouTube let it through (the 6 that asked for an available format downloaded it in 26–35 s); in 2 it refused ("Sign in to confirm you're not a bot", one leaving from DUB); in 1 the tunnel didn't come up, before the proxy tried other endpoints, and the job failed without going direct.
+  - **Direct:** of the 5 tries whose message was kept, YouTube refused 3 and let 2 through; 3 more failed without the message being kept.
+  - So WARP helps a lot but isn't a guarantee, and direct isn't always refused either. The default stays: YouTube through WARP.
+
+### Limits
+
+- **Slower:** roughly 5–25 MB/s through WARP against 25–300 MB/s direct, and it varies by the colo a run leaves from (we saw IAD, EWR, LAX, CDG, AMS, DUB, BOM and SIN: the tunnel leaves near wherever Modal ran the container).
+- **BitTorrent isn't protected:** torrents can't use WARP and connect to their peers directly. Protecting them needs a client that proxies its peers, run in the namespace above, and UDP through the proxy; a separate project.
+- **YouTube may flag WARP's addresses too:** 2 of 12 runs that connected were refused. A cookies file still helps.
+- **Free WARP's terms** grant a personal licence for a device you own or control, and Cloudflare can block or limit use at its discretion; wgcf is unofficial. The user accepted this.

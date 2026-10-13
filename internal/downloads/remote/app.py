@@ -46,6 +46,15 @@ GOPEED_VERSION = "v2.0.0-beta.3"
 GOPEED_SHA256 = "230f703d8147df28b68c162c4398e12d8e57412d43584f7312fa3532c2bd3c8e"
 DENO_VERSION = "v2.9.7"
 DENO_SHA256 = "c6527f24f4b16031d3ae4fa9f658d5f11534c8d84ce7dc8502420280919c3490"
+# Cloudflare WARP (class Warp): wgcf registers an identity (it mimics the
+# official app's TLS handshake, which Cloudflare's API checks), and the
+# proxy in warp/ is built with this Go.
+WGCF_VERSION = "v2.3.0"
+WGCF_SHA256 = "01614e38c0eb5f3405232e71cfaf02d64d4809e4988ad8f5a8071af16d193405"
+GO_VERSION = "1.27.2"
+GO_SHA256 = "ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5"
+WARP_ERROR = "Cloudflare WARP"  # failures because of WARP start with it; modalfs offers to retry without
+PROXY_PORT = 1080  # the WARP proxy, as a downloader in its own network namespace sees it
 
 SCHEMA = 1
 STATUS_EVERY = 5.0  # seconds between status.json writes (each followed by sync)
@@ -175,6 +184,15 @@ class Sandbox:
         else:
             self.uid = self.gid = None
             self.home = os.environ.get("HOME", "/tmp")
+        self.netns = None  # a NetNS when the job goes through WARP
+
+    def wrap(self, argv, api_port=None):
+        """argv as it's started, and the port on the agent's side for a
+        server the tool listens on (api_port): the same, or forwarded into
+        the tool's network namespace."""
+        if self.netns is None:
+            return argv, api_port
+        return self.netns.wrap(argv, api_port)
 
     def env(self):
         env = {k: os.environ[k] for k in self.PASS_ENV if k in os.environ}
@@ -243,7 +261,11 @@ class Sandbox:
     def check(self):
         """Fails the run if the downloader user can reach Modal's API after
         all: better no download than one that silently runs with the keys to
-        the workspace (if Modal ever changes how containers authenticate)."""
+        the workspace (if Modal ever changes how containers authenticate).
+        With WARP, also that nothing the downloader sends can go anywhere but
+        the proxy (NetNS.check)."""
+        if self.netns is not None:
+            self.netns.check()
         if self.user is None or not os.path.exists("/run/modal.sock"):
             return
         probe = ("import socket\ns = socket.socket(socket.AF_UNIX)\n"
@@ -283,6 +305,199 @@ def start_process(argv, log_path, sandbox, cwd=None):
             stderr=subprocess.STDOUT,
             **sandbox.popen_args(),
         )
+
+
+# ---------------------------------------------------------------- WARP
+
+# Run by `unshare -Urn` as the downloader user: a network namespace of its
+# own with nothing but loopback, so whatever the downloader sends goes
+# through the WARP proxy or nowhere. Inside, 127.0.0.1:$port leads to the
+# proxy's unix socket; and, for a downloader with a control API (gopeed,
+# aria2), $ctl leads back to it from the agent's side.
+NS_SCRIPT = r'''
+sock=$1; port=$2; ctl=$3; api=$4; shift 4
+ip link set lo up || { echo "modalfs: no loopback in the downloader's network namespace" >&2; exit 97; }
+socat "TCP-LISTEN:$port,bind=127.0.0.1,fork,reuseaddr" "UNIX-CONNECT:$sock" 2>/dev/null &
+if [ -n "$ctl" ]; then socat "UNIX-LISTEN:$ctl,fork,unlink-early,mode=600" "TCP:127.0.0.1:$api" 2>/dev/null & fi
+sleep 0.5
+exec "$@"
+'''
+
+# What NetNS.check runs inside a namespace like the downloader's: every way
+# out must fail.
+LEAK_PROBE = r'''
+import json, socket
+out = {}
+def tcp():
+    socket.create_connection(("1.1.1.1", 443), timeout=4).close()
+    return "connected to 1.1.1.1:443"
+def udp():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(4)
+    s.sendto(b"\0" * 12, ("1.1.1.1", 53))
+    s.recvfrom(512)
+    return "an answer from 1.1.1.1:53"
+def dns():
+    return socket.getaddrinfo("www.cloudflare.com", 443)[0][4][0]
+for name, fn in (("tcp", tcp), ("udp", udp), ("dns", dns)):
+    try:
+        out[name] = "allowed: " + fn()
+    except Exception as e:
+        out[name] = f"blocked: {type(e).__name__}: {e}"
+print(json.dumps(out))
+'''
+
+
+class NetNS:
+    """Keeps a downloader to the WARP proxy: it runs in a network namespace
+    of its own (NS_SCRIPT), where the only way out is the proxy's socket.
+    Without iptables (gVisor has none) this is what makes "nothing goes
+    direct" true by construction rather than by each tool's proxy setting:
+    gopeed's BitTorrent engine, for one, ignores its proxy for peers."""
+
+    def __init__(self, proxy_sock, sandbox):
+        self.proxy_sock, self.sandbox = proxy_sock, sandbox
+        self.helpers = []
+        self.result = {}
+
+    def wrap(self, argv, api_port=None):
+        ctl, host_port = "", api_port
+        if api_port:
+            d = tempfile.mkdtemp(prefix="modalfs-ns-")
+            os.chmod(d, 0o700)
+            self.sandbox.own(d)
+            ctl = os.path.join(d, "api.sock")
+            host_port = free_port()
+            self.helpers.append(subprocess.Popen(
+                ["socat", f"TCP-LISTEN:{host_port},bind=127.0.0.1,fork,reuseaddr", f"UNIX-CONNECT:{ctl}"],
+                start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL))
+        return ["unshare", "-Urn", "--", "sh", "-c", NS_SCRIPT, "modalfs-ns", self.proxy_sock, str(PROXY_PORT),
+                ctl, str(api_port or ""), *argv], host_port
+
+    def check(self):
+        """Fails the run unless a namespace like the downloader's has no way
+        out: no TCP, no UDP, no DNS."""
+        why = f"{WARP_ERROR}: couldn't give the downloader a network of its own, so it can't be kept to WARP"
+        try:
+            r = subprocess.run(["unshare", "-Urn", "--", "sh", "-c", 'ip link set lo up && exec python3 -I -c "$0"',
+                                LEAK_PROBE], capture_output=True, text=True, timeout=60, cwd="/",
+                               **self.sandbox.popen_args())
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise Stop("failed", f"{why} ({e})")
+        try:
+            self.result = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            raise Stop("failed", f"{why} ({(r.stderr or r.stdout).strip()[-300:] or f'exit {r.returncode}'})")
+        leaks = {k: v for k, v in self.result.items() if not v.startswith("blocked")}
+        if leaks:
+            raise Stop("failed", f"{WARP_ERROR}: the downloader could still reach the internet directly "
+                                 f"({json.dumps(leaks)}); refusing to download")
+
+    def stop(self):
+        for p in self.helpers:
+            stop_process(p, signal.SIGTERM, 5)
+        self.helpers = []
+
+
+class Warp:
+    """Cloudflare WARP for one run: an identity (registered once per volume
+    with wgcf, kept in .modalfs/warp/, readable by root alone), and the
+    proxy in warp/, run as root so the downloader can't touch it, serving a
+    unix socket only the downloader's group may connect to.
+
+    Never a silent fallback: if WARP can't be reached, the run fails with a
+    message that starts with WARP_ERROR, and modalfs offers to retry without
+    it; the user decides."""
+
+    def __init__(self, root, job, env, log, sandbox):
+        self.dir = os.path.join(root, ".modalfs", "warp")
+        self.job, self.env, self.log, self.sandbox = job, env, log, sandbox
+        self.profile = os.path.join(self.dir, "wgcf-profile.conf")
+        self.sock_dir = tempfile.mkdtemp(prefix="modalfs-warp-")
+        os.chmod(self.sock_dir, 0o755)
+        self.sock = os.path.join(self.sock_dir, "proxy.sock")
+        self.proc = None
+
+    def env_vars(self):
+        env = {k: os.environ[k] for k in ("PATH", "SSL_CERT_FILE", "SSL_CERT_DIR") if k in os.environ}
+        env.setdefault("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        env.update(HOME=self.dir, LANG="C.UTF-8")
+        return env
+
+    def start(self):
+        """Connects, registering an identity first if there's none (or the
+        one there stopped working). Returns what Cloudflare's trace page
+        says through the tunnel: warp, colo, ip."""
+        os.makedirs(self.dir, exist_ok=True)
+        os.chmod(self.dir, 0o700)
+        fresh = False
+        if not os.path.exists(self.profile):
+            self.register()
+            fresh = True
+        info, err = self.launch()
+        if info is None and not fresh:
+            # an identity Cloudflare no longer takes: a new one, once a run
+            self.register()
+            info, err = self.launch()
+        if info is None:
+            raise Stop("failed", f"{WARP_ERROR}: couldn't connect ({err})")
+        return info
+
+    def register(self):
+        wgcf = self.env.binary("wgcf")
+        for name in ("wgcf-account.toml", "wgcf-profile.conf"):
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(os.path.join(self.dir, name))
+        for args in (["register", "--accept-tos"], ["generate"]):
+            try:
+                r = subprocess.run([wgcf, *args], cwd=self.dir, env=self.env_vars(), capture_output=True, text=True,
+                                   timeout=90)
+            except (OSError, subprocess.TimeoutExpired) as e:
+                raise Stop("failed", f"{WARP_ERROR}: couldn't register with Cloudflare ({e})")
+            out = (r.stdout + r.stderr).strip()
+            if r.returncode != 0:
+                if "429" in out or "too many" in out.lower():
+                    raise Stop("failed", f"{WARP_ERROR}: Cloudflare refused a new registration for now (too many "
+                                         "from this network); try again later, or retry without WARP")
+                raise Stop("failed", f"{WARP_ERROR}: couldn't register with Cloudflare: {out[-300:]}")
+        for name in os.listdir(self.dir):
+            os.chmod(os.path.join(self.dir, name), 0o600)
+        self.env.sync()
+
+    def launch(self):
+        argv = [self.env.binary("warp"), "-profile", self.profile, "-listen", self.sock,
+                "-group", str(self.sandbox.gid if self.sandbox.user is not None else -1)]
+        if self.job.get("warp_endpoint"):  # tests: a WARP that can't be reached
+            argv += ["-endpoint", self.job["warp_endpoint"]]
+        self.stop()
+        try:
+            with open(self.log, "ab") as log:
+                self.proc = subprocess.Popen(argv, cwd=self.dir, env=self.env_vars(), start_new_session=True,
+                                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=log)
+        except OSError as e:
+            return None, str(e)
+        line = []
+        reader = threading.Thread(target=lambda: line.append(self.proc.stdout.readline()), daemon=True)
+        reader.start()
+        reader.join(150)  # it tries a few endpoints, about 20 s each
+        try:
+            ready = json.loads(line[0]) if line and line[0] else {}
+        except ValueError:
+            ready = {}
+        if ready.get("ready"):
+            return {k: v for k, v in ready.items() if k in ("warp", "colo", "ip", "loc", "endpoint")}, None
+        self.stop()
+        return None, ready.get("error") or "the proxy didn't start: " + " | ".join(tail(self.log, 3))
+
+    def stop(self):
+        stop_process(self.proc, signal.SIGTERM, 5)
+        self.proc = None
+
+
+def is_bittorrent(url):
+    u = url.lower().split("?")[0]
+    return u.startswith("magnet:") or u.endswith(".torrent")
 
 
 # ---------------------------------------------------------------- tools
@@ -358,11 +573,12 @@ class Gopeed(Tool):
     def start(self):
         self.token = secrets.token_hex(16)
         port = free_port()
-        self.base = f"http://127.0.0.1:{port}"
         # The web build insists on a username and password whenever an API
         # token is set; nothing but the agent can reach it anyway.
         argv = [self.binary, "-A", "127.0.0.1", "-P", str(port), "-T", self.token,
                 "-u", "modalfs", "-p", secrets.token_hex(16), "-d", self.data]
+        argv, port = self.sandbox.wrap(argv, port)
+        self.base = f"http://127.0.0.1:{port}"
         self.sandbox.own(self.work, self.data)
         self.proc = start_process(argv, self.log, self.sandbox, cwd=self.data)
         if not wait_until(self.alive, 30):
@@ -371,6 +587,9 @@ class Gopeed(Tool):
         bt = cfg.setdefault("protocolConfig", {}).setdefault("bt", {})
         bt.update(seedKeep=False, seedRatio=0, seedTime=0)
         cfg["autoStartTasks"] = False
+        if self.sandbox.netns is not None:
+            cfg["proxy"] = {"enable": True, "system": False, "scheme": "socks5", "host": f"127.0.0.1:{PROXY_PORT}",
+                            "usr": "", "pwd": ""}
         self.api("PUT", "/api/v1/config", cfg)
 
         self.id = ""
@@ -457,12 +676,13 @@ class Aria2(Tool):
         self.proc = None
 
     def rpc(self, method, *params):
-        r = http_json("POST", f"http://127.0.0.1:{self.port}/jsonrpc",
+        r = http_json("POST", f"http://127.0.0.1:{self.api_port}/jsonrpc",
                       {"jsonrpc": "2.0", "id": "m", "method": method, "params": [f"token:{self.secret}", *params]})
         return r["result"]
 
     def start(self):
         self.port, self.secret = free_port(), secrets.token_hex(16)
+        self.api_port = self.port
         argv = [self.binary, "--enable-rpc", f"--rpc-listen-port={self.port}", "--rpc-listen-all=false",
                 f"--rpc-secret={self.secret}", f"--dir={self.work}", "--continue=true",
                 "--max-connection-per-server=16", "--split=16", "--min-split-size=4M",
@@ -471,6 +691,10 @@ class Aria2(Tool):
                 "--bt-save-metadata=true", "--console-log-level=warn", "--summary-interval=0"]
         if self.job.get("limit"):
             argv.append(f"--max-overall-download-limit={self.job['limit']}")
+        if self.sandbox.netns is not None:
+            # aria2 speaks only HTTP proxies; CONNECT for plain HTTP too
+            argv += [f"--all-proxy=http://127.0.0.1:{PROXY_PORT}", "--proxy-method=tunnel"]
+        argv, self.api_port = self.sandbox.wrap(argv, self.port)
         self.sandbox.own(self.work)
         self.proc = start_process(argv, self.log, self.sandbox)
         if not wait_until(self.alive, 30):
@@ -548,6 +772,8 @@ class YtDlp(Tool):
         argv = [self.binary, self.job["url"], "-P", self.work, "--newline", "--continue", "--no-overwrites",
                 "--no-color", "--progress-template", f"download:{self.MARK}%(progress)j",
                 "-o", "%(title).150B [%(id)s].%(ext)s"]
+        if self.job.get("format"):  # the live test asks for a small one
+            argv += ["-f", self.job["format"]]
         if self.job.get("cookies"):
             # never on the volume; readable by the downloader user alone, and
             # gone when this run of yt-dlp ends (stop() and pause())
@@ -557,6 +783,12 @@ class YtDlp(Tool):
             os.chmod(path, 0o600)
             self.sandbox.own(path)
             argv += ["--cookies", path]
+        if self.sandbox.netns is not None:
+            # socks5h: names are looked up through the tunnel (there's no DNS
+            # in the namespace); native downloads, because ffmpeg, which
+            # yt-dlp otherwise hands some formats to, has no SOCKS support
+            argv += ["--proxy", f"socks5h://127.0.0.1:{PROXY_PORT}", "--downloader", "native"]
+        argv, _ = self.sandbox.wrap(argv)
         self.sandbox.own(self.work)
         self.proc = subprocess.Popen(argv, cwd=self.sandbox.home, start_new_session=True, stdin=subprocess.DEVNULL,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -867,8 +1099,9 @@ class LocalEnv:
         pass
 
     def binary(self, tool):
-        env = {"gopeed": "GOPEED_BIN", "aria2": "ARIA2C_BIN", "yt-dlp": "YTDLP_BIN"}[tool]
-        return os.environ.get(env) or {"aria2": "aria2c"}.get(tool, tool)
+        env = {"gopeed": "GOPEED_BIN", "aria2": "ARIA2C_BIN", "yt-dlp": "YTDLP_BIN", "warp": "MODALFS_WARP_BIN",
+               "wgcf": "WGCF_BIN"}[tool]
+        return os.environ.get(env) or {"aria2": "aria2c", "warp": "modalfs-warp"}.get(tool, tool)
 
     def task_id(self):
         return f"local-{os.getpid()}"
@@ -955,7 +1188,12 @@ class Agent:
         stall_limit = float(job.get("stall_limit", 600))
         kick_after = float(job.get("kick_after", KICK_AFTER))
         try:
+            if job.get("warp"):
+                self.connect_warp()
             self.sandbox.check()
+            if self.sandbox.netns is not None:
+                rec.event("warp", leak_check=self.sandbox.netns.result, **self.warp_info)
+                rec.update(warp=self.warp_info, note="")
             tool.start()
             rec.update(state="running", tool=name)
             self.sampler = threading.Thread(target=self.sample_loop, daemon=True)
@@ -1021,6 +1259,25 @@ class Agent:
             self.end(tool, "failed", f"{type(e).__name__}: {e}")
             raise
 
+    def connect_warp(self):
+        """Starts WARP and puts the downloaders in a namespace where it's
+        their only way out (NetNS); Sandbox.check then proves it."""
+        if is_bittorrent(self.job["url"]):
+            raise Stop("failed", f"{WARP_ERROR} can't carry BitTorrent: its peers would be reached directly. "
+                                 "Add the link again without WARP.")
+        self.record.update(state="starting", note="connecting to Cloudflare WARP")
+        self.warp = Warp(self.root, self.job, self.env, self.log, self.sandbox)
+        self.warp_info = self.warp.start()
+        self.sandbox.netns = NetNS(self.warp.sock, self.sandbox)
+
+    def stop_warp(self):
+        if self.sandbox.netns is not None:
+            self.sandbox.netns.stop()
+        warp = getattr(self, "warp", None)
+        if warp is not None:
+            warp.stop()
+            shutil.rmtree(warp.sock_dir, ignore_errors=True)
+
     def sample_loop(self):
         """Samples the downloader 4 times a second for the record and the
         live view, apart from the loop that acts on what it sees: continuing
@@ -1075,6 +1332,7 @@ class Agent:
             with contextlib.suppress(Exception):
                 tool.stop()
         self.sandbox.kill_all()
+        self.stop_warp()
         if state in ("failed", "stalled"):
             fields["log_tail"] = [line for path in self.logs() for line in tail(path, 25, self.opener(path))]
         if state == "failed":
@@ -1292,9 +1550,11 @@ except ImportError:  # the local tests and `python3 app.py run` don't need it
     modal = None
 
 if modal is not None:
+    WARP_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "warp")  # modalfs deploys it next to app.py
     image = (
         modal.Image.debian_slim(python_version="3.12")
-        .apt_install("aria2", "ffmpeg", "curl", "unzip", "ca-certificates")
+        # socat, iproute2 and util-linux's unshare: the downloader's own network (NetNS)
+        .apt_install("aria2", "ffmpeg", "curl", "unzip", "ca-certificates", "socat", "iproute2", "util-linux")
         .run_commands(
             # the user the downloaders run as (Sandbox)
             f"useradd --system --create-home --home-dir /home/{DOWNLOADER_USER} --shell /usr/sbin/nologin {DOWNLOADER_USER}",
@@ -1304,6 +1564,23 @@ if modal is not None:
             f"curl -fsSL -o /tmp/d.zip https://github.com/denoland/deno/releases/download/{DENO_VERSION}/deno-x86_64-unknown-linux-gnu.zip",
             f"echo '{DENO_SHA256}  /tmp/d.zip' | sha256sum -c -",
             "cd /tmp && unzip -q d.zip && mv deno /usr/local/bin/deno && rm /tmp/d.zip",
+            f"curl -fsSL -o /usr/local/bin/wgcf https://github.com/ViRb3/wgcf/releases/download/{WGCF_VERSION}/wgcf_{WGCF_VERSION[1:]}_linux_amd64",
+            f"echo '{WGCF_SHA256}  /usr/local/bin/wgcf' | sha256sum -c - && chmod 755 /usr/local/bin/wgcf",
+        )
+    )
+    if modal.is_local():  # the source is only there when deploying
+        image = image.add_local_dir(WARP_SRC, "/opt/modalfs-warp", copy=True)
+    image = (
+        image.run_commands(
+            # The WARP proxy, built from source with a pinned Go; its
+            # dependencies are checked against go.sum. Nothing of the build
+            # stays in the image.
+            f"curl -fsSL -o /tmp/go.tgz https://go.dev/dl/go{GO_VERSION}.linux-amd64.tar.gz",
+            f"echo '{GO_SHA256}  /tmp/go.tgz' | sha256sum -c -",
+            "tar -C /tmp -xzf /tmp/go.tgz && rm /tmp/go.tgz",
+            "cd /opt/modalfs-warp && GOTOOLCHAIN=local GOFLAGS=-mod=readonly CGO_ENABLED=0 GOPATH=/tmp/gopath "
+            "GOCACHE=/tmp/gocache /tmp/go/bin/go build -tags modalfs_warp -trimpath -ldflags='-s -w' "
+            "-o /usr/local/bin/modalfs-warp . && rm -rf /tmp/go /tmp/gopath /tmp/gocache /opt/modalfs-warp",
         )
         .env({"MODALFS_APP_NAME": APP_NAME})  # so the agent knows its app when it runs
     )
@@ -1326,7 +1603,7 @@ if modal is not None:
             subprocess.run(["sync", "/vol"], check=False)
 
         def binary(self, tool):
-            return {"aria2": "aria2c"}.get(tool, tool)
+            return {"aria2": "aria2c", "warp": "modalfs-warp"}.get(tool, tool)
 
         def sandbox(self):
             return Sandbox(pwd.getpwnam(DOWNLOADER_USER))

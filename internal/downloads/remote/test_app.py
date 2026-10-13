@@ -533,5 +533,223 @@ class DownloaderUserTest(AgentTest):
             self.assertEqual(sorted(os.listdir(os.path.join(self.root, "Downloads"))), ["file.bin"])
 
 
+# ---------------------------------------------------------------- WARP
+
+# Stand-ins for wgcf and the WARP proxy (warp/main.go), with the same
+# command lines. The proxy answers SOCKS5 and HTTP CONNECT on its unix
+# socket and looks "origin.test" up as 127.0.0.1 on the agent's side, which
+# a downloader in its own network namespace can't reach any other way: a
+# download that finishes went through the proxy.
+FAKE_WGCF = """#!/bin/sh
+case "$1" in
+register) [ -f "$(dirname "$0")/fail" ] && { cat "$(dirname "$0")/fail"; exit 1; }; echo 'access_token = "t"' > wgcf-account.toml ;;
+generate) printf '[Interface]\\nPrivateKey = x\\n' > wgcf-profile.conf ;;
+esac
+"""
+
+FAKE_PROXY = r'''#!/usr/bin/env python3
+import json, os, socket, struct, sys, threading
+args = dict(zip(sys.argv[1::2], sys.argv[2::2]))
+if "-endpoint" in args:
+    print(json.dumps({"ready": False, "error": "no handshake with " + args["-endpoint"]}), flush=True)
+    sys.exit(1)
+path, gid = args["-listen"], int(args.get("-group", "-1"))
+if os.path.exists(path):
+    os.remove(path)
+ln = socket.socket(socket.AF_UNIX)
+ln.bind(path)
+if gid >= 0:
+    os.chown(path, -1, gid)
+os.chmod(path, 0o660 if gid >= 0 else 0o600)
+ln.listen(64)
+log = os.path.join(os.path.dirname(os.path.abspath(__file__)), "targets")
+def note(target):
+    with open(log, "a") as f:
+        f.write(target + "\n")
+def resolve(host):
+    return "127.0.0.1" if host == "origin.test" else host
+def pipe(a, b):
+    def one(x, y):
+        try:
+            while True:
+                d = x.recv(65536)
+                if not d:
+                    break
+                y.sendall(d)
+        except OSError:
+            pass
+        try:
+            y.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+    t = threading.Thread(target=one, args=(b, a), daemon=True)
+    t.start()
+    one(a, b)
+    t.join()
+    a.close(); b.close()
+def recvn(c, n):
+    b = b""
+    while len(b) < n:
+        d = c.recv(n - len(b))
+        if not d:
+            raise EOFError
+        b += d
+    return b
+def handle(c):
+    try:
+        first = recvn(c, 1)
+        if first == b"\x05":
+            n = recvn(c, 1)[0]
+            recvn(c, n)
+            c.sendall(b"\x05\x00")
+            ver, cmd, _, atyp = recvn(c, 4)
+            if atyp == 1:
+                host = socket.inet_ntoa(recvn(c, 4))
+            elif atyp == 3:
+                host = recvn(c, recvn(c, 1)[0]).decode()
+            else:
+                host = socket.inet_ntop(socket.AF_INET6, recvn(c, 16))
+            port = struct.unpack("!H", recvn(c, 2))[0]
+            note(f"socks {host}:{port}")
+            up = socket.create_connection((resolve(host), port))
+            c.sendall(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
+            pipe(c, up)
+        else:
+            head = first
+            while b"\r\n\r\n" not in head:
+                head += recvn(c, 1)
+            line = head.split(b"\r\n")[0].decode()
+            method, target = line.split()[:2]
+            host, port = target.rsplit(":", 1)
+            note(f"connect {target}")
+            up = socket.create_connection((resolve(host), int(port)))
+            c.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            pipe(c, up)
+    except Exception:
+        c.close()
+print(json.dumps({"ready": True, "warp": "on", "colo": "TST", "ip": "192.0.2.9"}), flush=True)
+while True:
+    c, _ = ln.accept()
+    threading.Thread(target=handle, args=(c,), daemon=True).start()
+'''
+
+
+class WarpTest(AgentTest):
+    def setUp(self):
+        super().setUp()
+        bin_dir = tempfile.mkdtemp(prefix="mfs-warpbin-")
+        os.chmod(bin_dir, 0o755)
+        self.addCleanup(shutil.rmtree, bin_dir, True)
+        for name, text in (("wgcf", FAKE_WGCF), ("modalfs-warp", FAKE_PROXY)):
+            with open(os.path.join(bin_dir, name), "w") as f:
+                f.write(text)
+            os.chmod(os.path.join(bin_dir, name), 0o755)
+        self.bin_dir = bin_dir
+        self.proxy_log = os.path.join(bin_dir, "targets")  # what the proxy connected to
+        os.environ.update(WGCF_BIN=os.path.join(bin_dir, "wgcf"), MODALFS_WARP_BIN=os.path.join(bin_dir, "modalfs-warp"))
+        for k in ("WGCF_BIN", "MODALFS_WARP_BIN"):
+            self.addCleanup(os.environ.pop, k, None)
+
+    def failed(self, job):
+        summary = self.finish(self.start(job))
+        self.assertEqual(summary["state"], "failed")
+        self.assertTrue(summary["error"].startswith(app.WARP_ERROR), summary["error"])
+        return summary
+
+    def test_no_warp_means_no_download(self):
+        # WARP can't be reached: the job fails saying so, and nothing is
+        # downloaded directly instead.
+        origin = Origin(4 * MiB)
+        self.addCleanup(origin.close)
+        summary = self.failed(self.job(origin, tool="aria2", warp=True, warp_endpoint="192.0.2.1:2408"))
+        self.assertIn("couldn't connect", summary["error"])
+        self.assertEqual(origin.served, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "Downloads")))
+
+    def test_identity_is_registered_once_and_kept_private(self):
+        origin = Origin(1 * MiB)
+        self.addCleanup(origin.close)
+        self.finish(self.start(self.job(origin, tool="aria2", warp=True, warp_endpoint="192.0.2.1:2408")))
+        warp = os.path.join(self.root, ".modalfs", "warp")
+        self.assertEqual(sorted(os.listdir(warp)), ["wgcf-account.toml", "wgcf-profile.conf"])
+        self.assertEqual(os.stat(warp).st_mode & 0o777, 0o700)
+        for name in os.listdir(warp):
+            self.assertEqual(os.stat(os.path.join(warp, name)).st_mode & 0o777, 0o600)
+
+    def test_registration_refused(self):
+        with open(os.path.join(self.bin_dir, "fail"), "w") as f:
+            f.write("429 Too Many Requests")
+        origin = Origin(1 * MiB)
+        self.addCleanup(origin.close)
+        summary = self.failed(self.job(origin, tool="aria2", warp=True))
+        self.assertIn("try again later", summary["error"])
+        self.assertEqual(origin.served, 0)
+
+    def test_bittorrent_is_refused(self):
+        origin = Origin(1 * MiB)
+        self.addCleanup(origin.close)
+        job = self.job(origin, tool="aria2", warp=True, url="magnet:?xt=urn:btih:" + "0" * 40)
+        summary = self.failed(job)
+        self.assertIn("BitTorrent", summary["error"])
+
+    @unittest.skipIf(AS_ROOT, "on Linux as root the downloader does get a namespace")
+    def test_without_a_namespace_nothing_runs(self):
+        # Where the downloader can't be given a network of its own (macOS,
+        # no unshare), a WARP job fails rather than run with a proxy setting
+        # alone.
+        origin = Origin(1 * MiB)
+        self.addCleanup(origin.close)
+        summary = self.failed(self.job(origin, tool="aria2", warp=True))
+        self.assertIn("network of its own", summary["error"])
+        self.assertEqual(origin.served, 0)
+
+
+@unittest.skipUnless(AS_ROOT and shutil.which("unshare") and shutil.which("socat") and shutil.which("ip"),
+                     "needs root on Linux, MODALFS_DOWNLOADER_USER, unshare, socat and ip")
+class WarpNamespaceTest(WarpTest):
+    """The downloader in its own network namespace, the proxy as its way out."""
+
+    def job(self, origin, **kw):
+        kw.setdefault("warp", True)
+        job = super().job(origin, **kw)
+        job["url"] = job["url"].replace("127.0.0.1", "origin.test")
+        return job
+
+    def targets(self):
+        with open(self.proxy_log) as f:
+            return f.read().split()
+
+    def check_through_proxy(self, origin, how):
+        summary = self.finish(self.start(self.job(origin, tool=self.tool)))
+        self.assertEqual(summary["state"], "done", summary)
+        self.check_file(origin)
+        self.assertIn(how, self.targets())
+        ev = [e for e in self.events() if e["ev"] == "warp"]
+        self.assertEqual(len(ev), 1)
+        self.assertEqual(ev[0]["colo"], "TST")
+        for way, result in ev[0]["leak_check"].items():
+            self.assertTrue(result.startswith("blocked"), f"{way}: {result}")
+        self.assertEqual(self.status().get("warp", {}).get("colo"), "TST")
+
+    @unittest.skipUnless(ARIA2, "aria2c isn't installed")
+    def test_aria2_through_the_proxy_only(self):
+        self.tool = "aria2"
+        origin = Origin(8 * MiB)
+        self.addCleanup(origin.close)
+        self.check_through_proxy(origin, "connect")
+
+    @unittest.skipUnless(GOPEED, "gopeed isn't installed (just agent-tools)")
+    def test_gopeed_through_the_proxy_only(self):
+        self.tool = "gopeed"
+        origin = Origin(8 * MiB)
+        self.addCleanup(origin.close)
+        self.check_through_proxy(origin, "socks")
+
+    @unittest.skipUnless(GOPEED, "gopeed isn't installed (just agent-tools)")
+    def test_gopeed_pause_and_resume_in_its_namespace(self):
+        # the agent reaches gopeed's API inside the namespace (NetNS.wrap)
+        self.pause_and_resume("gopeed", rate=8 * MiB)
+
+
 if __name__ == "__main__":
     unittest.main()

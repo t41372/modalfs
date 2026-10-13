@@ -38,7 +38,16 @@ type Status struct {
 	LogTail []string `json:"log_tail,omitempty"`
 	SyncAvg float64  `json:"sync_avg,omitempty"` // seconds a `sync` of the volume took
 	SyncMax float64  `json:"sync_max,omitempty"`
-	T       float64  `json:"t"` // when it was written (unix seconds)
+	// WARP is where the download leaves Cloudflare's network, when it goes
+	// through WARP: the data center (colo) and the address sites see.
+	WARP *WARPExit `json:"warp,omitempty"`
+	T    float64   `json:"t"` // when it was written (unix seconds)
+}
+
+type WARPExit struct {
+	Colo string `json:"colo,omitempty"`
+	IP   string `json:"ip,omitempty"`
+	Loc  string `json:"loc,omitempty"`
 }
 
 type File struct {

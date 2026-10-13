@@ -59,6 +59,9 @@ type Job struct {
 	// StallLimit stops a download that has received nothing for this many
 	// seconds (the agent's default when zero).
 	StallLimit int `json:"stall_limit,omitempty"`
+	// WARP sends the download through Cloudflare WARP (app.py, class Warp):
+	// the downloader can reach nothing else.
+	WARP bool `json:"warp,omitempty"`
 
 	// What the daemon knows of it: preparing, running, pausing,
 	// cancelling, or how it ended (see Ended).
@@ -150,15 +153,8 @@ func NewJob(accountID, env, volumeID, volumeName, folder, url, tool, size string
 // DefaultTool picks the downloader for a link: yt-dlp for video sites,
 // gopeed for everything else.
 func DefaultTool(url string) string {
-	host := strings.ToLower(url)
-	if i := strings.Index(host, "://"); i >= 0 {
-		host = host[i+3:]
-	}
-	host, _, _ = strings.Cut(host, "/")
-	for _, site := range videoSites {
-		if host == site || strings.HasSuffix(host, "."+site) {
-			return "yt-dlp"
-		}
+	if hostIs(url, videoSites...) {
+		return "yt-dlp"
 	}
 	return "gopeed"
 }
@@ -169,6 +165,39 @@ var videoSites = []string{
 	"youtube.com", "youtu.be", "bilibili.com", "b23.tv", "vimeo.com", "twitter.com", "x.com",
 	"tiktok.com", "instagram.com", "twitch.tv", "dailymotion.com", "nicovideo.jp", "reddit.com",
 	"soundcloud.com", "facebook.com", "douyin.com", "youku.com", "iqiyi.com", "v.qq.com",
+}
+
+// IsBitTorrent reports whether a link is a torrent, which WARP can't carry.
+func IsBitTorrent(link string) bool {
+	l := strings.ToLower(link)
+	l, _, _ = strings.Cut(l, "?")
+	return strings.HasPrefix(l, "magnet:") || strings.HasSuffix(l, ".torrent")
+}
+
+// DefaultWARP is whether a link goes through Cloudflare WARP unless asked
+// otherwise: YouTube, which often refuses cloud servers (through WARP, 10
+// of 12 live runs got past its bot check; direct, 2 of 5). Other links go
+// direct: WARP is slower, and nothing showed the other video sites need it.
+func DefaultWARP(link string) bool {
+	return !IsBitTorrent(link) && hostIs(link, "youtube.com", "youtu.be", "youtube-nocookie.com")
+}
+
+func hostIs(link string, sites ...string) bool {
+	host := strings.ToLower(link)
+	if i := strings.Index(host, "://"); i >= 0 {
+		host = host[i+3:]
+	}
+	host, _, _ = strings.Cut(host, "/")
+	if i := strings.LastIndex(host, "@"); i >= 0 {
+		host = host[i+1:]
+	}
+	host, _, _ = strings.Cut(host, ":")
+	for _, site := range sites {
+		if host == site || strings.HasSuffix(host, "."+site) {
+			return true
+		}
+	}
+	return false
 }
 
 // Dir is where the job's records live on the volume.
@@ -187,6 +216,9 @@ func (j Job) args(app string, timeout time.Duration) map[string]any {
 	}
 	if j.StallLimit > 0 {
 		a["stall_limit"] = j.StallLimit
+	}
+	if j.WARP {
+		a["warp"] = true
 	}
 	return a
 }

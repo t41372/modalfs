@@ -245,7 +245,8 @@
     },
     "whyShort": {
       "billing": "Modal：額度用完或超過支出上限",
-      "unexplained": "Modal 沒有啟動它；請檢查支出上限"
+      "unexplained": "Modal 沒有啟動它；請檢查支出上限",
+      "warp": "無法使用 Cloudflare WARP"
     },
     "gone": "連結已失效（HTTP 4xx）",
     "goneLong": "伺服器說這個檔案不存在。再試也不會成功，請檢查連結。",
@@ -297,14 +298,30 @@
     "noVolumes": "先掛載一次 Volume，就能在這裡選它。",
     "willSave": "會存到",
     "neverOverwrites": "不會覆蓋已有的檔案",
-    "advanced": "下載工具和容器",
+    "advanced": "下載工具、網路和容器",
     "start": "開始下載",
     "startN_other": "開始 {{count}} 個下載",
     "added_other": "已開始 {{count}} 個下載",
     "costLine_other": "每個約 ${{price}}/小時",
     "costHint2": "按秒從 {{workspace}} 的 Modal 帳號計費。下載完成或暫停就停止計費。",
     "folder": "資料夾",
-    "saveHere": "存在這裡"
+    "saveHere": "存在這裡",
+    "network": "網路",
+    "direct": "直連",
+    "netHint": {
+      "auto": "YouTube 經由 Cloudflare WARP（YouTube 常拒絕雲端伺服器），其他連結直連。",
+      "warp": "經由 Cloudflare WARP，適合會封鎖雲端伺服器的網站。速度較慢。連不上 WARP 時下載會停下，絕不改成直連。",
+      "direct": "直接從 Modal 的網路下載，最快。"
+    },
+    "warpAuto_other": "{{count}} 個連結會經由 Cloudflare WARP（YouTube 常拒絕雲端伺服器），速度較慢。",
+    "warpAll_other": "{{count}} 個連結會經由 Cloudflare WARP，速度較慢。",
+    "torrentDirect_other": "{{count}} 個種子會直接連線到其他使用者，對方看得到容器的 IP。",
+    "noWarpTorrent": "種子無法經由 Cloudflare WARP：BitTorrent 會直接連線到其他使用者。請改選「自動」或「直連」。",
+    "warpHint": "經由 Cloudflare WARP：網站看到的是 Cloudflare 的 IP，不是 Modal 的。比直連慢。",
+    "warpColo": "從 Cloudflare {{colo}} 出去",
+    "torrentPeers": "BitTorrent 會直接連線到其他使用者，對方看得到容器的 IP",
+    "withoutWarp": "不經 WARP 重試",
+    "withoutWarpHint": "直接從 Modal 的網路下載。YouTube 這類封鎖雲端伺服器的網站可能會拒絕。"
   },
   "downloads": {
     "auto": "自動",
@@ -364,7 +381,8 @@
       "stallStop": "{{time}}沒有資料，所以停止下載，免得容器空轉計費。",
       "failed": "失敗：{{message}}",
       "finishedOne": "完成，存為 {{path}}。",
-      "finished_other": "完成：存了 {{count}} 個檔案。"
+      "finished_other": "完成：存了 {{count}} 個檔案。",
+      "warp": "已經由 Cloudflare WARP 連線，從 {{colo}} 出去"
     },
     "insteadOf": "（原本選的是 {{tool}}）",
     "perHour": "每小時約 ${{price}}",
@@ -372,7 +390,8 @@
     "logEmpty": "日誌是空的。",
     "why": {
       "billing": "Modal 表示這個工作區的額度已用完，或已達支出上限，所以不執行這個下載。請到 Modal 的 Usage & Billing 頁面提高上限或加值，再繼續下載。",
-      "unexplained": "Modal 停止了這個下載，但沒有說明原因。其中一種可能是工作區已達支出上限或額度用完，這時 Modal 不會啟動容器。請到 Modal 的 Usage & Billing 頁面確認，再重試。"
+      "unexplained": "Modal 停止了這個下載，但沒有說明原因。其中一種可能是工作區已達支出上限或額度用完，這時 Modal 不會啟動容器。請到 Modal 的 Usage & Billing 頁面確認，再重試。",
+      "warp": "這個下載設定要經由 Cloudflare WARP，但 WARP 無法使用，所以沒有改成直接下載。可以再試一次，或不經 WARP 重試。"
     },
     "modalSaid": "Modal 的訊息：{{message}}",
     "silent": "已經 {{time}} 沒收到下載容器的消息。Modal 可能還在啟動或搬移它。如果一直這樣，可能是工作區已達支出上限或額度用完，Modal 不會再啟動容器。",

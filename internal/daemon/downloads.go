@@ -164,6 +164,9 @@ func (m *dlManager) job(id string) (downloads.Job, error) {
 type addRequest struct {
 	Account, Environment, Volume, Folder, Tool, Size, Cookies string
 	URLs                                                      []string
+	// WARP: through Cloudflare WARP or not; downloads.DefaultWARP decides
+	// per link when it's missing.
+	WARP *bool `json:"warp"`
 }
 
 // Add makes a job for each link and starts it. It returns once the jobs are
@@ -200,6 +203,13 @@ func (m *dlManager) Add(ctx context.Context, in addRequest) ([]downloads.Job, er
 		}
 		j.Cookies = in.Cookies
 		j.StallLimit = s.DownloadStallMinutes * 60
+		j.WARP = downloads.DefaultWARP(j.URL)
+		if in.WARP != nil {
+			j.WARP = *in.WARP
+		}
+		if j.WARP && downloads.IsBitTorrent(j.URL) {
+			return nil, errNoWARPForTorrents(j.URL)
+		}
 		j.State = downloads.StatePreparing
 		jobs = append(jobs, j)
 	}
@@ -390,11 +400,17 @@ func (m *dlManager) ended(ctx context.Context, r downloads.Runner, j downloads.J
 	case callErr != nil && st != nil && !st.Running() && st.State != "interrupted":
 		// The call's result is lost, but the agent recorded how it ended.
 		state, msg = st.State, st.Error
+		if strings.HasPrefix(msg, downloads.WARPError) {
+			kind = downloads.WhyWARP
+		}
 	case callErr == nil:
 		state, _ = sum["state"].(string)
 		msg, _ = sum["error"].(string)
 		if state == "" {
 			state, msg = "failed", "the download Function returned no state"
+		}
+		if strings.HasPrefix(msg, downloads.WARPError) {
+			kind = downloads.WhyWARP
 		}
 	case j.Stopping != "":
 		// We cancelled it: the agent couldn't be asked to pause.
@@ -615,9 +631,15 @@ func (m *dlManager) stopCall(id string) {
 	m.d.emitC("info", "dl_stopped_hard", "", j.VolumeName, "the container of "+name+" didn't answer, so it was stopped at once; resuming continues from its last saved state", name)
 }
 
+func errNoWARPForTorrents(link string) error {
+	return fmt.Errorf("%s is a torrent: Cloudflare WARP can't carry BitTorrent (its peers are reached directly), so add it without WARP", downloads.StripCredentials(link))
+}
+
 // Resume starts a new call for a paused, stalled or failed download. The
-// downloader continues from its state on the volume.
-func (m *dlManager) Resume(ctx context.Context, id string) error {
+// downloader continues from its state on the volume. warp, when given,
+// turns Cloudflare WARP on or off for this and later runs (retrying
+// without WARP after it couldn't be reached is the user's call).
+func (m *dlManager) Resume(ctx context.Context, id string, warp *bool) error {
 	if !m.d.store.Snapshot().Settings.RemoteDownloads {
 		return errors.New("remote downloads are off; turn them on in Settings (or `modalfs download enable`) first")
 	}
@@ -643,7 +665,15 @@ func (m *dlManager) Resume(ctx context.Context, id string) error {
 			return fmt.Errorf("download %s's last run is still ending; try again in a moment", id)
 		}
 	}
-	if _, err := m.store.Update(id, func(j *downloads.Job) { j.State, j.Error, j.ErrorKind = downloads.StatePreparing, "", "" }); err != nil {
+	if warp != nil && *warp && downloads.IsBitTorrent(j.URL) {
+		return errNoWARPForTorrents(j.URL)
+	}
+	if _, err := m.store.Update(id, func(j *downloads.Job) {
+		j.State, j.Error, j.ErrorKind = downloads.StatePreparing, "", ""
+		if warp != nil {
+			j.WARP = *warp
+		}
+	}); err != nil {
 		return err
 	}
 	go m.launch(id)
@@ -705,6 +735,7 @@ type DownloadView struct {
 	// doesn't start one.
 	Silent  int64             `json:"silent,omitempty"`
 	Cookies bool              `json:"cookies,omitempty"`
+	WARP    bool              `json:"warp,omitempty"` // through Cloudflare WARP (Status.WARP: where it left)
 	Status  *downloads.Status `json:"status,omitempty"`
 }
 
@@ -737,7 +768,7 @@ func (m *dlManager) view(j downloads.Job, account string) DownloadView {
 	v := DownloadView{ID: j.ID, AccountID: j.AccountID, AccountLabel: account, Environment: j.Environment,
 		VolumeID: j.VolumeID, VolumeName: j.VolumeName, Folder: j.Folder, URL: downloads.StripCredentials(j.URL),
 		Name: displayName(j, st), Tool: j.Tool, Size: j.Size, Created: j.Created, State: j.State, Error: j.Error,
-		ErrorKind: j.ErrorKind, Cookies: j.Cookies != "", Status: st}
+		ErrorKind: j.ErrorKind, Cookies: j.Cookies != "", WARP: j.WARP, Status: st}
 	if j.State == downloads.StateRunning && j.Started > 0 {
 		last := float64(j.Started)
 		if st != nil && st.T > j.Before {
@@ -1186,7 +1217,10 @@ func (d *Daemon) downloadRoutes(mux *http.ServeMux) {
 		if !ready(w) {
 			return
 		}
-		var in struct{ Keep bool }
+		var in struct {
+			Keep bool
+			WARP *bool `json:"warp"` // resume: turn WARP on or off
+		}
 		if err := readJSON(r, &in); err != nil {
 			writeErr(w, err)
 			return
@@ -1197,7 +1231,7 @@ func (d *Daemon) downloadRoutes(mux *http.ServeMux) {
 		case "pause":
 			err = d.dl.Pause(id)
 		case "resume":
-			err = d.dl.Resume(r.Context(), id)
+			err = d.dl.Resume(r.Context(), id, in.WARP)
 		case "cancel":
 			err = d.dl.Cancel(r.Context(), id, in.Keep)
 		default:

@@ -171,6 +171,7 @@ Give modalfs a link and a Modal Function in your workspace downloads it straight
 - **Downloaders:** gopeed for most links (HTTP, FTP, magnet, torrent), yt-dlp for video sites (the latest version, every run), or aria2 if you pick it. When gopeed keeps failing on a server, aria2 takes over by itself and starts that file over.
 - **Interruptions:** Modal sometimes stops a container to move work around. The downloader's progress is saved on the volume, so the download continues on a new container from where it was, usually within a minute. A Function runs for at most 24 hours; a longer download continues in a new one by itself. Each of these shows on the download's page, on its speed chart and in plain words.
 - **Live speed**, four times a second, while you watch a download in the app; the daemon relays it from the container. The record that survives everything (status, events, the speed history) is kept on the volume in `.modalfs/downloads/`.
+- **Cloudflare WARP:** a download can go through Cloudflare WARP, for sites that refuse cloud servers; YouTube links do unless you pick Direct. It's slower, and the downloader can reach nothing else: if WARP can't be reached, the download stops instead of going direct, and you can retry it without WARP. Torrents can't use it: BitTorrent connects to its peers directly.
 - **Finished files never overwrite anything:** a name already taken gets ` (1)` added.
 - **Money:** the Remote downloads page (and `modalfs download spend`) shows what the workspace and its downloads have spent this month. Modal's API doesn't tell the credit left or the spend limit, so for those it links to Modal's Usage & Billing page. When Modal refuses to start a download or stops one, the download's page says so; if Modal names the spend limit or credit, it says that, and otherwise it says Modal gave no reason and that the spend limit is one cause to check.
 
@@ -219,10 +220,11 @@ Remote downloads (off until enabled; each runs in a Modal Function billed to you
   modalfs download enable|disable             turn remote downloads on or off
   modalfs download add VOLUME[:/FOLDER] URL...
         [--downloader gopeed|aria2|yt-dlp] [--size small|medium|large] [--cookies FILE]
-        [--account A] [--env E]
+        [--warp | --no-warp] [--account A] [--env E]
   modalfs download ls
   modalfs download show ID [--follow]         progress, attempts and interruptions, speed
-  modalfs download pause|resume ID
+  modalfs download pause ID
+  modalfs download resume ID [--warp | --no-warp]
   modalfs download cancel ID [--keep]         stop it and delete the partial files
   modalfs download logs ID                    the downloader's log
   modalfs download rm ID                      forget it (finished files stay)

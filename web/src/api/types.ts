@@ -237,6 +237,8 @@ export interface DownloadStatus {
   attempt?: number
   files?: { path: string; size: number; sha256?: string }[]
   log_tail?: string[]
+  /** Where it leaves Cloudflare's network, when it goes through Cloudflare WARP: the data center and the address sites see. */
+  warp?: { colo?: string; ip?: string; loc?: string }
   /** When the agent wrote it (Unix seconds, the container's clock). */
   t: number
 }
@@ -257,11 +259,13 @@ export interface Download {
   created: number
   state: DownloadState
   error?: string
-  /** What Modal had to do with a failure: it said the workspace is out of money ('billing'), or stopped the work without a reason ('unexplained'). */
-  error_kind?: 'billing' | 'unexplained'
+  /** Why it failed, when it's not the link: Modal said the workspace is out of money ('billing'), Modal stopped the work without a reason ('unexplained'), or Cloudflare WARP couldn't be used ('warp'; nothing was downloaded directly instead). */
+  error_kind?: 'billing' | 'unexplained' | 'warp'
   /** Seconds a download that should be running has gone without a word from its container. */
   silent?: number
   cookies?: boolean
+  /** Through Cloudflare WARP: the downloader can reach nothing else. */
+  warp?: boolean
   status?: DownloadStatus
 }
 
@@ -286,7 +290,7 @@ export interface Billing {
 
 /** A line of the download's events.jsonl: what happened to it, and when. */
 export interface DownloadEvent {
-  ev: 'start' | 'interrupted' | 'resumed' | 'signal' | 'error' | 'fallback' | 'stalled' | 'paused' | 'continued' | 'failed' | 'finished'
+  ev: 'start' | 'interrupted' | 'resumed' | 'signal' | 'error' | 'fallback' | 'stalled' | 'paused' | 'continued' | 'failed' | 'finished' | 'warp'
   t: number
   [field: string]: unknown
 }
