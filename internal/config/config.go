@@ -49,6 +49,7 @@ type Mount struct {
 	FilterJunk  bool   `json:"filter_junk"`             // keep .DS_Store / ._* local only
 	WriteBackMS int64  `json:"write_back_ms,omitempty"` // 0 = default
 	OnConflict  string `json:"on_conflict,omitempty"`   // keep-both | overwrite
+	LastUsedAt  int64  `json:"last_used,omitempty"`     // when it was last unmounted (Unix seconds)
 }
 
 type Settings struct {

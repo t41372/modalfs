@@ -14,10 +14,14 @@ import { Spinner } from './Spinner'
 
 interface Ask {
   title: string
-  desc?: string
+  desc?: ReactNode
   /** A control under the text, such as a checkbox for an option. */
   extra?: ReactNode
   action: string
+  /** The dismiss button, when "Cancel" would be ambiguous: it never repeats a word of `action`. */
+  dismiss?: string
+  /** A second way out, left of the dismiss button, such as "Pause instead". */
+  alt?: { label: string; run: () => Promise<unknown> }
   danger?: boolean
   /** Runs when confirmed; the dialog stays open, busy, until it settles. */
   run: () => Promise<unknown>
@@ -50,7 +54,26 @@ export function Confirmer() {
         </AlertDialogHeader>
         {ask?.extra}
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={busy}>{t('form.cancel')}</AlertDialogCancel>
+          {ask?.alt && (
+            <Button
+              variant="ghost"
+              className="sm:mr-auto"
+              disabled={busy}
+              onClick={async () => {
+                const alt = ask.alt!
+                setBusy(true)
+                try {
+                  await alt.run()
+                } finally {
+                  setBusy(false)
+                  set(null)
+                }
+              }}
+            >
+              {ask.alt.label}
+            </Button>
+          )}
+          <AlertDialogCancel disabled={busy}>{ask?.dismiss ?? t('form.cancel')}</AlertDialogCancel>
           <Button
             variant={ask?.danger ? 'destructive' : 'default'}
             disabled={busy}

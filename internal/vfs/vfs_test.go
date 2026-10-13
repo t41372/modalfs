@@ -317,3 +317,33 @@ func TestDirSweep(t *testing.T) {
 }
 
 func truncateFile(p string, size int64) error { return os.Truncate(p, size) }
+
+// PendingFiles lists what Status counts: the changed files, with the changed bytes.
+func TestPendingFilesMatchStatus(t *testing.T) {
+	f := newFakeFS(t, Options{WriteBack: time.Hour})
+	if got := f.PendingFiles(); len(got) != 0 {
+		t.Fatalf("before writing: %v", got)
+	}
+	for _, name := range []string{"a.txt", "b.txt"} {
+		if err := f.Create(name, false); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.WriteAt(name, []byte("hello"), 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, st := f.PendingFiles(), f.Status()
+	if len(got) != 2 || st.PendingFiles != 2 {
+		t.Fatalf("pending %v, status counts %d", got, st.PendingFiles)
+	}
+	var sum int64
+	for _, p := range got {
+		sum += p.Bytes
+		if p.Size != 5 || p.Since == 0 {
+			t.Fatalf("pending file %+v", p)
+		}
+	}
+	if sum != st.PendingBytes {
+		t.Fatalf("pending bytes %d, status says %d", sum, st.PendingBytes)
+	}
+}

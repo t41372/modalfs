@@ -47,14 +47,14 @@ export function AddAccountDialog({ open, onOpenChange }: { open: boolean; onOpen
         toast.success(t('toast.accountAdded', { w: a.workspace || a.label }))
       }}
     >
-      <Field label={t('form.tokenId')}>
-        <Input className="font-mono text-[13px]" value={tokenId} onChange={(e) => setTokenId(e.target.value)} placeholder="ak-…" spellCheck={false} autoFocus />
+      <Field label={t('form.tokenId')} htmlFor="acct-token-id">
+        <Input id="acct-token-id" className="font-mono text-[13px]" value={tokenId} onChange={(e) => setTokenId(e.target.value)} placeholder="ak-…" spellCheck={false} autoFocus />
       </Field>
-      <Field label={t('form.tokenSecret')}>
-        <Input className="font-mono text-[13px]" type="password" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="as-…" spellCheck={false} />
+      <Field label={t('form.tokenSecret')} htmlFor="acct-token-secret">
+        <Input id="acct-token-secret" className="font-mono text-[13px]" type="password" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="as-…" spellCheck={false} />
       </Field>
-      <Field label={t('form.label')} hint={t('form.labelHint')}>
-        <Input value={label} onChange={(e) => setLabel(e.target.value)} />
+      <Field label={t('form.label')} htmlFor="acct-label" hint={t('form.labelHint')}>
+        <Input id="acct-label" value={label} onChange={(e) => setLabel(e.target.value)} />
       </Field>
     </FormDialog>
   )

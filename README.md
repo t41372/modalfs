@@ -11,7 +11,7 @@
 <p align="center">English · <a href="README.zh-CN.md">简体中文</a></p>
 
 <p align="center">
-  <img src="docs/screenshots/en/mounts.jpg" alt="The modalfs app: a mounted volume, open, with its traffic, sync state and options">
+  <img src="docs/screenshots/en/volumes.jpg" alt="The modalfs app: the volumes it manages, each with its state, folder, size and the one thing to do next">
 </p>
 
 ---
@@ -134,19 +134,19 @@ modalfs saves each mount, so `modalfs mount my-data` reuses the same account, en
 
 | Page | What you can do |
 |---|---|
-| **Mounts** | Mount or unmount with a switch. See pending uploads, traffic, commits and conflicts. Sync now, show in Finder, force unmount. Per-mount options: auto-mount, read-only, filter macOS litter, conflict policy, NFS/FUSE. |
-| **Volumes** | Browse volumes by account and environment. Create, rename, delete (type the name to confirm), mount. |
-| **Accounts** | Add a token, import from `~/.modal.toml`, check that a token still works, remove. |
-| **Downloads** | Remote downloads: add links, pause, resume, cancel. Each one's speed over the whole run (point at the line for the acceleration there), and what happened to it. |
+| **Volumes** | The volumes modalfs manages, each with its state at a glance (synced, uploading, a conflict, not mounted), its folder and its size. Add another volume from your account by searching for it, even among hundreds. A volume's page shows its size and largest folders, what's still waiting to upload, the last hour's uploads and reads, and its conflicts with both versions a click away in Finder. Mount, unmount (it says what's still uploading first), change its options, remove it from modalfs, rename or delete it. |
+| **Remote downloads** | Add links, pause, resume, delete. What's running, how fast in all and what it costs now; each one's speed over the whole run (point at the line for the acceleration there), and what happened to it. |
 | **Activity** | Mounts, uploads, conflicts, errors and crash recoveries, grouped by day, with notifications for the important ones. |
-| **Settings** | Language (English / 繁體中文 / 简体中文), light/dark mode, start at login, cache size, read-ahead, default mount folder, connection mode, remote downloads. |
+| **Settings** | Your Modal accounts (connect, check or replace a token, rename, default environment, disconnect), start at login, mount location, light/dark mode, language (English / 繁體中文 / 简体中文), remote downloads, and under Advanced the cache, read-ahead and connection mode. |
+
+A dot at the bottom of the rail says whether everything is on Modal; point at it for what's still uploading.
 
 The window is only a remote control. Mounts live in the background daemon, so **closing the window never unmounts anything**. On macOS the window is glass over your desktop. In a browser (`modalfs ui` without the app), or on a phone-sized window, the same UI moves its tabs to the bottom.
 
 <table>
   <tr>
     <td width="50%" valign="top">
-      <a href="docs/screenshots/en/volumes.jpg"><img src="docs/screenshots/en/volumes.jpg" alt="Volumes in the dark theme: the account and environment, and each volume with its mount button"></a>
+      <a href="docs/screenshots/en/volume.jpg"><img src="docs/screenshots/en/volume.jpg" alt="A volume's page in the dark theme: where it's mounted, its size by folder, what it uploaded and read in the last hour, and its mount options"></a>
     </td>
     <td width="50%" valign="top">
       <a href="docs/screenshots/en/activity.jpg"><img src="docs/screenshots/en/activity.jpg" alt="Activity: uploads, a mount, a conflict and a recovery, grouped by day"></a>
@@ -154,10 +154,10 @@ The window is only a remote control. Mounts live in the background daemon, so **
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <a href="docs/screenshots/en/settings.jpg"><img src="docs/screenshots/en/settings.jpg" alt="Settings in the dark theme: language, appearance, start at login and the cache"></a>
+      <a href="docs/screenshots/en/settings.jpg"><img src="docs/screenshots/en/settings.jpg" alt="Settings in the dark theme: Modal accounts, start at login, mount location, appearance, language and remote downloads"></a>
     </td>
     <td width="50%" valign="top">
-      <a href="docs/screenshots/en/download.jpg"><img src="docs/screenshots/en/download.jpg" alt="A remote download: its progress, its speed over the whole run with the time Modal moved it to a new container, and what happened"></a>
+      <a href="docs/screenshots/en/download.jpg"><img src="docs/screenshots/en/download.jpg" alt="A remote download: its progress, speed and cost so far, its speed over the whole run with the time Modal moved it to a new container, and what happened"></a>
     </td>
   </tr>
 </table>
@@ -166,13 +166,13 @@ The window is only a remote control. Mounts live in the background daemon, so **
 
 Give modalfs a link and a Modal Function in your workspace downloads it straight into a volume. Your computer can sleep, lose its network or be turned off meanwhile; the files appear in the folder you picked when they're complete.
 
-- **Off until you turn it on**, on the Downloads page, in Settings, or with `modalfs download enable`, because it's the one thing in modalfs that runs compute. A Function starts only for a download you add or resume, and stops when it finishes, pauses or stalls.
+- **Off until you turn it on**, on the Remote downloads page, in Settings, or with `modalfs download enable`, because it's the one thing in modalfs that runs compute. A Function starts only for a download you add or resume, and stops when it finishes, pauses or stalls.
 - **What it costs:** the smallest size (0.125 CPU, 512 MiB) is about $0.01 an hour while it downloads, plus Modal's network charges (watching the live view adds about 2% of the bytes downloaded). The first download, and the first after modalfs updates, deploys the Function from a short-lived Sandbox: about 10 seconds and $0.0001. You don't need Python.
 - **Downloaders:** gopeed for most links (HTTP, FTP, magnet, torrent), yt-dlp for video sites (the latest version, every run), or aria2 if you pick it. When gopeed keeps failing on a server, aria2 takes over by itself and starts that file over.
 - **Interruptions:** Modal sometimes stops a container to move work around. The downloader's progress is saved on the volume, so the download continues on a new container from where it was, usually within a minute. A Function runs for at most 24 hours; a longer download continues in a new one by itself. Each of these shows on the download's page, on its speed chart and in plain words.
 - **Live speed**, four times a second, while you watch a download in the app; the daemon relays it from the container. The record that survives everything (status, events, the speed history) is kept on the volume in `.modalfs/downloads/`.
 - **Finished files never overwrite anything:** a name already taken gets ` (1)` added.
-- **Money:** the Downloads page (and `modalfs download spend`) shows what the workspace and its downloads have spent this month. Modal's API doesn't tell the credit left or the spend limit, so for those it links to Modal's Usage & Billing page. When Modal refuses to start a download or stops one, the download's page says so; if Modal names the spend limit or credit, it says that, and otherwise it says Modal gave no reason and that the spend limit is one cause to check.
+- **Money:** the Remote downloads page (and `modalfs download spend`) shows what the workspace and its downloads have spent this month. Modal's API doesn't tell the credit left or the spend limit, so for those it links to Modal's Usage & Billing page. When Modal refuses to start a download or stops one, the download's page says so; if Modal names the spend limit or credit, it says that, and otherwise it says Modal gave no reason and that the spend limit is one cause to check.
 
 ```console
 $ modalfs download enable
@@ -195,6 +195,9 @@ Everyday
                                               --now unmounts at once and uploads the rest in the background
   modalfs sync VOLUME|PATH                    commit pending writes now
   modalfs forget VOLUME|PATH                  remove a saved mount (the volume is untouched)
+  modalfs info VOLUME|PATH [--measure]        size, files waiting to upload, open conflicts;
+                                              --measure lists the volume to measure its size
+  modalfs conflicts VOLUME|PATH [--handled]   conflict copies; --handled marks them handled
 
 Volumes
   modalfs volume ls      [--account A] [--env E]
@@ -206,6 +209,10 @@ Accounts
   modalfs account add [--label L] [--token-id ID] [--env E]
   modalfs account import [PROFILE...]
   modalfs account ls
+  modalfs account check ACCOUNT               ask Modal whether the token still works
+  modalfs account token ACCOUNT               replace an expired token (same workspace)
+  modalfs account rename ACCOUNT NEWNAME
+  modalfs account env ACCOUNT ENVIRONMENT     the environment new volumes are looked up in
   modalfs account rm ACCOUNT
 
 Remote downloads (off until enabled; each runs in a Modal Function billed to your account)

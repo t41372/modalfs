@@ -147,6 +147,21 @@ func (d *Daemon) routes() http.Handler {
 		}
 		writeJSON(w, 200, id)
 	})
+	// Replaces an account's token, for one that expired or was revoked. The new
+	// token must belong to the same workspace, so no mount moves elsewhere.
+	mux.HandleFunc("POST /api/accounts/{id}/token", func(w http.ResponseWriter, r *http.Request) {
+		var in struct{ TokenID, TokenSecret string }
+		if err := readJSON(r, &in); err != nil {
+			writeErr(w, err)
+			return
+		}
+		a, err := d.ReplaceToken(r.Context(), r.PathValue("id"), in.TokenID, in.TokenSecret)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, 200, a)
+	})
 	mux.HandleFunc("GET /api/accounts/{id}/environments", func(w http.ResponseWriter, r *http.Request) {
 		c, _, err := d.clientFor(r.PathValue("id"), "")
 		if err != nil {
@@ -428,6 +443,8 @@ func (d *Daemon) routes() http.Handler {
 			writeErr(w, err)
 			return
 		}
+		d.traffic.drop(id)
+		d.conflicts.clear(id, "")
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	})
 	mux.HandleFunc("POST /api/mounts/{id}/start", func(w http.ResponseWriter, r *http.Request) {
@@ -452,7 +469,10 @@ func (d *Daemon) routes() http.Handler {
 		}
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	})
+	// Shows the mounted folder, or a file in it (path, relative to the mount).
 	mux.HandleFunc("POST /api/mounts/{id}/reveal", func(w http.ResponseWriter, r *http.Request) {
+		var in struct{ Path string }
+		_ = readJSON(r, &in)
 		m, ok := d.store.Mount(r.PathValue("id"))
 		if !ok {
 			writeErr(w, errors.New("mount not found"))
@@ -463,7 +483,11 @@ func (d *Daemon) routes() http.Handler {
 			writeErr(w, fmt.Errorf("%s is not a folder yet; mount it first", mp))
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": openPath(mp) == nil})
+		if err := revealIn(mp, in.Path); err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true})
 	})
 
 	// ----- settings / cache / service -----
@@ -575,6 +599,7 @@ func (d *Daemon) routes() http.Handler {
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	})
 	d.downloadRoutes(mux)
+	d.insightRoutes(mux)
 	return mux
 }
 
@@ -638,6 +663,69 @@ func (d *Daemon) AddAccount(ctx context.Context, label, tokenID, secret, server,
 		return config.Account{}, err
 	}
 	d.emitC("info", "acct_added", "", "", "added account "+a.Label+" ("+a.Workspace+")", a.Label, a.Workspace)
+	return a, nil
+}
+
+// ReplaceToken gives an account a new token from the same workspace. The
+// secret is checked with Modal first; mounts already mounted keep the old
+// token until they're mounted again.
+func (d *Daemon) ReplaceToken(ctx context.Context, id, tokenID, secret string) (config.Account, error) {
+	tokenID, secret = strings.TrimSpace(tokenID), strings.TrimSpace(secret)
+	a, ok := d.store.Account(id)
+	if !ok {
+		return a, errors.New("account not found")
+	}
+	if tokenID == "" || secret == "" {
+		return a, errors.New("token ID and token secret are required")
+	}
+	for _, x := range d.store.Snapshot().Accounts {
+		if x.TokenID == tokenID && x.ID != id {
+			return a, fmt.Errorf("this token is already added as %q", x.Label)
+		}
+	}
+	c, err := modalapi.New(modalapi.Config{TokenID: tokenID, TokenSecret: secret, ServerURL: a.ServerURL, Transport: d.transport()})
+	if err != nil {
+		return a, err
+	}
+	defer closeClient(c)
+	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	who, err := c.WhoAmI(cctx)
+	if err != nil {
+		return a, fmt.Errorf("Modal rejected this token: %w", err)
+	}
+	if a.Workspace != "" && who.WorkspaceName != a.Workspace {
+		return a, fmt.Errorf("this token belongs to workspace %q, not %q; add it as another account instead", who.WorkspaceName, a.Workspace)
+	}
+	old := a
+	if old.SecretStore == "env" {
+		// The new secret is stored; the environment variable is no longer read.
+		old.SecretStore = ""
+	}
+	store, err := config.SaveSecret(a.ID, secret)
+	if err != nil {
+		return a, err
+	}
+	err = d.store.Update(func(f *config.File) error {
+		for i := range f.Accounts {
+			if f.Accounts[i].ID == id {
+				f.Accounts[i].TokenID, f.Accounts[i].SecretStore = tokenID, store
+				f.Accounts[i].Workspace, f.Accounts[i].Username = who.WorkspaceName, who.Username
+				a = f.Accounts[i]
+				return nil
+			}
+		}
+		return errors.New("account not found")
+	})
+	if err != nil {
+		return a, err
+	}
+	// A keychain secret was overwritten in place; one moved between stores leaves the old copy behind.
+	if old.SecretStore != "" && old.SecretStore != store {
+		_ = config.DeleteSecret(old)
+	}
+	d.dropClients(id)
+	d.emitC("info", "acct_token", "", "", "replaced the token of "+a.Label, a.Label)
 	return a, nil
 }
 

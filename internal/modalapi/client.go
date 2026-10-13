@@ -388,6 +388,40 @@ func (c *Client) List(ctx context.Context, volID, dir string, recursive bool) ([
 	})
 }
 
+// Walk lists everything under dir and calls fn with each batch of entries as
+// Modal streams them, so a caller can show progress over a large volume.
+// Unlike List it doesn't retry: a listing cut short can't be resumed, and a
+// retry would count what came before twice.
+func (c *Client) Walk(ctx context.Context, volID, dir string, fn func([]Entry)) error {
+	p := dir
+	if p == "" {
+		p = "/"
+	}
+	s, err := c.Stub.VolumeListFiles2(ctx, pb.VolumeListFiles2Request_builder{VolumeId: volID, Path: p, Recursive: true}.Build())
+	if err != nil {
+		return err
+	}
+	for {
+		m, err := s.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		batch := make([]Entry, 0, len(m.GetEntries()))
+		for _, e := range m.GetEntries() {
+			batch = append(batch, Entry{
+				Path:  strings.Trim(e.GetPath(), "/"),
+				IsDir: e.GetType() == pb.FileEntry_DIRECTORY,
+				Size:  int64(e.GetSize()),
+				Mtime: int64(e.GetMtime()),
+			})
+		}
+		fn(batch)
+	}
+}
+
 // BlockURLs returns signed download URLs for blocks [first, first+n) of path,
 // plus the current file size.
 func (c *Client) BlockURLs(ctx context.Context, volID, path string, first, n int64) ([]string, int64, error) {

@@ -1,95 +1,150 @@
-import { cn } from 'cn'
-import { ArrowDownToLine, ChevronRight, Pause, Play, Plus } from 'lucide-react'
+import { ChevronDown, CloudDownload, ExternalLink, Plus } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { toast } from 'sonner'
 import { api } from '@/api/client'
 import { patchSettings, refreshDownloads, useAction, useBilling, useDownloads, useLoadedState } from '@/api/queries'
-import type { Download } from '@/api/types'
-import { Badge, Card, Empty, Page, Row, Section } from '@/components/page'
+import type { Download, DownloadState } from '@/api/types'
+import { navigate } from '@/app/nav'
+import { Bar, type Glyph, StatusIcon, Tile } from '@/components/bits'
+import { Card, Empty, Page, Section } from '@/components/page'
 import { duration } from '@/components/StopProgress'
 import { Button } from '@/components/ui/button'
-import { Switch } from '@/components/ui/switch'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { AddDownloadDialog } from '@/dialogs/AddDownload'
-import { BUSY, dollars, ENDED, HOURLY, progressText, RESUMABLE, RUNNING, SILENT_WARN, speed } from '@/lib/downloads'
+import { dollars, ENDED, HOURLY, hourlyFor, NEEDS_YOU, permanent, RESUMABLE, RUNNING, SILENT_WARN, speed } from '@/lib/downloads'
 import { bytes } from '@/lib/format'
-import { BillingLink, DownloadPage } from './Download'
+import type { Tone } from '@/lib/mounts'
+import { openExternal } from '@/lib/platform'
 
+/** A download's state as an icon: the shape says what it's doing, the color backs it up. */
+export function downloadGlyph(s: DownloadState): { glyph: Glyph; tone: Tone } {
+  if (s === 'running') return { glyph: 'down', tone: 'busy' }
+  if (s === 'interrupted' || s === 'retrying') return { glyph: 'moving', tone: 'up' }
+  if (s === 'paused' || s === 'time limit') return { glyph: 'pause', tone: 'off' }
+  if (s === 'failed' || s === 'stalled') return { glyph: 'alert', tone: 'bad' }
+  if (s === 'done') return { glyph: 'check', tone: 'ok' }
+  if (s === 'cancelled') return { glyph: 'off', tone: 'off' }
+  return { glyph: 'spin', tone: 'busy' }
+}
+
+/** Downloads Modal runs into a volume: what's running and what it costs, what needs a decision, and what's done. */
 export function Downloads() {
   const { t } = useTranslation()
   const st = useLoadedState()
   const on = !!st.settings.remote_downloads
-  const list = useDownloads(true)
+  const list = useDownloads(on)
   const downloads = list.data ?? st.downloads ?? []
-  const [openId, setOpenId] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
+  const [allDone, setAllDone] = useState(false)
 
-  const open = openId ? downloads.find((d) => d.id === openId) : undefined
-  if (open) return <DownloadPage d={open} onBack={() => setOpenId(null)} />
+  if (!on) return <TurnOn />
 
   const newest = [...downloads].reverse()
-  const going = newest.filter((d) => !ENDED.has(d.state))
-  const ended = newest.filter((d) => ENDED.has(d.state))
-  const canAdd = on && st.accounts.length > 0
+  const attention = newest.filter((d) => NEEDS_YOU.has(d.state) || (!ENDED.has(d.state) && (d.silent ?? 0) >= SILENT_WARN))
+  const going = newest.filter((d) => !attention.includes(d) && (!ENDED.has(d.state) || d.state === 'paused'))
+  const ended = newest.filter((d) => !attention.includes(d) && !going.includes(d))
+  const running = downloads.filter((d) => RUNNING.has(d.state))
+  const canAdd = st.accounts.length > 0
 
   return (
     <Page
-      title={t('downloads.title')}
-      sub={t('downloads.sub')}
+      title={t('dl.title')}
+      sub={t('dl.sub')}
       actions={
-        canAdd &&
-        downloads.length > 0 && (
-          <Button variant="outline" onClick={() => setAdding(true)}>
+        canAdd && (
+          <Button onClick={() => setAdding(true)}>
             <Plus />
-            {t('downloads.add')}
+            {t('dl.add')}
           </Button>
         )
       }
     >
-      {!on && <TurnOn />}
-      {downloads.length === 0
-        ? on && (
-            <Card>
-              <Empty icon={<ArrowDownToLine />} title={t('downloads.empty')} desc={st.accounts.length ? t('downloads.emptyP') : t('downloads.emptyNoAccount')}>
-                {canAdd && (
-                  <Button onClick={() => setAdding(true)}>
-                    <Plus />
-                    {t('downloads.add')}
-                  </Button>
-                )}
-              </Empty>
-            </Card>
-          )
-        : (
-            <>
-              {going.length > 0 && (
-                <Section label={t('downloads.sectionGoing')}>
-                  <Card>
-                    {going.map((d) => (
-                      <DownloadRow key={d.id} d={d} onOpen={() => setOpenId(d.id)} />
-                    ))}
-                  </Card>
-                </Section>
-              )}
-              {ended.length > 0 && (
-                <Section label={t('downloads.sectionEnded')}>
-                  <Card>
-                    {ended.map((d) => (
-                      <DownloadRow key={d.id} d={d} onOpen={() => setOpenId(d.id)} />
-                    ))}
-                  </Card>
-                </Section>
-              )}
-              <Spending downloads={downloads} />
-            </>
+      {downloads.length > 0 && <Figures running={running} account={running[0]?.account_id ?? downloads.at(-1)?.account_id} env={running[0]?.environment ?? downloads.at(-1)?.environment} />}
+      {downloads.length === 0 ? (
+        <Card>
+          <Empty icon={<CloudDownload />} title={t('dl.empty')} desc={canAdd ? t('dl.emptyP') : t('dl.emptyNoAccount')}>
+            {canAdd && (
+              <Button onClick={() => setAdding(true)}>
+                <Plus />
+                {t('dl.add')}
+              </Button>
+            )}
+          </Empty>
+        </Card>
+      ) : (
+        <>
+          {attention.length > 0 && (
+            <Section label={<span className="text-destructive">{t('dl.attention')}</span>}>
+              <Card>
+                {attention.map((d) => (
+                  <DownloadRow key={d.id} d={d} />
+                ))}
+              </Card>
+            </Section>
           )}
-      <AddDownloadDialog open={adding} onOpenChange={setAdding} onAdded={(added) => added.length === 1 && setOpenId(added[0].id)} />
+          {going.length > 0 && (
+            <Section label={t('dl.going')} aside={<span className="text-[12px] text-muted-foreground">{t('dl.pausedFree')}</span>}>
+              <Card>
+                {going.map((d) => (
+                  <DownloadRow key={d.id} d={d} />
+                ))}
+              </Card>
+            </Section>
+          )}
+          {ended.length > 0 && (
+            <Section label={t('dl.done')} aside={<span className="text-[12px] text-muted-foreground tabular">{t('dl.doneTotal', { count: ended.length })}</span>}>
+              <Card>
+                {(allDone ? ended : ended.slice(0, 3)).map((d) => (
+                  <DownloadRow key={d.id} d={d} />
+                ))}
+                {ended.length > 3 && (
+                  <button className="flex w-full items-center gap-1.5 px-5 py-2.5 text-left text-[12.5px] text-muted-foreground hover:text-foreground" onClick={() => setAllDone((x) => !x)}>
+                    <ChevronDown className={`size-3.5 transition-transform ${allDone ? 'rotate-180' : ''}`} />
+                    {allDone ? t('dl.showFewer') : t('dl.showAll', { count: ended.length })}
+                  </button>
+                )}
+              </Card>
+            </Section>
+          )}
+        </>
+      )}
+      <AddDownloadDialog open={adding} onOpenChange={setAdding} />
     </Page>
   )
 }
 
-/** Off until turned on: what a download runs on, and what it costs. */
+/** The numbers at the top: how many run, how fast in all, and what it costs now. */
+function Figures({ running, account, env }: { running: Download[]; account?: string; env?: string }) {
+  const { t } = useTranslation()
+  const billing = useBilling(account, env ?? '')
+  const total = running.reduce((n, d) => n + (d.state === 'running' ? (d.status?.speed ?? 0) : 0), 0)
+  const hourly = running.reduce((n, d) => n + hourlyFor(d.size, billing.data), 0)
+  const month = billing.data?.downloads
+  return (
+    <div className="grid grid-cols-3 gap-2.5">
+      <Tile label={t('dl.running')} value={running.length} />
+      <Tile label={t('dl.totalSpeed')} value={running.length ? speed(total).split(' ')[0] : '—'} unit={running.length ? speed(total).split(' ')[1] : undefined} />
+      <button className="text-left" onClick={() => openExternal(billing.data?.usage_url || 'https://modal.com/settings/usage')}>
+        <Tile
+          label={t('dl.perHour')}
+          value={dollars(hourly)}
+          hint={
+            billing.data
+              ? `${t('dl.monthDownloads', { amount: month !== undefined ? dollars(month) : '—' })} · ${t('dl.monthWorkspace', { amount: dollars(billing.data.metered) })} · ${t('dl.noLimitInfo')}`
+              : t('dl.noLimitInfo')
+          }
+          className="h-full transition-colors hover:bg-muted/50"
+        >
+          <div className="mt-1 flex items-center gap-1 truncate text-[12px] text-muted-foreground">
+            {month !== undefined ? t('dl.thisMonth', { amount: dollars(month) }) : t('dl.billing')}
+            <ExternalLink className="size-3 shrink-0" />
+          </div>
+        </Tile>
+      </button>
+    </div>
+  )
+}
+
+/** Remote downloads are off until turned on: what they do, what they cost, and the one button. */
 function TurnOn() {
   const { t } = useTranslation()
   const set = useAction((on: boolean) => patchSettings({ remote_downloads: on }), {
@@ -98,146 +153,90 @@ function TurnOn() {
     },
   })
   return (
-    <Card>
-      <Row title={t('downloads.turnOn')} desc={t('downloads.turnOnD', { price: HOURLY.small.toFixed(4) })} wrap={false}>
-        <Switch checked={false} disabled={set.isPending} onCheckedChange={(v) => set.mutate(v)} aria-label={t('downloads.turnOn')} />
-      </Row>
-    </Card>
-  )
-}
-
-export function StateBadge({ d }: { d: Download }) {
-  const { t } = useTranslation()
-  const s = d.state
-  if (s === 'running') return null
-  const tone = s === 'done' ? 'ok' : s === 'failed' || s === 'stalled' ? 'bad' : s === 'interrupted' || s === 'retrying' || BUSY.has(s) || s === 'starting' || s === 'finishing' ? 'warn' : 'neutral'
-  return <Badge tone={tone}>{t(`downloads.state.${s}`)}</Badge>
-}
-
-/** Pause or resume, from the row or the detail view. Refusals (a run still ending) come back as the daemon's reason. */
-export function useDownloadAction() {
-  return useAction(({ id, action }: { id: string; action: 'pause' | 'resume' }) => api('POST', `/downloads/${id}/${action}`, {}).finally(refreshDownloads))
-}
-
-function DownloadRow({ d, onOpen }: { d: Download; onOpen: () => void }) {
-  const { t } = useTranslation()
-  const act = useDownloadAction()
-  const s = d.status
-  const running = RUNNING.has(d.state)
-  const pct = s && s.total > 0 ? Math.min(100, (s.done / s.total) * 100) : undefined
-  const meta: string[] = []
-  if (d.state === 'done' && s) meta.push(bytes(s.total > 0 ? s.total : s.done))
-  else if (s && (s.done > 0 || s.total > 0)) meta.push(progressText(d, t))
-  if (running && s) {
-    meta.push(speed(s.speed))
-    if (s.eta) meta.push(t('downloads.left', { time: duration(s.eta, t) }))
-  }
-
-  return (
-    <div className="flex items-center gap-2 pr-3 pl-1.5">
-      <button
-        onClick={onOpen}
-        className="group/row flex min-w-0 flex-1 items-center gap-3 rounded-xl py-3.5 pl-3.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-      >
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="truncate text-[15px] font-semibold tracking-[-0.01em]">{d.name}</span>
-            <StateBadge d={d} />
-            {(s?.attempt ?? 1) > 1 && !ENDED.has(d.state) && <Badge>{t('downloads.attempt', { n: s!.attempt })}</Badge>}
+    <Page title={t('dl.title')}>
+      <Card className="max-w-[540px]">
+        <div className="px-6 pt-6 pb-5">
+          <div className="mb-4 flex size-11 items-center justify-center rounded-2xl bg-brand/10 text-brand">
+            <CloudDownload className="size-5.5" />
           </div>
-          {pct !== undefined && d.state !== 'done' && d.state !== 'cancelled' && (
-            <span className="mt-2 block h-1 max-w-md overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100}>
-              <span className={cn('block h-full rounded-full transition-[width] duration-1000 ease-linear', running ? 'bg-brand' : 'bg-foreground/25')} style={{ width: `${pct}%` }} />
-            </span>
-          )}
-          {/* Narrow windows put where it goes on a line of its own rather than cutting both short. */}
-          <div className="mt-1 flex min-w-0 flex-col text-[12.5px] text-muted-foreground tabular sm:flex-row sm:gap-1.5">
-            {meta.length > 0 && <span className="shrink-0 truncate">{meta.join(' · ')}</span>}
-            {meta.length > 0 && (
-              <span aria-hidden className="hidden sm:inline">
-                ·
-              </span>
-            )}
-            <span className="truncate">
-              {d.volume_name}:/{d.folder}
-              <span className="ml-1.5 text-muted-foreground/70">{d.status?.tool || d.tool}</span>
-            </span>
-          </div>
-          {(d.state === 'failed' || d.state === 'stalled') && d.error && (
-            <div data-selectable className="mt-1 line-clamp-1 text-[12px] text-destructive">
-              {d.error_kind ? t(`downloads.whyShort.${d.error_kind}`) : d.error}
+          <div className="text-[17px] font-semibold tracking-[-0.01em]">{t('dl.offTitle')}</div>
+          <p className="mt-1.5 text-[13.5px] leading-relaxed text-pretty text-muted-foreground">{t('dl.offP')}</p>
+          <dl className="mt-4 grid grid-cols-3 gap-2 text-center">
+            <div className="rounded-xl bg-muted/60 px-2 py-2.5">
+              <dt className="text-[11.5px] text-muted-foreground">{t('dl.offPrice')}</dt>
+              <dd className="mt-0.5 text-[15px] font-semibold tabular">${HOURLY.small.toFixed(4)}</dd>
             </div>
-          )}
-          {!ENDED.has(d.state) && (d.silent ?? 0) >= SILENT_WARN && (
-            <div className="mt-1 line-clamp-1 text-[12px] text-warn-ink">{t('downloads.silentShort', { time: duration(d.silent ?? 0, t) })}</div>
-          )}
+            <div className="rounded-xl bg-muted/60 px-2 py-2.5">
+              <dt className="text-[11.5px] text-muted-foreground">{t('dl.offBilled')}</dt>
+              <dd className="mt-0.5 text-[15px] font-semibold">{t('dl.offPerSecond')}</dd>
+            </div>
+            <div className="rounded-xl bg-muted/60 px-2 py-2.5">
+              <dt className="text-[11.5px] text-muted-foreground">{t('dl.offPaused')}</dt>
+              <dd className="mt-0.5 text-[15px] font-semibold">$0</dd>
+            </div>
+          </dl>
         </div>
-        <ChevronRight aria-label={t('downloads.details')} className="size-4 shrink-0 text-muted-foreground/70" />
-      </button>
-      {(running || RESUMABLE.has(d.state)) && (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                variant="ghost"
-                size="icon"
-                disabled={act.isPending || d.state === 'finishing'}
-                onClick={() => act.mutate({ id: d.id, action: running ? 'pause' : 'resume' }, { onSuccess: () => toast(t(running ? 'downloads.pausing' : 'downloads.resuming', { name: d.name })) })}
-                aria-label={t(running ? 'downloads.pause' : 'downloads.resume')}
-              >
-                {running ? <Pause className="text-muted-foreground" /> : <Play className="text-muted-foreground" />}
-              </Button>
-            }
-          />
-          <TooltipContent>{t(running ? 'downloads.pause' : 'downloads.resume')}</TooltipContent>
-        </Tooltip>
-      )}
-    </div>
-  )
-}
-
-/**
- * What the accounts that downloads run in have spent this month. Modal's API
- * tells spending, not the credit left or the spend limit, so it says so and
- * links to where those are.
- */
-function Spending({ downloads }: { downloads: Download[] }) {
-  const { t } = useTranslation()
-  const seen = new Set<string>()
-  const places: { account: string; label: string; env: string }[] = []
-  for (const d of downloads) {
-    const key = `${d.account_id}\u0000${d.environment ?? ''}`
-    if (seen.has(key)) continue
-    seen.add(key)
-    places.push({ account: d.account_id, label: d.account_label, env: d.environment ?? '' })
-  }
-  if (!places.length) return null
-  return (
-    <Section label={t('downloads.spending')}>
-      <Card>
-        {places.map((p) => (
-          <SpendingRow key={`${p.account}/${p.env}`} {...p} showEnv={places.some((q) => q.account === p.account && q.env !== p.env)} />
-        ))}
+        <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4">
+          <span className="text-[12.5px] text-muted-foreground">{t('dl.offMounting')}</span>
+          <Button disabled={set.isPending} onClick={() => set.mutate(true)}>
+            {t('dl.turnOn')}
+          </Button>
+        </div>
       </Card>
-      <p className="mt-2 px-1 text-[12px] text-muted-foreground">{t('downloads.spendingNote')}</p>
-    </Section>
+    </Page>
   )
 }
 
-function SpendingRow({ account, label, env, showEnv }: { account: string; label: string; env: string; showEnv: boolean }) {
+function DownloadRow({ d }: { d: Download }) {
   const { t } = useTranslation()
-  const b = useBilling(account, env)
-  const lines: string[] = []
-  if (b.data) {
-    if (b.data.downloads !== undefined) lines.push(t('downloads.spentDownloads', { amount: dollars(b.data.downloads) }))
-    lines.push(t('downloads.spentWorkspace', { used: dollars(b.data.metered), charged: dollars(b.data.billed) }))
-  }
+  const resume = useAction(() => api('POST', `/downloads/${d.id}/resume`, {}).finally(refreshDownloads), { success: () => t('dl.resuming', { name: d.name }) })
+  const s = d.status
+  const { glyph, tone } = downloadGlyph(d.state)
+  const pct = s && s.total > 0 ? Math.min(100, (s.done / s.total) * 100) : undefined
+  const going = !ENDED.has(d.state) || d.state === 'paused'
+  const silent = !ENDED.has(d.state) && (d.silent ?? 0) >= SILENT_WARN
+  const size = d.state === 'done' && s ? bytes(s.total > 0 ? s.total : s.done) : s && (s.done > 0 || s.total > 0) ? (s.total > 0 ? `${bytes(s.done)} / ${bytes(s.total)}` : bytes(s.done)) : ''
+  const why =
+    d.state === 'failed' || d.state === 'stalled'
+      ? d.error_kind
+        ? t(`dl.whyShort.${d.error_kind}`)
+        : permanent(d)
+          ? t('dl.gone')
+          : d.error || t(`dl.state.${d.state}`)
+      : silent
+        ? t('dl.silentShort', { time: duration(d.silent ?? 0, t) })
+        : ''
+
   return (
-    <Row
-      title={showEnv && env ? `${label} · ${env}` : label}
-      desc={b.isLoading ? t('form.loading') : b.error ? b.error.message : lines.join(' · ')}
-    >
-      <BillingLink billing={b.data} />
-    </Row>
+    <div className="flex items-center gap-3 pr-3 pl-4">
+      <StatusIcon glyph={glyph} tone={tone} label={t(`dl.state.${d.state}`)} />
+      <button onClick={() => navigate('downloads', d.id)} className="group/row flex min-w-0 flex-1 items-center gap-3 rounded-lg py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[14.5px] font-semibold tracking-[-0.01em]">{d.name}</span>
+          <span className="mt-0.5 flex min-w-0 items-center gap-2 text-[12.5px] text-muted-foreground">
+            <span className="truncate font-mono text-[11.5px]">
+              → {d.volume_name}:/{d.folder}
+            </span>
+            {size && <span className="shrink-0 tabular">{size}</span>}
+          </span>
+          {why && <span className="mt-0.5 block truncate text-[12px] text-destructive">{why}</span>}
+          {going && pct !== undefined && <Bar pct={pct} tone={d.state === 'running' ? 'brand' : d.state === 'interrupted' ? 'warn' : 'muted'} className="mt-2 h-1 max-w-md" />}
+        </span>
+      </button>
+      <div className="flex w-[104px] shrink-0 flex-col items-end text-right">
+        {d.state === 'running' && s ? (
+          <>
+            <span className="text-[13px] font-medium tabular">{speed(s.speed)}</span>
+            {s.eta ? <span className="text-[12px] text-muted-foreground tabular">{t('dl.left', { time: duration(s.eta, t) })}</span> : null}
+          </>
+        ) : RESUMABLE.has(d.state) && !permanent(d) && d.state !== 'failed' ? (
+          <Button size="sm" variant="outline" disabled={resume.isPending} onClick={() => resume.mutate()}>
+            {t('dl.resume')}
+          </Button>
+        ) : (
+          <span className="text-[12px] text-muted-foreground">{t(`dl.state.${d.state}`)}</span>
+        )}
+      </div>
+    </div>
   )
 }

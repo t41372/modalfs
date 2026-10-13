@@ -6,7 +6,7 @@
 // URL parameters set what the screenshots need: ?lang=en|zh-Hant|zh-Hans and
 // ?theme=light|dark.
 
-import type { Account, Billing, DaemonEvent, Download, DownloadEvent, Environment, Identity, Mount, Profile, Sample, State, Volume } from './types'
+import type { Account, Billing, Conflict, DaemonEvent, Download, DownloadEvent, Environment, Identity, Mount, PendingFile, Profile, Sample, State, TrafficSample, Usage, Volume } from './types'
 
 const HOME = '/Users/you'
 const ROOT = `${HOME}/ModalVolumes`
@@ -67,6 +67,8 @@ const mounts: Mount[] = [
     state: 'mounted',
     started_at: now() - 3600 * 5,
     status: status({ bytes_down: 3.4 * GiB, bytes_up: 182 * MiB, commits: 14, last_commit_at: now() - 140, local_only_files: 3 }),
+    size_bytes: 214.3 * GiB,
+    size_at: now() - 2 * 3600,
   },
   {
     id: 'm-checkpoints',
@@ -83,7 +85,10 @@ const mounts: Mount[] = [
     on_conflict: 'keep-both',
     state: 'mounted',
     started_at: now() - 1800,
-    status: status({ pending_files: 2, pending_bytes: 48 * MiB, bytes_down: 812 * MiB, bytes_up: 1.9 * GiB, commits: 6, conflicts: 1, last_commit_at: now() - 30 }),
+    status: status({ pending_files: 2, pending_bytes: 1.2 * GiB, bytes_down: 812 * MiB, bytes_up: 1.9 * GiB, commits: 6, conflicts: 1, last_commit_at: now() - 30 }),
+    open_conflicts: 1,
+    size_bytes: 158 * GiB,
+    size_at: now() - 26 * 3600,
   },
   {
     id: 'm-notebooks',
@@ -97,6 +102,46 @@ const mounts: Mount[] = [
     filter_junk: true,
     auto_mount: true,
     state: 'stopped',
+    last_used: now() - 3 * 86400,
+    size_bytes: 9.2 * GiB,
+    size_at: now() - 5 * 86400,
+  },
+  {
+    id: 'm-models',
+    account_id: 'acc-research',
+    account_label: 'research',
+    workspace: 'acme-research',
+    environment: 'main',
+    volume_name: 'models',
+    volume_id: 'vo-000000000models',
+    mountpoint: `${ROOT}/models`,
+    mode: 'auto',
+    active_mode: 'nfs',
+    filter_junk: true,
+    on_conflict: 'keep-both',
+    state: 'mounted',
+    started_at: now() - 7200,
+    status: status({ bytes_down: 22.1 * GiB, bytes_up: 0, commits: 0 }),
+    unmount_error: 'unmount: Resource busy',
+    in_use_by: ['Terminal', 'Preview'],
+    size_bytes: 31 * GiB,
+    size_at: now() - 3600,
+  },
+  {
+    id: 'm-evals',
+    account_id: 'acc-research',
+    account_label: 'research',
+    workspace: 'acme-research',
+    environment: 'main',
+    volume_name: 'eval-runs',
+    volume_id: 'vo-0000000evalruns',
+    mountpoint: `${ROOT}/eval-runs`,
+    mode: 'auto',
+    filter_junk: true,
+    auto_mount: true,
+    state: 'error',
+    error: "couldn't reach Modal: connection refused. Is this Mac online?",
+    retry_at: now() + 95,
   },
 ]
 
@@ -112,6 +157,17 @@ const volumes: Record<string, Volume[]> = {
     { id: 'vo-000000notebooks', name: 'notebooks', format: 'v2', mounted: false, mount_id: 'm-notebooks', created_at: now() - 86400 * 20, created_by: 'sam' },
     { id: 'vo-00000000scratch', name: 'scratch', format: 'v2', mounted: false, created_at: now() - 86400 * 2, created_by: 'sam' },
   ],
+}
+
+// A workspace shared by many projects: the add dialog has to find one among them.
+{
+  const words = ['bert', 'clip', 'diffusion', 'eval', 'features', 'gpt', 'index', 'logs', 'lora', 'mmlu', 'panels', 'rl', 'sae', 'shards', 'speech', 'tokens', 'video', 'whisper']
+  const people = ['alex', 'jo', 'kim', 'priya', 'sam']
+  for (let i = 0; volumes['acc-research'].length < 150; i++) {
+    const name = `${words[i % words.length]}-${['cache', 'runs', 'data', 'ckpt', 'tmp'][i % 5]}-${String(i).padStart(3, '0')}`
+    volumes['acc-research'].push({ id: `vo-gen${String(i).padStart(12, '0')}`, name, format: i % 37 === 5 ? 'v1' : 'v2', mounted: false, created_at: now() - 86400 * (2 + ((i * 7) % 300)), created_by: people[i % people.length] })
+  }
+  volumes['acc-research'].push({ id: 'vo-000000000models', name: 'models', format: 'v2', mounted: true, created_at: now() - 86400 * 61, created_by: 'jo' })
 }
 
 const environments: Record<string, Environment[]> = {
@@ -551,6 +607,82 @@ function startMock(x: MockDownload, attempt: number) {
 }
 
 
+// ─── What a volume's page shows ───
+
+const usage: Record<string, Usage> = {}
+const measuring: Record<string, { counted: number; files: number; started: number }> = {}
+function folderSplit(total: number, seed: number): Usage['folders'] {
+  const names = ['raw', 'imagenet', 'shards', 'eval', 'meta', 'tmp']
+  const r = rng(seed)
+  let left = total * 0.93
+  return names.slice(0, 5).map((name, i) => {
+    const bytes = i === 4 ? left * 0.4 : left * (0.35 + r() * 0.25)
+    left -= bytes
+    return { name, bytes: Math.round(bytes), files: Math.round(bytes / (40 * MiB)) + 3 }
+  })
+}
+for (const mt of mounts) {
+  if (mt.size_bytes && mt.volume_id) usage[mt.volume_id] = { total: mt.size_bytes, files: Math.round(mt.size_bytes / (31 * MiB)), folders: folderSplit(mt.size_bytes, mt.volume_id.length), at: mt.size_at ?? now() }
+}
+const conflictsOf: Record<string, Conflict[]> = {
+  'm-checkpoints': [{ path: 'run-42/config.yaml', copy: 'run-42/config.conflict-20261012-101533.yaml', at: now() - 900 }],
+}
+
+function insight(method: string, mt: Mount, what: string, body: Body): unknown {
+  const vid = mt.volume_id ?? ''
+  if (what === 'usage') {
+    if (method === 'POST' && !measuring[vid]) {
+      measuring[vid] = { counted: 0, files: 0, started: now() }
+      const total = usage[vid]?.total ?? 48 * GiB
+      const timer = setInterval(() => {
+        const x = measuring[vid]
+        x.counted = Math.min(total, x.counted + total / 6)
+        x.files = Math.round(x.counted / (31 * MiB))
+        if (x.counted >= total) {
+          clearInterval(timer)
+          delete measuring[vid]
+          usage[vid] = { total, files: x.files, folders: folderSplit(total, vid.length), at: now() }
+          mt.size_bytes = total
+          mt.size_at = now()
+        }
+      }, 700)
+    }
+    if (method === 'DELETE') delete measuring[vid]
+    const job = measuring[vid]
+    return clone({ last: usage[vid], running: !!job, counted: job?.counted, counted_files: job?.files, started: job?.started })
+  }
+  if (what === 'traffic') {
+    if (mt.state !== 'mounted' && mt.state !== 'stopping') return []
+    const out: TrafficSample[] = []
+    const r = rng(mt.id.length * 31)
+    const t0 = now() - 3600
+    let up = 0
+    let down = 0
+    for (let t = t0; t <= now(); t += 10) {
+      const k = (t - t0) / 3600
+      up += Math.max(0, (k > 0.7 ? 9e6 : 0.6e6) * (0.4 + r()) * (Math.sin(k * 9) > 0.2 ? 1 : 0.15))
+      down += Math.max(0, 4e6 * (0.3 + r()) * (Math.sin(k * 5 + 1) > -0.3 ? 1 : 0.1))
+      out.push([t, Math.round(up), Math.round(down)])
+    }
+    return out
+  }
+  if (what === 'pending') {
+    const n = mt.status?.pending_files ?? 0
+    const total = mt.status?.pending_bytes ?? 0
+    const files: PendingFile[] = []
+    for (let i = 0; i < n; i++) files.push({ path: `run-42/step-${3000 + i * 1000}.safetensors`, bytes: Math.round(total / n), size: Math.round(total / n), since: now() - 60 * (n - i) })
+    return files
+  }
+  if (what === 'conflicts') return clone(conflictsOf[mt.id] ?? [])
+  if (what === 'conflicts/clear') {
+    const copy = String(body.copy || '')
+    conflictsOf[mt.id] = copy ? (conflictsOf[mt.id] ?? []).filter((c) => c.copy !== copy) : []
+    mt.open_conflicts = conflictsOf[mt.id].length
+    return ok
+  }
+  return undefined
+}
+
 export async function mockRequest(method: string, path: string, raw?: unknown): Promise<unknown> {
   await wait(method === 'GET' ? 60 : 280)
   const body = (raw ?? {}) as Body
@@ -634,6 +766,10 @@ export async function mockRequest(method: string, path: string, raw?: unknown): 
   if ((m = p.match(/^\/accounts\/([^/]+)$/)) && method === 'DELETE') {
     const i = accounts.findIndex((a) => a.id === m![1])
     if (i < 0) fail('account not found')
+    // Like the daemon: an account whose volume is mounted, or whose download runs, isn't removed.
+    const busy = mounts.find((x) => x.account_id === m![1] && (x.state === 'mounted' || x.state === 'starting' || x.state === 'stopping'))
+    if (busy) fail(`${busy.volume_name} is mounted; unmount it first (it belongs to this account)`)
+    if (mockDownloads.some((x) => x.d.account_id === m![1] && !ENDED_MOCK.has(x.d.state))) fail('a remote download of this account is running; pause or cancel it first')
     accounts.splice(i, 1)
     for (let j = mounts.length - 1; j >= 0; j--) if (mounts[j].account_id === m[1]) mounts.splice(j, 1)
     return ok
@@ -676,6 +812,29 @@ export async function mockRequest(method: string, path: string, raw?: unknown): 
     if (mounts.some((x) => x.volume_id === v.id && x.state === 'mounted')) fail('unmount this volume before deleting it')
     list.splice(list.indexOf(v), 1)
     emit('info', v.name, 'vol_deleted')
+    return ok
+  }
+
+  // a volume's page
+  if ((m = p.match(/^\/mounts\/([^/]+)\/(usage|traffic|pending|conflicts|conflicts\/clear)$/))) {
+    const r = insight(method, findMount(m[1]), m[2], body)
+    if (r !== undefined) return r
+  }
+
+  // accounts: a new token, a new name or default environment
+  if ((m = route.match(/^POST \/accounts\/([^/]+)\/token$/))) {
+    const a = accounts.find((x) => x.id === m![1]) ?? fail('account not found')
+    const id = String(body.tokenId || '')
+    if (!/^ak-/.test(id) || !String(body.tokenSecret || '').startsWith('as-')) fail('Modal rejected this token: check the ID and secret')
+    a.token_id = id
+    emit('info', '', 'acct_token', [a.label])
+    return clone(a)
+  }
+  if ((m = p.match(/^\/accounts\/([^/]+)$/)) && method === 'PATCH') {
+    const a = accounts.find((x) => x.id === m![1]) ?? fail('account not found')
+    if (typeof body.label === 'string' && body.label.trim()) a.label = body.label.trim()
+    if (typeof body.environment === 'string') a.environment = body.environment
+    for (const mt of mounts) if (mt.account_id === a.id) mt.account_label = a.label
     return ok
   }
 
@@ -728,8 +887,10 @@ export async function mockRequest(method: string, path: string, raw?: unknown): 
     } else if (m[2] === 'stop') {
       mt.state = 'stopping'
       mt.unmount_error = undefined
+      mt.in_use_by = undefined
       if (mt.status && mt.status.pending_bytes > 0 && url.searchParams.get('force') !== '1') uploadThenStop(mt)
       else setState(mt, 'stopped', 700)
+      mt.last_used = now()
     } else if (m[2] === 'sync' && mt.status) {
       await wait(500)
       mt.status.commits += mt.status.pending_files

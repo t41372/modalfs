@@ -11,7 +11,7 @@
 <p align="center"><a href="README.md">English</a> · 简体中文</p>
 
 <p align="center">
-  <img src="docs/screenshots/zh-CN/mounts.jpg" alt="modalfs 应用：展开的已挂载 volume，显示流量、同步状态和选项">
+  <img src="docs/screenshots/zh-CN/volumes.jpg" alt="modalfs 应用：它管理的 Volume，每个都显示状态、文件夹、大小和下一步可以做的事">
 </p>
 
 ---
@@ -134,19 +134,19 @@ modalfs 会记住每个挂载，所以下次 `modalfs mount my-data` 会沿用�
 
 | 页面 | 可以做什么 |
 |---|---|
-| **挂载** | 用开关挂载或卸载。查看待上传文件、流量、提交次数和冲突。立即同步、在访达中显示、强制卸载。每个挂载的选项：自动挂载、只读、过滤 macOS 临时文件、冲突策略、NFS/FUSE。 |
-| **Volumes** | 按账号和环境浏览 volume。创建、重命名、删除（要输入名称确认）、挂载。 |
-| **账号** | 添加 token、从 `~/.modal.toml` 导入、检查 token 是否仍然有效、移除。 |
-| **下载** | 远程下载：添加链接、暂停、继续、取消。每个下载全程的速度（把光标移到线上可以看那一点的加速度），以及它经历了什么。 |
+| **Volume** | modalfs 管理的 Volume，一眼看出每个的状态（已同步、上传中、有冲突、未挂载）、文件夹和大小。从账号里搜索并添加别的 Volume，几百个里也找得到。Volume 的页面显示大小和最大的几个文件夹、还没上传的内容、最近一小时的上传和读取，以及冲突（两个版本都能一键在访达中显示）。挂载、卸载（会先说明还有什么在上传）、更改选项、从 modalfs 移除、重命名或删除。 |
+| **远程下载** | 添加链接、暂停、继续、删除。正在运行的有几个、总速度、现在每小时花多少；每个下载全程的速度（把光标移到线上可以看那一点的加速度），以及它经历了什么。 |
 | **动态** | 挂载、上传、冲突、错误和崩溃恢复，按天分组，重要的会发通知。 |
-| **设置** | 语言（English / 繁體中文 / 简体中文）、浅色/深色、登录时启动、缓存大小、预读、默认挂载位置、连接方式、远程下载。 |
+| **设置** | Modal 账号（连接、检查或更换 token、重命名、默认环境、断开连接）、登录时启动、挂载位置、浅色/深色、语言（English / 繁體中文 / 简体中文）、远程下载，“高级”里还有缓存、预读和连接方式。 |
+
+侧边栏底部的小图标显示是不是全部都在 Modal 上；把光标移上去可以看还有什么在上传。
 
 窗口只是个遥控器。挂载都在后台进程里，所以**关掉窗口不会卸载任何东西**。在 macOS 上，窗口是一层透出桌面的玻璃。在浏览器里（没装应用时的 `modalfs ui`）或手机大小的窗口里，同一个界面会把标签移到底部。
 
 <table>
   <tr>
     <td width="50%" valign="top">
-      <a href="docs/screenshots/zh-CN/volumes.jpg"><img src="docs/screenshots/zh-CN/volumes.jpg" alt="深色主题的 Volumes 页：账号和环境，以及每个 volume 和它的挂载按钮"></a>
+      <a href="docs/screenshots/zh-CN/volume.jpg"><img src="docs/screenshots/zh-CN/volume.jpg" alt="深色主题的 Volume 页面：挂载位置、按文件夹的大小、最近一小时的上传和读取，以及挂载选项"></a>
     </td>
     <td width="50%" valign="top">
       <a href="docs/screenshots/zh-CN/activity.jpg"><img src="docs/screenshots/zh-CN/activity.jpg" alt="动态页：上传、挂载、一次冲突和一次恢复，按天分组"></a>
@@ -154,10 +154,10 @@ modalfs 会记住每个挂载，所以下次 `modalfs mount my-data` 会沿用�
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <a href="docs/screenshots/zh-CN/settings.jpg"><img src="docs/screenshots/zh-CN/settings.jpg" alt="深色主题的设置页：语言、外观、登录时启动和缓存"></a>
+      <a href="docs/screenshots/zh-CN/settings.jpg"><img src="docs/screenshots/zh-CN/settings.jpg" alt="深色主题的设置页：Modal 账号、登录时启动、挂载位置、外观、语言和远程下载"></a>
     </td>
     <td width="50%" valign="top">
-      <a href="docs/screenshots/zh-CN/download.jpg"><img src="docs/screenshots/zh-CN/download.jpg" alt="一个远程下载：进度、全程速度图（标出了 Modal 把它换到新容器的那段时间）以及经过"></a>
+      <a href="docs/screenshots/zh-CN/download.jpg"><img src="docs/screenshots/zh-CN/download.jpg" alt="一个远程下载：进度、速度和目前的花费，全程速度图（标出了 Modal 把它换到新容器的那段时间）以及经过"></a>
     </td>
   </tr>
 </table>
@@ -166,13 +166,13 @@ modalfs 会记住每个挂载，所以下次 `modalfs mount my-data` 会沿用�
 
 给 modalfs 一个链接，你工作区里的一个 Modal Function 就会把它直接下载到 volume 里。这段时间你的电脑可以睡眠、断网甚至关机；文件下载完成后才会出现在你选的文件夹里。
 
-- **打开之前一直是关着的**：在“下载”页、设置里，或用 `modalfs download enable` 打开，因为这是 modalfs 里唯一会运行计算的功能。只有你添加或继续一个下载时才会启动 Function，下载完成、暂停或卡住时就停止。
+- **打开之前一直是关着的**：在“远程下载”页、设置里，或用 `modalfs download enable` 打开，因为这是 modalfs 里唯一会运行计算的功能。只有你添加或继续一个下载时才会启动 Function，下载完成、暂停或卡住时就停止。
 - **费用**：最小规格（0.125 CPU、512 MiB）下载期间每小时约 0.01 美元，另加 Modal 的网络费用（看实时速度会多出约下载量 2% 的流量）。第一次下载，以及 modalfs 更新后的第一次，会用一个短命的 Sandbox 部署 Function：大约 10 秒、0.0001 美元。不需要安装 Python。
 - **下载工具**：大多数链接用 gopeed（HTTP、FTP、magnet、torrent），视频网站用 yt-dlp（每次都用最新版），也可以自己选 aria2。gopeed 在某个服务器上一直失败时，aria2 会自动接手，从头下载那个文件。
 - **中断**：Modal 有时会停掉容器来调度资源。下载工具的进度存在 volume 上，所以会在新容器上从原来的地方接着下载，通常一分钟内。一个 Function 最多运行 24 小时，更久的下载会自己换到新的 Function 继续。这些都会显示在下载的页面上，在速度图上标出来，也会用文字说明。
 - **实时速度**：在应用里看一个下载时每秒更新四次，由后台进程从容器转发。无论发生什么都留得下来的记录（状态、事件、速度历史）存在 volume 的 `.modalfs/downloads/` 里。
 - **下载好的文件从不覆盖任何东西**：名字已被占用时会加上 ` (1)`。
-- **费用**：“下载”页（以及 `modalfs download spend`）显示工作区和它的下载本月花了多少钱。Modal 的 API 不提供剩余额度和支出上限，所以这两项会链接到 Modal 的 Usage & Billing 页面。Modal 拒绝启动或停止了一个下载时，下载的页面会说明：如果 Modal 说是支出上限或额度的问题，就直接说；否则会说 Modal 没有给出原因，并提示支出上限是其中一个要检查的可能。
+- **费用**：“远程下载”页（以及 `modalfs download spend`）显示工作区和它的下载本月花了多少钱。Modal 的 API 不提供剩余额度和支出上限，所以这两项会链接到 Modal 的 Usage & Billing 页面。Modal 拒绝启动或停止了一个下载时，下载的页面会说明：如果 Modal 说是支出上限或额度的问题，就直接说；否则会说 Modal 没有给出原因，并提示支出上限是其中一个要检查的可能。
 
 ```console
 $ modalfs download enable
@@ -195,6 +195,9 @@ $ modalfs download show dl-3f2a --follow
                                               --now 立即卸载，剩下的在后台继续上传
   modalfs sync VOLUME|PATH                    立即提交待上传的写入
   modalfs forget VOLUME|PATH                  删除保存的挂载（volume 本身不受影响）
+  modalfs info VOLUME|PATH [--measure]        大小、等待上传的文件、未处理的冲突；
+                                              --measure 列出整个 volume 来计算大小
+  modalfs conflicts VOLUME|PATH [--handled]   冲突副本；--handled 全部标为已处理
 
 Volumes
   modalfs volume ls      [--account A] [--env E]
@@ -206,6 +209,10 @@ Volumes
   modalfs account add [--label L] [--token-id ID] [--env E]
   modalfs account import [PROFILE...]
   modalfs account ls
+  modalfs account check ACCOUNT               问 Modal 这个 token 是否仍然有效
+  modalfs account token ACCOUNT               更换过期的 token（必须是同一个工作区）
+  modalfs account rename ACCOUNT NEWNAME
+  modalfs account env ACCOUNT ENVIRONMENT     添加 volume 时在哪个环境里查找
   modalfs account rm ACCOUNT
 
 远程下载（打开之前是关着的；每个下载都在 Modal Function 里运行，向你的账号计费）

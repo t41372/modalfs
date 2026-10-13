@@ -68,6 +68,50 @@ export interface Mount {
   /** Mounted: why the last unmount failed, and the apps that had files open in it. */
   unmount_error?: string
   in_use_by?: string[]
+  /** When it was last unmounted (Unix seconds). */
+  last_used?: number
+  /** Conflicts not marked handled yet. */
+  open_conflicts?: number
+  /** The volume's size from its last listing, and when that was. */
+  size_bytes?: number
+  size_at?: number
+}
+
+/** A file that changed on Modal while it was edited here; the local version was saved as `copy`. */
+export interface Conflict {
+  path: string
+  copy: string
+  at: number
+}
+
+/** A file with changes that aren't on Modal yet. */
+export interface PendingFile {
+  path: string
+  /** Changed data, in whole 8 MiB blocks. */
+  bytes: number
+  size: number
+  since?: number
+}
+
+/** A mount's running totals at a moment: [Unix seconds, bytes up, bytes down], every 10 s for an hour. */
+export type TrafficSample = [number, number, number]
+
+/** A volume's size, from listing every file in it (Modal's API doesn't tell it). */
+export interface Usage {
+  total: number
+  files: number
+  /** The largest top-level folders, biggest first. */
+  folders: { name: string; bytes: number; files: number }[]
+  at: number
+}
+
+export interface UsageView {
+  last?: Usage
+  running: boolean
+  counted?: number
+  counted_files?: number
+  started?: number
+  error?: string
 }
 
 export interface Settings {

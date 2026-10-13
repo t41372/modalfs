@@ -2,7 +2,7 @@ import { QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/re
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { api } from './client'
-import type { Billing, Download, DownloadDetail, Environment, LiveView, Mount, Sample, Settings, State, Volume } from './types'
+import type { Billing, Conflict, Download, DownloadDetail, Environment, LiveView, Mount, PendingFile, Sample, Settings, State, TrafficSample, UsageView, Volume } from './types'
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -199,3 +199,48 @@ export function useLive(id: string, active: boolean) {
 }
 
 export const refreshDownloads = () => queryClient.invalidateQueries({ queryKey: ['downloads'] })
+
+// ─── A volume's page ───
+
+/** The volume's size from its last listing, and a listing in progress (polled while one runs). */
+export function useUsage(mountId: string) {
+  return useQuery({
+    queryKey: ['usage', mountId],
+    queryFn: () => api<UsageView>('GET', `/mounts/${mountId}/usage`),
+    refetchInterval: (q) => (q.state.data?.running ? 1000 : false),
+    retry: false,
+  })
+}
+export const refreshUsage = (mountId: string) => queryClient.invalidateQueries({ queryKey: ['usage', mountId] })
+
+/** The mount's upload and read totals every 10 s for the last hour. */
+export function useTraffic(mountId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['traffic', mountId],
+    queryFn: () => api<TrafficSample[]>('GET', `/mounts/${mountId}/traffic`),
+    enabled,
+    refetchInterval: 10_000,
+    retry: false,
+  })
+}
+
+/** The files waiting to upload, while there are any. */
+export function usePending(mountId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['pending', mountId],
+    queryFn: () => api<PendingFile[]>('GET', `/mounts/${mountId}/pending`),
+    enabled,
+    refetchInterval: 2000,
+    retry: false,
+  })
+}
+
+/** Conflicts not marked handled yet. */
+export function useConflicts(mountId: string, count: number) {
+  return useQuery({
+    queryKey: ['conflicts', mountId, count],
+    queryFn: () => api<Conflict[]>('GET', `/mounts/${mountId}/conflicts`),
+    enabled: count > 0,
+    retry: false,
+  })
+}

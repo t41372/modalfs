@@ -1,4 +1,4 @@
-import { type FormEvent, type ReactNode, useState } from 'react'
+import { type FormEvent, type ReactNode, useId, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -16,6 +16,7 @@ export function FormDialog({
   desc,
   submit,
   danger,
+  dismiss,
   canSubmit = true,
   onSubmit,
   children,
@@ -26,6 +27,8 @@ export function FormDialog({
   desc?: ReactNode
   submit: string
   danger?: boolean
+  /** The dismiss button; never a word that's also in `submit`. */
+  dismiss?: string
   canSubmit?: boolean
   /** Return normally to close; throw to show the error. */
   onSubmit: () => Promise<void>
@@ -55,7 +58,7 @@ export function FormDialog({
   }
   return (
     <Dialog open={open} onOpenChange={change}>
-      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain sm:max-w-[440px]" showCloseButton={false}>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain sm:max-w-[460px]" showCloseButton={false}>
         <form onSubmit={submitForm} className="flex flex-col gap-5" autoComplete="off">
           <DialogHeader>
             <DialogTitle>{title}</DialogTitle>
@@ -69,7 +72,7 @@ export function FormDialog({
           )}
           <DialogFooter>
             <Button type="button" variant="outline" disabled={busy} onClick={() => change(false)}>
-              {t('form.cancel')}
+              {dismiss ?? t('form.cancel')}
             </Button>
             <Button type="submit" variant={danger ? 'destructive' : 'default'} disabled={!canSubmit || busy}>
               {busy && <Spinner />}
@@ -82,13 +85,26 @@ export function FormDialog({
   )
 }
 
-/** A labelled form field. */
-export function Field({ label, hint, error, children }: { label: string; hint?: ReactNode; error?: string; children: ReactNode }) {
+/**
+ * A labelled form field. Its label is a <label> only for a single input
+ * (`htmlFor` its id): wrapped around anything else, a click on the label or
+ * the hint would press the first button inside, and quietly change the choice.
+ */
+export function Field({ label, hint, error, htmlFor, children }: { label: string; hint?: ReactNode; error?: string; htmlFor?: string; children: ReactNode }) {
+  const id = useId()
   return (
-    <label className="flex flex-col gap-1.5">
-      <span className="text-[12.5px] font-medium">{label}</span>
+    <div className="flex flex-col gap-1.5" role={htmlFor ? undefined : 'group'} aria-labelledby={htmlFor ? undefined : id}>
+      {htmlFor ? (
+        <label htmlFor={htmlFor} className="text-[12.5px] font-medium">
+          {label}
+        </label>
+      ) : (
+        <span id={id} className="text-[12.5px] font-medium">
+          {label}
+        </span>
+      )}
       {children}
       {(error || hint) && <span className={error ? 'text-[12px] text-destructive' : 'text-[12px] leading-relaxed text-muted-foreground'}>{error || hint}</span>}
-    </label>
+    </div>
   )
 }

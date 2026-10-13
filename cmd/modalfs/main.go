@@ -36,6 +36,9 @@ Everyday:
                                             at once and uploads the rest in the background
   modalfs sync VOLUME                       commit pending writes now
   modalfs forget VOLUME                     remove a saved mount (the volume is untouched)
+  modalfs info VOLUME [--measure]           size, files waiting to upload, open conflicts;
+                                            --measure lists the volume to measure its size
+  modalfs conflicts VOLUME [--handled]      conflict copies; --handled marks them all handled
 
 Volumes:
   modalfs volume ls [--account A] [--env E]
@@ -52,6 +55,10 @@ Accounts (each mount is pinned to one; the Modal CLI's active profile is never u
   modalfs account add [--label L] [--token-id ID]   token secret is prompted, stored in the keychain
   modalfs account import [PROFILE...]       copy profiles from ~/.modal.toml
   modalfs account ls
+  modalfs account check ACCOUNT              ask Modal whether the token still works
+  modalfs account token ACCOUNT             replace an expired token (same workspace)
+  modalfs account rename ACCOUNT NEWNAME
+  modalfs account env ACCOUNT ENVIRONMENT   the environment new mounts use
   modalfs account rm ACCOUNT
 
 Background process:
@@ -103,6 +110,10 @@ func main() {
 		cmdSimpleMount(args, "sync")
 	case "forget":
 		cmdForget(args)
+	case "info":
+		cmdInfo(args)
+	case "conflicts":
+		cmdConflicts(args)
 	case "volume", "volumes", "vol":
 		cmdVolume(args)
 	case "download", "downloads", "dl":
@@ -458,6 +469,103 @@ func cmdForget(args []string) {
 	fmt.Printf("forgot mount %s (%s)\n", m.VolumeName, m.Mountpoint)
 }
 
+// cmdInfo shows what the app's volume page shows.
+func cmdInfo(args []string) {
+	fl := flag.NewFlagSet("info", flag.ExitOnError)
+	measure := fl.Bool("measure", false, "list the volume to measure its size (one request per batch of files)")
+	pos := parseFlags(fl, args)
+	if len(pos) != 1 {
+		fatal(errors.New("usage: modalfs info VOLUME|PATH [--measure]"))
+	}
+	c := client()
+	m := findMount(state(c), pos[0])
+	fmt.Printf("%s  %s · %s\n", m.VolumeName, m.AccountLabel, m.State)
+	fmt.Printf("  folder      %s\n", m.Mountpoint)
+	if m.VolumeID != "" {
+		fmt.Printf("  volume ID   %s\n", m.VolumeID)
+	}
+	type usage struct {
+		Last *struct {
+			Total, Files, At int64
+			Folders          []struct {
+				Name  string
+				Bytes int64
+			}
+		}
+		Running      bool
+		Counted      int64
+		CountedFiles int64 `json:"counted_files"`
+		Error        string
+	}
+	var u usage
+	if *measure {
+		must(c.Do("POST", "/api/mounts/"+m.ID+"/usage", nil, &u))
+		for u.Running {
+			fmt.Printf("\r  measuring   %s in %d files…", human(u.Counted), u.CountedFiles)
+			time.Sleep(time.Second)
+			must(c.Do("GET", "/api/mounts/"+m.ID+"/usage", nil, &u))
+		}
+		fmt.Print("\r\033[K")
+		if u.Error != "" {
+			fatal(errors.New(u.Error))
+		}
+	} else {
+		must(c.Do("GET", "/api/mounts/"+m.ID+"/usage", nil, &u))
+	}
+	if u.Last != nil {
+		fmt.Printf("  size        %s in %d files (measured %s)\n", human(u.Last.Total), u.Last.Files, time.Unix(u.Last.At, 0).Format("2006-01-02 15:04"))
+		for _, f := range u.Last.Folders {
+			fmt.Printf("    %-24s %s\n", f.Name+"/", human(f.Bytes))
+		}
+	} else {
+		fmt.Println("  size        not measured (modalfs info --measure)")
+	}
+	var pending []struct {
+		Path  string
+		Bytes int64
+	}
+	must(c.Do("GET", "/api/mounts/"+m.ID+"/pending", nil, &pending))
+	if len(pending) > 0 {
+		fmt.Printf("  waiting to upload: %d files\n", len(pending))
+		for _, p := range pending {
+			fmt.Printf("    %s  %s\n", p.Path, human(p.Bytes))
+		}
+	}
+	printConflicts(c, m)
+}
+
+func cmdConflicts(args []string) {
+	fl := flag.NewFlagSet("conflicts", flag.ExitOnError)
+	handled := fl.Bool("handled", false, "mark them all handled (the files are left as they are)")
+	pos := parseFlags(fl, args)
+	if len(pos) != 1 {
+		fatal(errors.New("usage: modalfs conflicts VOLUME|PATH [--handled]"))
+	}
+	c := client()
+	m := findMount(state(c), pos[0])
+	if *handled {
+		must(c.Do("POST", "/api/mounts/"+m.ID+"/conflicts/clear", map[string]string{}, nil))
+		fmt.Println("marked handled")
+		return
+	}
+	if !printConflicts(c, m) {
+		fmt.Println("no open conflicts")
+	}
+}
+
+func printConflicts(c *daemon.Client, m daemon.MountView) bool {
+	var cs []daemon.Conflict
+	must(c.Do("GET", "/api/mounts/"+m.ID+"/conflicts", nil, &cs))
+	if len(cs) == 0 {
+		return false
+	}
+	fmt.Printf("  conflicts: %d (Modal's version kept the name; yours is the copy)\n", len(cs))
+	for _, x := range cs {
+		fmt.Printf("    %s  →  your version: %s\n", x.Path, x.Copy)
+	}
+	return true
+}
+
 type volRow struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
@@ -608,6 +716,52 @@ func cmdAccount(args []string) {
 		a := pickAccount(state(c), pos[0])
 		must(c.Do("DELETE", "/api/accounts/"+a.ID, nil, nil))
 		fmt.Printf("removed %s\n", a.Label)
+	case "check":
+		if len(pos) != 1 {
+			fatal(errors.New("usage: modalfs account check ACCOUNT"))
+		}
+		a := pickAccount(state(c), pos[0])
+		var who struct {
+			WorkspaceName string `json:"workspace_name"`
+			Username      string `json:"username"`
+		}
+		must(c.Do("POST", "/api/accounts/"+a.ID+"/verify", nil, &who))
+		fmt.Printf("%s: the token works (workspace %s)\n", a.Label, who.WorkspaceName)
+	case "token":
+		if len(pos) != 1 {
+			fatal(errors.New("usage: modalfs account token ACCOUNT [--token-id ID]   (the secret is prompted)"))
+		}
+		a := pickAccount(state(c), pos[0])
+		id := *tokenID
+		in := bufio.NewReader(os.Stdin)
+		if id == "" {
+			fmt.Print("New token ID (ak-…): ")
+			id, _ = in.ReadString('\n')
+		}
+		fmt.Print("New token secret (as-…, hidden): ")
+		b, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Println()
+		if err != nil {
+			line, _ := in.ReadString('\n')
+			b = []byte(line)
+		}
+		var out config.Account
+		must(c.Do("POST", "/api/accounts/"+a.ID+"/token", map[string]any{"tokenId": strings.TrimSpace(id), "tokenSecret": strings.TrimSpace(string(b))}, &out))
+		fmt.Printf("%s now uses token %s… (mounted volumes switch to it when they're mounted again)\n", out.Label, out.TokenID[:min(7, len(out.TokenID))])
+	case "rename":
+		if len(pos) != 2 {
+			fatal(errors.New("usage: modalfs account rename ACCOUNT NEWNAME"))
+		}
+		a := pickAccount(state(c), pos[0])
+		must(c.Do("PATCH", "/api/accounts/"+a.ID, map[string]any{"label": pos[1]}, nil))
+		fmt.Printf("renamed %s to %s\n", a.Label, pos[1])
+	case "env":
+		if len(pos) != 2 {
+			fatal(errors.New("usage: modalfs account env ACCOUNT ENVIRONMENT   (\"\" for the workspace's default)"))
+		}
+		a := pickAccount(state(c), pos[0])
+		must(c.Do("PATCH", "/api/accounts/"+a.ID, map[string]any{"environment": pos[1]}, nil))
+		fmt.Printf("%s: new mounts use environment %q\n", a.Label, pos[1])
 	default:
 		fatal(fmt.Errorf("unknown account command %q", sub))
 	}

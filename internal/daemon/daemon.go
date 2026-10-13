@@ -58,6 +58,10 @@ type Daemon struct {
 	clients clientCache // shared Modal clients for API calls
 	dl      *dlManager  // remote downloads
 
+	traffic   traffic     // each mount's totals over the last hour
+	conflicts conflicts   // conflicts not marked handled yet, by mount
+	usage     *usageStore // volume sizes, from listing them
+
 	bootID  string
 	auth    *uiAuth
 	uiURL   string // the browser UI, without a token
@@ -149,6 +153,7 @@ func Run(log *slog.Logger) error {
 	if d.dl, err = newDLManager(d, config.Dir(), d.quit); err != nil {
 		return err
 	}
+	d.usage = newUsageStore(config.Dir())
 	d.cleanupStale()
 	d.checkService()
 
@@ -177,6 +182,7 @@ func Run(log *slog.Logger) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go d.watch(ctx)
+	go d.sampleTraffic(ctx)
 	go d.autoMount()
 	d.dl.resume()
 
@@ -467,6 +473,12 @@ func (d *Daemon) State() StateView {
 	v.Mounts = []MountView{}
 	for _, m := range f.Mounts {
 		mv := MountView{Mount: m, State: StateStopped, AccountLabel: accts[m.AccountID].Label, Workspace: accts[m.AccountID].Workspace}
+		mv.OpenConflicts = d.conflicts.count(m.ID)
+		if d.usage != nil && m.VolumeID != "" {
+			if u, ok := d.usage.last(m.VolumeID); ok {
+				mv.SizeBytes, mv.SizeAt = u.Total, u.At
+			}
+		}
 		if r, ok := runs[m.ID]; ok {
 			mv.State, mv.Error, mv.ActiveMode = r.state, r.err, r.mode
 			mv.StartedAt, mv.Step = unix(r.startedAt), r.step

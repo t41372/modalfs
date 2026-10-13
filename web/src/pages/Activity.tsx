@@ -7,6 +7,8 @@ import { useLoadedState } from '@/api/queries'
 import type { DaemonEvent, EventKind } from '@/api/types'
 import { Card, Empty, Page, Section } from '@/components/page'
 import { Segmented } from '@/components/Segmented'
+import { Button } from '@/components/ui/button'
+import { navigate } from '@/app/nav'
 import { eventText, homeOf } from '@/lib/format'
 import { intlTag } from '@/i18n'
 
@@ -25,7 +27,9 @@ const MAX = 300
 export function ActivityPage() {
   const { t, i18n } = useTranslation()
   const { events, loaded, failed } = useFeed()
-  const home = homeOf(useLoadedState().settings.mount_root)
+  const st = useLoadedState()
+  const home = homeOf(st.settings.mount_root)
+  const withConflicts = new Set(st.mounts.filter((m) => (m.open_conflicts ?? 0) > 0).map((m) => m.id))
   const [filter, setFilter] = useState<'all' | 'problems'>('all')
 
   const lang = i18n.language
@@ -94,6 +98,11 @@ export function ActivityPage() {
                       {e.volume && <span className="mx-1.5 text-muted-foreground/60">·</span>}
                       <span className={e.kind === 'error' ? 'text-destructive' : undefined}>{eventText(e, t, home)}</span>
                     </div>
+                    {e.kind === 'conflict' && e.mount_id && withConflicts.has(e.mount_id) && (
+                      <Button size="xs" variant="outline" className="mt-[3px] shrink-0" onClick={() => navigate('volumes', e.mount_id)}>
+                        {t('activity.look')}
+                      </Button>
+                    )}
                     <time className="shrink-0 pt-[6px] text-[12px] text-muted-foreground tabular" dateTime={new Date(e.at * 1000).toISOString()}>
                       {e.time}
                     </time>

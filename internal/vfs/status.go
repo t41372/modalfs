@@ -1,6 +1,7 @@
 package vfs
 
 import (
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -63,6 +64,46 @@ func (fs *FS) Status() Status {
 	}
 	fs.ctr.mu.Unlock()
 	return s
+}
+
+// PendingFile is a file with changes that aren't on Modal yet.
+type PendingFile struct {
+	Path  string `json:"path"`
+	Bytes int64  `json:"bytes"` // changed data (whole changed blocks)
+	Size  int64  `json:"size"`
+	Since int64  `json:"since,omitempty"` // when its oldest unsaved change was made (Unix seconds)
+}
+
+// PendingFiles lists the files Status counts as pending, oldest change first.
+func (fs *FS) PendingFiles() []PendingFile {
+	fs.mu.Lock()
+	var files []*fileState
+	for _, st := range fs.files {
+		files = append(files, st)
+	}
+	fs.mu.Unlock()
+	out := []PendingFile{}
+	for _, st := range files {
+		st.mu.Lock()
+		if st.gen != st.flushedGen && !st.removed {
+			p := PendingFile{Path: st.path, Size: st.size}
+			for idx := range st.dirty {
+				p.Bytes += int64(blockLen(st.size, idx))
+			}
+			if !st.dirtySince.IsZero() {
+				p.Since = st.dirtySince.Unix()
+			}
+			out = append(out, p)
+		}
+		st.mu.Unlock()
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Since != out[j].Since {
+			return out[i].Since < out[j].Since
+		}
+		return out[i].Path < out[j].Path
+	})
+	return out
 }
 
 func (fs *FS) event(kind, p, detail string) {

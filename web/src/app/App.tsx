@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { markSeen, useEventSync } from '@/api/events'
 import { ApiError } from '@/api/client'
-import { patchSettings, useAction, useAppState } from '@/api/queries'
+import { useAppState } from '@/api/queries'
 import type { DaemonEvent } from '@/api/types'
 import { Confirmer } from '@/components/confirm'
 import { Spinner } from '@/components/Spinner'
@@ -13,32 +13,40 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { eventText, homeOf } from '@/lib/format'
 import { easeOut } from '@/lib/motion'
 import { trafficLights } from '@/lib/platform'
-import { Accounts } from '@/pages/Accounts'
 import { ActivityPage } from '@/pages/Activity'
+import { DownloadRoute } from '@/pages/Download'
 import { Downloads } from '@/pages/Downloads'
-import { Mounts } from '@/pages/Mounts'
+import { Home } from '@/pages/Home'
 import { SettingsPage } from '@/pages/Settings'
-import { Volumes } from '@/pages/Volumes'
+import { VolumePage } from '@/pages/VolumePage'
+import { Welcome } from '@/pages/Welcome'
 import { ErrorBoundary } from './ErrorBoundary'
-import { navigate, type PageId, usePage } from './nav'
+import { navigate, type Route, useRoute } from './nav'
 import { quitDone, useQuitPhase } from './quit'
 import { Quitting } from './Quitting'
 import { Rail } from './Rail'
 import { useLook } from './theme'
 
-const PAGES: Record<PageId, () => React.ReactNode> = {
-  mounts: Mounts,
-  volumes: Volumes,
-  downloads: Downloads,
-  accounts: Accounts,
-  activity: ActivityPage,
-  settings: SettingsPage,
+/** The page for where the window is. Without an account, the volumes are a welcome instead. */
+function Current({ route, accounts }: { route: Route; accounts: number }) {
+  switch (route.section) {
+    case 'volumes':
+      if (!accounts) return <Welcome />
+      return route.id ? <VolumePage id={route.id} /> : <Home />
+    case 'downloads':
+      return route.id ? <DownloadRoute id={route.id} /> : <Downloads />
+    case 'activity':
+      return <ActivityPage />
+    case 'settings':
+      return <SettingsPage />
+  }
 }
 
 export function App() {
   const { t } = useTranslation()
   const { data: state, dataUpdatedAt, isError, error } = useAppState()
-  const page = usePage()
+  const route = useRoute()
+  const page = route.section
   const dark = useLook(state?.settings.appearance, state?.settings.language)
   const home = homeOf(state?.settings.mount_root)
   const quitPhase = useQuitPhase()
@@ -84,14 +92,6 @@ export function App() {
     }
   }, [isError, state, t, quitPhase])
 
-  const setAppearance = useAction((appearance: 'light' | 'dark') => patchSettings({ appearance }), {
-    optimistic: (s, appearance) => {
-      s.settings.appearance = appearance
-    },
-  })
-  const toggleDark = () => setAppearance.mutate(dark ? 'light' : 'dark')
-
-  const Current = PAGES[page]
   return (
     <MotionConfig reducedMotion="user">
       <TooltipProvider delay={500}>
@@ -100,7 +100,7 @@ export function App() {
             content starts below it; dialogs, menus and the offline banner sit above it. */}
         {trafficLights && <div className="drag-region fixed inset-x-0 top-0 z-10 h-10" />}
         <div className="grid h-full grid-cols-1 bg-win sm:grid-cols-[88px_minmax(0,1fr)]">
-          <Rail dark={dark} onToggleDark={toggleDark} />
+          <Rail />
           <div className="flex min-h-0 min-w-0 sm:py-2.5 sm:pr-2.5">
             <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-win-border bg-background sm:rounded-xl sm:border">
               <AnimatePresence initial={false}>
@@ -118,12 +118,12 @@ export function App() {
                   </motion.div>
                 )}
               </AnimatePresence>
-              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-20 sm:pb-0" key={page}>
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-20 sm:pb-0" key={`${page}/${route.id ?? ''}`}>
                 {quitting ? (
                   <Quitting state={state} phase={quitPhase} />
                 ) : state ? (
-                  <ErrorBoundary resetKey={page}>
-                    <Current />
+                  <ErrorBoundary resetKey={`${page}/${route.id ?? ''}`}>
+                    <Current route={route} accounts={state.accounts.length} />
                   </ErrorBoundary>
                 ) : isError ? (
                   <NotRunning noToken={error instanceof ApiError && error.status === 401} />

@@ -48,8 +48,8 @@ export function CreateVolumeDialog({ open, onOpenChange, account, env }: { open:
         }
       }}
     >
-      <Field label={t('form.volName')} hint={t('form.volNameHint')} error={bad ? t('form.volNameBad') : undefined}>
-        <Input className="font-mono text-[13px]" value={name} onChange={(e) => setName(e.target.value.trim())} aria-invalid={bad} spellCheck={false} autoFocus maxLength={64} />
+      <Field label={t('form.volName')} htmlFor="vol-name" hint={t('form.volNameHint')} error={bad ? t('form.volNameBad') : undefined}>
+        <Input id="vol-name" className="font-mono text-[13px]" value={name} onChange={(e) => setName(e.target.value.trim())} aria-invalid={bad} spellCheck={false} autoFocus maxLength={64} />
       </Field>
       <label className="flex items-center gap-2.5 text-[13px]">
         <Checkbox checked={mount} onCheckedChange={(v) => setMount(!!v)} />
@@ -80,15 +80,15 @@ export function RenameVolumeDialog({ volume, onClose, account, env }: { volume: 
         refreshState()
       }}
     >
-      <Field label={t('form.volName')} error={bad ? t('form.volNameBad') : undefined}>
-        <Input className="font-mono text-[13px]" value={name} onChange={(e) => setName(e.target.value.trim())} aria-invalid={bad} spellCheck={false} autoFocus maxLength={64} />
+      <Field label={t('form.volName')} htmlFor="vol-rename" error={bad ? t('form.volNameBad') : undefined}>
+        <Input id="vol-rename" className="font-mono text-[13px]" value={name} onChange={(e) => setName(e.target.value.trim())} aria-invalid={bad} spellCheck={false} autoFocus maxLength={64} />
       </Field>
     </FormDialog>
   )
 }
 
 /** Deleting asks for the volume's name to be typed, like GitHub's repository deletion. */
-export function DeleteVolumeDialog({ volume, onClose, account, env }: { volume: Volume | null; onClose: () => void; account: string; env: string }) {
+export function DeleteVolumeDialog({ volume, onClose, account, env, onDeleted }: { volume: Volume | null; onClose: () => void; account: string; env: string; onDeleted?: () => void }) {
   const { t } = useTranslation()
   const [typed, setTyped] = useState('')
   useEffect(() => {
@@ -101,6 +101,7 @@ export function DeleteVolumeDialog({ volume, onClose, account, env }: { volume: 
       title={t('form.deleteVolume', { name: volume?.name })}
       desc={t('form.deleteP')}
       submit={t('form.deleteForever')}
+      dismiss={t('form.keep')}
       danger
       canSubmit={typed === volume?.name}
       onSubmit={async () => {
@@ -108,10 +109,11 @@ export function DeleteVolumeDialog({ volume, onClose, account, env }: { volume: 
         toast.success(t('toast.deleted', { name: volume!.name }))
         refreshVolumes()
         refreshState()
+        onDeleted?.()
       }}
     >
-      <Field label={t('form.deleteType', { name: volume?.name })}>
-        <Input className="font-mono text-[13px]" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={volume?.name} spellCheck={false} autoFocus />
+      <Field label={t('form.deleteType', { name: volume?.name })} htmlFor="vol-delete">
+        <Input id="vol-delete" className="font-mono text-[13px]" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={volume?.name} spellCheck={false} autoFocus />
       </Field>
     </FormDialog>
   )

@@ -1,7 +1,7 @@
 // The README's pictures, made the same way each time:
 //
 //   bun run screenshots              (writes docs/screenshots/<language>/<shot>.jpg)
-//   bun run screenshots mounts       (only the shots named)
+//   bun run screenshots volumes      (only the shots named)
 //
 // 1. The UI is built against the mock API (src/api/mock.ts), so the pictures
 //    show sample data that belongs to no one, and served from a temporary folder.
@@ -34,27 +34,24 @@ interface Shot {
 }
 
 const SHOTS: Shot[] = [
+  { name: 'volumes', page: 'volumes', theme: 'light', backdrop: 'sky' },
   {
-    name: 'mounts',
-    page: 'mounts',
-    theme: 'light',
-    backdrop: 'sky',
-    // The first mount, open, with its traffic and options.
-    show: (page) => page.locator('[data-slot] button, button').filter({ hasText: 'datasets' }).first().click(),
+    name: 'volume',
+    page: 'volumes&id=m-datasets',
+    theme: 'dark',
+    backdrop: 'rain',
+    // Its traffic chart and folders have drawn.
+    show: (page) => page.waitForTimeout(1200),
   },
-  { name: 'volumes', page: 'volumes', theme: 'dark', backdrop: 'rain' },
   { name: 'activity', page: 'activity', theme: 'light', backdrop: 'sky' },
   { name: 'settings', page: 'settings', theme: 'dark', backdrop: 'rain' },
   {
     name: 'download',
-    page: 'downloads',
+    page: 'downloads&id=dl-train',
     theme: 'light',
     backdrop: 'sky',
     // The running download that Modal moved to a new container, once its chart has drawn.
-    show: async (page) => {
-      await page.getByText('train-2024.tar', { exact: true }).first().click()
-      await page.waitForTimeout(2500)
-    },
+    show: (page) => page.waitForTimeout(2500),
   },
 ]
 

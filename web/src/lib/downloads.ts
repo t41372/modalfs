@@ -27,6 +27,29 @@ export const BUSY = new Set(['preparing', 'pausing', 'cancelling'])
 export const RESUMABLE = new Set(['paused', 'stalled', 'failed', 'time limit'])
 /** States in which no run is going. */
 export const ENDED = new Set(['done', 'paused', 'stalled', 'failed', 'time limit', 'cancelled'])
+/** States that wait for a decision: why it stopped, and what to do. */
+export const NEEDS_YOU = new Set(['failed', 'stalled', 'time limit'])
+
+/** A failure that trying again can't fix, such as a link that's gone (HTTP 4xx other than a timeout or a rate limit). */
+export const permanent = (d: Download) => d.state === 'failed' && !d.error_kind && /\bHTTP (4(?!08|29)\d\d)\b/.test(d.error ?? '')
+
+/**
+ * What its runs took so far, in seconds: from each start to the next stop.
+ * With the rate for its size, roughly what it cost.
+ */
+export function runSeconds(events: DownloadEvent[], running: boolean, nowSec: number) {
+  let total = 0
+  let from: number | undefined
+  for (const e of events) {
+    if (e.ev === 'start') from ??= e.t
+    else if (from !== undefined && (e.ev === 'signal' || e.ev === 'paused' || e.ev === 'failed' || e.ev === 'finished' || e.ev === 'continued' || e.ev === 'interrupted')) {
+      total += Math.max(0, e.t - from)
+      from = undefined
+    }
+  }
+  if (from !== undefined && running) total += Math.max(0, nowSec - from)
+  return total
+}
 
 export const speed = (n: number) => `${bytes(n)}/s`
 

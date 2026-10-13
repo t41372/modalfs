@@ -91,6 +91,11 @@ type MountView struct {
 	// Mounted: the last unmount failed, and the apps that had files open in it.
 	UnmountError string   `json:"unmount_error,omitempty"`
 	InUseBy      []string `json:"in_use_by,omitempty"`
+	// Conflicts not marked handled yet (the vfs counter in Status counts them all).
+	OpenConflicts int `json:"open_conflicts,omitempty"`
+	// The volume's size from its last listing, and when that was.
+	SizeBytes int64 `json:"size_bytes,omitempty"`
+	SizeAt    int64 `json:"size_at,omitempty"`
 }
 
 func defaultMode() string {
@@ -242,6 +247,7 @@ func (d *Daemon) doStart(m config.Mount, ph *runMount) (_ *runMount, err error) 
 		OnEvent: func(kind, p, detail string) {
 			switch kind {
 			case "conflict":
+				d.conflicts.add(mid, Conflict{Path: p, Copy: detail, At: time.Now().Unix()})
 				d.emitC("conflict", "conflict", mid, label, fmt.Sprintf("%s changed remotely; your version saved as %s", p, detail), p, detail)
 			case "error":
 				d.emitC("error", "commit_failed", mid, label, p+": "+detail, p, detail)
@@ -474,6 +480,7 @@ func (d *Daemon) finishStop(id string, r *runMount, label string) error {
 	}
 	d.mu.Unlock()
 	d.saveRuntime()
+	d.updateMount(id, func(m *config.Mount) { m.LastUsedAt = time.Now().Unix() })
 	d.emitC("unmounted", "unmounted", id, label, r.mountpoint, r.mountpoint)
 	if err != nil {
 		d.emitC("error", "upload_left", id, label, "some changes couldn't be uploaded yet; they're kept on this computer and uploaded the next time it's mounted: "+err.Error(), err.Error())
