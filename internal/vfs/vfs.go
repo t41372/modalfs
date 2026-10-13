@@ -211,8 +211,9 @@ func (fs *FS) listDir(dir string, fresh bool) (map[string]modalapi.Entry, error)
 	fs.mu.Lock()
 	l := fs.dirs[dir]
 	if l != nil && l.entries != nil && !fresh && time.Since(l.at) < fs.opt.DirCacheTTL {
+		entries := l.entries // read under the lock: a listing that lands replaces it
 		fs.mu.Unlock()
-		return l.entries, nil
+		return entries, nil
 	}
 	if l == nil {
 		fs.sweepDirsLocked()
