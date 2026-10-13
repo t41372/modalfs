@@ -15,6 +15,7 @@ import { AddVolumeDialog } from '@/dialogs/AddVolume'
 import { ago, bytes, homeOf, tilde } from '@/lib/format'
 import { look, type Look, summary, toneOf } from '@/lib/mounts'
 import { isMac } from '@/lib/platform'
+import { mountError } from '@/lib/mountError'
 
 /** The volumes modalfs manages: each one's state at a glance, and the one thing to do next. */
 export function Home() {
@@ -122,8 +123,8 @@ function VolumeRow({ m, biggest, showAccount }: { m: Mount; biggest: number; sho
 
   const line =
     l === 'error' ? (
-      <span className="truncate text-destructive">
-        {m.error}
+      <span className="truncate text-destructive" title={m.error}>
+        {mountError(m.error, t).text}
         {m.retry_at && m.retry_at > nowSec ? ` · ${t('vol.retryIn', { time: duration(m.retry_at - nowSec, t) })}` : ''}
       </span>
     ) : l === 'off' ? (

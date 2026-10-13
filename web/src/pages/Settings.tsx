@@ -6,7 +6,7 @@ import { toast } from 'sonner'
 import { api } from '@/api/client'
 import { patchSettings, refreshDownloads, refreshState, useAction, useLoadedState } from '@/api/queries'
 import type { Account, Appearance, Identity, Language, Settings } from '@/api/types'
-import { quit as startQuit } from '@/app/quit'
+import { startQuit } from '@/app/quitFlow'
 import { AccountMark, Bar, Hint } from '@/components/bits'
 import { Choice } from '@/components/Choice'
 import { confirm } from '@/components/confirm'
@@ -84,18 +84,6 @@ export function SettingsPage() {
           .catch((e) => toast.error(e.message))
           .finally(refreshState),
     })
-  const quit = () => {
-    const on = st.mounts.filter(live)
-    const pending = on.reduce((n, m) => n + (m.status?.pending_bytes ?? 0), 0)
-    confirm({
-      title: t('settings.quitQ'),
-      desc: `${on.length ? t('settings.quitMounted', { count: on.length }) : t('settings.quitNone')}${pending > 0 ? ` ${t('settings.quitPending', { size: bytes(pending) })}` : ''} ${t('settings.quitWindow')}`,
-      action: t(pending > 0 ? 'settings.quitAfter' : 'settings.quit'),
-      dismiss: t('settings.quitBack'),
-      // The window then shows each volume's upload until the daemon is gone.
-      run: () => startQuit(),
-    })
-  }
 
   return (
     <Page title={t('settings.title')}>
@@ -262,7 +250,7 @@ export function SettingsPage() {
           </Button>
         </span>
         <Hint text={t('settings.quitD')}>
-          <Button variant="outline" onClick={quit}>
+          <Button variant="outline" onClick={() => void startQuit()}>
             {t('settings.quitButton')}
           </Button>
         </Hint>

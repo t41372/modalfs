@@ -560,16 +560,7 @@
     "open": "Open",
     "openLogs": "Log",
     "quitButton": "Unmount all and quit…",
-    "quitD": "Closing the window doesn't unmount anything; this does, and stops modalfs.",
-    "quitQ": "Unmount everything and quit modalfs?",
-    "quitMounted_one": "{{count}} volume is unmounted.",
-    "quitMounted_other": "{{count}} volumes are unmounted.",
-    "quitNone": "Nothing is mounted.",
-    "quitPending": "{{size}} isn't on Modal yet; it's uploaded first.",
-    "quitWindow": "To just close the window, close it: volumes stay mounted.",
-    "quit": "Quit modalfs",
-    "quitAfter": "Upload, then quit",
-    "quitBack": "Back"
+    "quitD": "Closing the window doesn't unmount anything; this does, and stops modalfs."
   },
   "time": {
     "s": "{{n}} s",
@@ -597,6 +588,33 @@
     "now": "Quit now",
     "doneTitle": "modalfs has quit",
     "doneP": "Your volumes are unmounted. Open modalfs again to mount them."
+  },
+  "quitList": {
+    "title": "Quitting modalfs",
+    "sub": "Each volume unmounts once its changes are on Modal.",
+    "waiting": "Waiting",
+    "uploading": "Uploading · {{size}} left",
+    "unmounting": "Unmounting…",
+    "done": "Unmounted",
+    "inUse": "In use by {{apps}}",
+    "and": ", ",
+    "skipped": "Unmounted · the rest uploads next time",
+    "kept": "Still mounted",
+    "retry": "Try again",
+    "force": "Force unmount",
+    "forceHint": "Unmounts it now. Apps using it lose the folder, and any unsaved changes in it.",
+    "downloads_one": "{{count}} remote download keeps running on Modal",
+    "downloads_other": "{{count}} remote downloads keep running on Modal",
+    "final": "Quit modalfs",
+    "finalDone": "modalfs has quit",
+    "quitNow": "Quit now",
+    "quitNowHint": "Unmounts everything at once and stops uploading. What isn't on Modal yet stays saved on this Mac and uploads the next time each volume is mounted; nothing is lost.",
+    "keep": "Keep running",
+    "stopping": "Stopping after this volume…",
+    "stoppedTitle": "modalfs is still running",
+    "stoppedDone": "Unmounted: {{names}}.",
+    "stoppedKept": "Still mounted: {{names}}.",
+    "close": "Close"
   },
   "form": {
     "cancel": "Cancel",
@@ -643,5 +661,17 @@
     "problems_one": "{{count}} problem, see Activity",
     "problems_other": "{{count}} conflicts and errors, see Activity",
     "mounting": "Mounting {{name}}…"
+  },
+  "mountErr": {
+    "token": "Modal rejected this account's token. Replace it in Settings.",
+    "offline": "Couldn't reach Modal. Check this Mac's internet connection; modalfs tries again by itself.",
+    "recreated": "The volume was deleted, and a new one now has its name. Use the new volume if that's what you want.",
+    "gone": "This volume no longer exists on Modal.",
+    "notEmpty": "The folder isn't empty. Choose an empty folder in the mount options.",
+    "taken": "Something else is already mounted at this folder.",
+    "fuse": "macFUSE isn't installed. The automatic mode needs nothing extra.",
+    "nfs": "macOS couldn't mount the folder.",
+    "v1": "This is a v1 volume; modalfs works with v2 volumes only.",
+    "quitting": "modalfs is quitting; open it again to mount."
   }
 }

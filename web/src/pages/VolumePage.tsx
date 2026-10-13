@@ -22,6 +22,7 @@ import { ago, bytes, date, homeOf, tilde } from '@/lib/format'
 import { live, look, toneOf } from '@/lib/mounts'
 import { isMac } from '@/lib/platform'
 import { stateText } from './Home'
+import { mountError } from '@/lib/mountError'
 
 /** One volume: where it is, what it holds, what's moving, and what can be done with it. */
 export function VolumePage({ id }: { id: string }) {
@@ -212,7 +213,14 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
       {/* What needs attention first. */}
       {m.state === 'error' && (
         <Notice tone="bad" title={t('vol.failed')}>
-          <Mono className="text-[12px]">{m.error}</Mono>
+          {mountError(m.error, t).known ? (
+            <>
+              <div className="text-[13px]">{mountError(m.error, t).text}</div>
+              <Mono className="mt-1 block text-[11.5px] text-muted-foreground">{m.error}</Mono>
+            </>
+          ) : (
+            <Mono className="text-[12px]">{m.error}</Mono>
+          )}
           {m.retry_at && m.retry_at > nowSec && <div className="mt-1 text-[12px] text-muted-foreground tabular">{t('vol.retryIn', { time: duration(m.retry_at - nowSec, t) })}</div>}
           {needsRepin && (
             <Button size="sm" variant="outline" className="mt-2.5" disabled={repin.isPending} onClick={() => repin.mutate()}>

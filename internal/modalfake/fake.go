@@ -200,8 +200,12 @@ func (s *Server) VolumeGetOrCreate(_ context.Context, r *pb.VolumeGetOrCreateReq
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	v := s.byName(r.GetDeploymentName(), r.GetEnvironmentName())
+	create := r.GetObjectCreationType()
+	if v != nil && create == pb.ObjectCreationType_OBJECT_CREATION_TYPE_CREATE_FAIL_IF_EXISTS {
+		return nil, status.Errorf(codes.AlreadyExists, "Volume '%s' already exists", r.GetDeploymentName())
+	}
 	if v == nil {
-		if r.GetObjectCreationType() != pb.ObjectCreationType_OBJECT_CREATION_TYPE_CREATE_IF_MISSING {
+		if create != pb.ObjectCreationType_OBJECT_CREATION_TYPE_CREATE_IF_MISSING && create != pb.ObjectCreationType_OBJECT_CREATION_TYPE_CREATE_FAIL_IF_EXISTS {
 			return nil, status.Errorf(codes.NotFound, "Volume '%s' not found", r.GetDeploymentName())
 		}
 		v = &volume{id: newID(), name: r.GetDeploymentName(), env: r.GetEnvironmentName(), created: float64(time.Now().Unix()), files: map[string]*file{}}

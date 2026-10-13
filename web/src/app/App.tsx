@@ -21,8 +21,10 @@ import { SettingsPage } from '@/pages/Settings'
 import { VolumePage } from '@/pages/VolumePage'
 import { Welcome } from '@/pages/Welcome'
 import { ErrorBoundary } from './ErrorBoundary'
-import { navigate, type Route, useRoute } from './nav'
+import { navigate, type Route, SECTIONS, type Section, useRoute } from './nav'
 import { quitDone, useQuitPhase } from './quit'
+import { QuitDialog } from './QuitDialog'
+import { checklistOpen, flowActive, startQuit, useQuitFlow } from './quitFlow'
 import { Quitting } from './Quitting'
 import { Rail } from './Rail'
 import { useLook } from './theme'
@@ -50,7 +52,21 @@ export function App() {
   const dark = useLook(state?.settings.appearance, state?.settings.language)
   const home = homeOf(state?.settings.mount_root)
   const quitPhase = useQuitPhase()
-  const quitting = quitPhase !== 'idle' || !!state?.quitting
+  const checklist = flowActive(useQuitFlow())
+  // The quit checklist shows its own progress; the page behind it stays as it was.
+  const quitting = quitPhase !== 'idle' || (!!state?.quitting && !checklist)
+
+  // The desktop app asks for the quit checklist (⌘Q, the menu bar menu, the Dock) and for pages
+  // (a click in the menu bar menu).
+  useEffect(() => {
+    const offs = [
+      window.runtime?.EventsOn?.('quit:request', () => void startQuit()),
+      window.runtime?.EventsOn?.('nav', (section, id) => {
+        if ((SECTIONS as readonly unknown[]).includes(section)) navigate(section as Section, typeof id === 'string' && id ? id : undefined)
+      }),
+    ]
+    return () => offs.forEach((off) => off?.())
+  }, [])
 
   // Quitting from this window: once the daemon stops answering, it's done.
   useEffect(() => {
@@ -61,6 +77,7 @@ export function App() {
   // (back from a hidden window, the network down for a while) become one that points to Activity.
   const onNew = useCallback(
     (events: DaemonEvent[]) => {
+      if (checklistOpen()) return // the quit checklist shows what's happening
       const problems = events.filter((e) => e.kind === 'conflict' || e.kind === 'error')
       if (problems.length > 3) {
         toast.error(t('toast.problems', { count: problems.length }), {
@@ -104,7 +121,7 @@ export function App() {
           <div className="flex min-h-0 min-w-0 sm:py-2.5 sm:pr-2.5">
             <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-win-border bg-background sm:rounded-xl sm:border">
               <AnimatePresence initial={false}>
-                {isError && state && !quitting && (
+                {isError && state && !quitting && !checklist && (
                   <motion.div
                     initial={{ opacity: 0, transform: 'translateY(-100%)' }}
                     animate={{ opacity: 1, transform: 'translateY(0)' }}
@@ -135,6 +152,7 @@ export function App() {
           </div>
         </div>
         <Confirmer />
+        <QuitDialog />
         <Toaster theme={dark ? 'dark' : 'light'} position="bottom-center" offset={{ bottom: 24 }} mobileOffset={{ bottom: 84 }} />
       </TooltipProvider>
     </MotionConfig>

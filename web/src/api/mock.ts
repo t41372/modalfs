@@ -628,6 +628,25 @@ const conflictsOf: Record<string, Conflict[]> = {
   'm-checkpoints': [{ path: 'run-42/config.yaml', copy: 'run-42/config.conflict-20261012-101533.yaml', at: now() - 900 }],
 }
 
+// ?scenario=demo, for the README's pictures: an ordinary good day. Everything
+// mounted is on Modal or on its way, and no download needs a decision. The
+// trouble states above stay in `bun run dev:mock`, where they're needed.
+if (params.get('scenario') === 'demo') {
+  const drop = <T>(list: T[], gone: (x: T) => boolean) => {
+    for (let i = list.length - 1; i >= 0; i--) if (gone(list[i])) list.splice(i, 1)
+  }
+  drop(mounts, (m) => m.state === 'error')
+  for (const m of mounts) {
+    delete m.unmount_error
+    delete m.in_use_by
+    m.open_conflicts = 0
+    if (m.status) m.status.conflicts = 0
+  }
+  delete conflictsOf['m-checkpoints']
+  drop(events, (e) => e.kind === 'conflict')
+  drop(mockDownloads, (x) => x.d.state === 'failed' || x.d.state === 'starting')
+}
+
 function insight(method: string, mt: Mount, what: string, body: Body): unknown {
   const vid = mt.volume_id ?? ''
   if (what === 'usage') {
@@ -683,13 +702,25 @@ function insight(method: string, mt: Mount, what: string, body: Body): unknown {
   return undefined
 }
 
+// After a shutdown the mock stops answering, like the daemon does once it has quit.
+let gone = false
+
 export async function mockRequest(method: string, path: string, raw?: unknown): Promise<unknown> {
   await wait(method === 'GET' ? 60 : 280)
+  if (gone) throw new TypeError('mock: modalfs has quit')
   const body = (raw ?? {}) as Body
   const url = new URL(path, 'http://mock')
   const p = url.pathname
   const route = `${method} ${p}`
   let m: RegExpMatchArray | null
+
+  if (route === 'GET /ping') return ok
+  if (route === 'POST /shutdown') {
+    state.quitting = true
+    for (const mt of mounts) if (mt.state === 'mounted' || mt.state === 'stopping') setState(mt, 'stopped', 300)
+    setTimeout(() => (gone = true), 900)
+    return ok
+  }
 
   if (route === 'GET /state') {
     syncVolumeFlags()
@@ -704,7 +735,7 @@ export async function mockRequest(method: string, path: string, raw?: unknown): 
     const after = Number(url.searchParams.get('after') || 0)
     return clone(events.filter((e) => e.seq > after))
   }
-  if (route === 'POST /shutdown' || route === 'POST /session') return ok
+  if (route === 'POST /session') return ok
   if (route === 'PATCH /settings') {
     const s = body as State['settings']
     for (const k of Object.keys(s) as (keyof State['settings'])[]) {
@@ -885,19 +916,34 @@ export async function mockRequest(method: string, path: string, raw?: unknown): 
       mt.error = undefined
       setState(mt, 'mounted', 900)
     } else if (m[2] === 'stop') {
+      const forced = url.searchParams.get('force') === '1'
+      // The volume apps still use (models): a patient unmount retries a while, then gives up.
+      if (!forced && mt.in_use_by?.length && url.searchParams.get('patient') === '1') {
+        mt.state = 'stopping'
+        await wait(1600)
+        mt.state = 'mounted'
+        fail(`${mt.volume_name} is in use by ${mt.in_use_by.join(', ')}; close the files open in it and try again`)
+      }
       mt.state = 'stopping'
       mt.unmount_error = undefined
       mt.in_use_by = undefined
-      if (mt.status && mt.status.pending_bytes > 0 && url.searchParams.get('force') !== '1') uploadThenStop(mt)
+      if (mt.status && mt.status.pending_bytes > 0 && !forced) uploadThenStop(mt)
       else setState(mt, 'stopped', 700)
       mt.last_used = now()
+      // The daemon answers once it's unmounted.
+      if (url.searchParams.get('patient') === '1') while (mt.state === 'stopping') await wait(150)
     } else if (m[2] === 'sync' && mt.status) {
-      await wait(500)
-      mt.status.commits += mt.status.pending_files
-      mt.status.bytes_up += mt.status.pending_bytes
-      mt.status.pending_files = 0
-      mt.status.pending_bytes = 0
-      mt.status.last_commit_at = now()
+      // Uploads what's pending at about 240 MB/s, and answers when it's done.
+      const s = mt.status
+      while (s.pending_bytes > 0) {
+        await wait(250)
+        const step = Math.min(s.pending_bytes, 60 * MiB)
+        s.pending_bytes -= step
+        s.bytes_up += step
+      }
+      s.commits += s.pending_files
+      s.pending_files = 0
+      s.last_commit_at = now()
     }
     return ok
   }

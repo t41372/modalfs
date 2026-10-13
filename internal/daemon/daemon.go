@@ -199,11 +199,13 @@ func Run(log *slog.Logger) error {
 		d.Shutdown(true)
 	}()
 	log.Info("shutting down: committing pending writes and unmounting")
+	// Gone first: a desktop app that finds the daemon unreachable without
+	// this file knows it quit on purpose and doesn't start it again.
+	_ = os.Remove(InfoPath())
 	d.stopAll()
 	_ = ul.Close()
 	_ = tl.Close()
 	_ = os.Remove(SocketPath())
-	_ = os.Remove(InfoPath())
 	// Removes runtime.json when every unmount succeeded; otherwise it keeps
 	// what's left for the next start to clean up.
 	d.saveRuntime()

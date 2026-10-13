@@ -141,7 +141,7 @@ modalfs saves each mount, so `modalfs mount my-data` reuses the same account, en
 
 A dot at the bottom of the rail says whether everything is on Modal; point at it for what's still uploading.
 
-The window is only a remote control. Mounts live in the background daemon, so **closing the window never unmounts anything**. On macOS the window is glass over your desktop. In a browser (`modalfs ui` without the app), or on a phone-sized window, the same UI moves its tabs to the bottom.
+The window is only a remote control. Mounts live in the background daemon, so **closing the window never unmounts anything**: on macOS modalfs stays in the menu bar, where its icon shows whether everything is on Modal, lists your volumes (click one to open it in Finder, or to mount it) and reopens the window. **Quitting** (⌘Q, or Quit in the menu bar menu) is different: a checklist uploads what's left, unmounts each volume one by one, then quits; a volume an app still uses can be retried or forced, and Quit now skips the waiting without losing anything. On macOS the window is glass over your desktop. In a browser (`modalfs ui` without the app), or on a phone-sized window, the same UI moves its tabs to the bottom.
 
 <table>
   <tr>
@@ -305,7 +305,7 @@ Measured from a Linux arm64 sandbox through an HTTP/1.1 proxy with limited bandw
 - **Write-back delay.** NFS has no close event, so writes reach Modal about 3 s after a file goes idle, or every 30 s while it keeps changing. After a crash they are recovered. One edge case: if the last second of an append was all zero bytes, those trailing zeros can be dropped.
 - **Unmounting waits for uploads.** Turning a mount off first uploads what's pending, with progress shown; **Unmount now** unmounts at once and finishes uploading in the background (or at the next mount). macOS won't unmount a folder an app has open, and the app says which one.
 - **The daemon must keep running while volumes are mounted**, because the NFS/FUSE server lives inside it. If it dies, the next start cleans up stale mounts.
-- **No menu-bar icon yet.** Wails v2 has no tray support. Use `modalfs ui` to reopen the window.
+- **The menu bar icon is macOS-only.** On Linux, use `modalfs ui` to reopen the window.
 - **Undocumented API.** modalfs relies on the RPCs the official SDKs use. If Modal changes them, modalfs may break until it's updated.
 - **macOS status.** The NFS server, daemon, FUSE mounts, crash recovery, rename following and the app's UI have all been tested on Linux, and the macOS app builds as a universal binary. The macOS NFS mount and the macOS app still need wider real-world testing. Bug reports are welcome.
 

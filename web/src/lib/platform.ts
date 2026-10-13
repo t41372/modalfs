@@ -4,9 +4,13 @@
 declare global {
   interface Window {
     /** Wails' runtime, present in the desktop app. */
-    runtime?: { Quit?: () => void; BrowserOpenURL?: (url: string) => void }
+    runtime?: {
+      Quit?: () => void
+      BrowserOpenURL?: (url: string) => void
+      EventsOn?: (name: string, cb: (...data: unknown[]) => void) => () => void
+    }
     /** Go methods the desktop app binds (cmd/modalfs-gui). */
-    go?: { main?: { App?: { SetAppearance?: (a: string) => Promise<void>; Quitting?: () => Promise<void> } } }
+    go?: { main?: { App?: { SetAppearance?: (a: string) => Promise<void>; Quitting?: () => Promise<void>; QuitAck?: () => Promise<void> } } }
   }
 }
 

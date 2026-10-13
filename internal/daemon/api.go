@@ -454,9 +454,12 @@ func (d *Daemon) routes() http.Handler {
 		}
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	})
+	// force=1 unmounts now, even while apps use it; patient=1 (the window's
+	// quit checklist) retries a busy unmount for a few seconds before failing.
 	mux.HandleFunc("POST /api/mounts/{id}/stop", func(w http.ResponseWriter, r *http.Request) {
 		force := r.URL.Query().Get("force") == "1"
-		if err := d.StopMount(r.PathValue("id"), force); err != nil {
+		patient := r.URL.Query().Get("patient") == "1"
+		if err := d.stopMount(r.PathValue("id"), stopOpts{now: force, force: force, patient: patient}); err != nil {
 			writeErr(w, err)
 			return
 		}

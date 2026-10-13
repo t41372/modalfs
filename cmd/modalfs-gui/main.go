@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
@@ -25,6 +26,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/t41372/modalfs/internal/daemon"
 	"github.com/t41372/modalfs/internal/webui"
@@ -33,6 +35,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/linux"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
+	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 //go:embed icon.png
@@ -40,16 +43,104 @@ var icon []byte
 
 // App holds the methods the UI can call (window.go.main.App.*).
 type App struct {
-	quitting atomic.Bool
+	ctx      context.Context
+	client   *daemon.Client
+	quitting atomic.Bool // the window may close for good now
+	acked    atomic.Bool // the UI answered the last quit request
+	ran      atomic.Bool // a daemon was running for this window at some point
+	trayOnce sync.Once
 }
+
+// theApp is the one App, for the callbacks from native_darwin.m.
+var theApp *App
 
 // SetAppearance makes the window light, dark, or follow the system ("system"),
 // so the glass behind the UI matches the appearance chosen in Settings.
 func (*App) SetAppearance(name string) { setAppearance(name) }
 
 // Quitting is called by the UI right before it posts /api/shutdown. From then
-// on a failed request never starts a new daemon, which would mount again.
+// on a failed request never starts a new daemon, which would mount again, and
+// the window may close for good.
 func (a *App) Quitting() { a.quitting.Store(true) }
+
+// QuitAck tells the app the UI is showing the quit checklist it asked for.
+func (a *App) QuitAck() { a.acked.Store(true) }
+
+// requestQuit is ⌘Q, Quit in the menu bar menu, or Quit in the Dock: the
+// window comes forward and shows the quit checklist, which unmounts every
+// volume and then quits. A window that doesn't answer (its page failed to
+// load) can't show it, so the app quits without it; the daemon keeps the
+// mounts, as when the window just closes.
+func (a *App) requestQuit() {
+	if a.quitting.Load() || a.ctx == nil {
+		return
+	}
+	nativeShowWindow()
+	a.acked.Store(false)
+	wruntime.EventsEmit(a.ctx, "quit:request")
+	time.Sleep(4 * time.Second)
+	if !a.acked.Load() && !a.quitting.Load() {
+		a.quitting.Store(true)
+		wruntime.Quit(a.ctx)
+	}
+}
+
+// beforeClose runs when Wails is about to quit. Unless the quit checklist
+// finished (or it's a logout), it shows the checklist instead.
+func (a *App) beforeClose(context.Context) (prevent bool) {
+	if a.quitting.Load() {
+		// Wails stops the run loop from a goroutine here; an event makes it notice.
+		go func() {
+			for range 20 {
+				time.Sleep(100 * time.Millisecond)
+				nativeWake()
+			}
+		}()
+		return false
+	}
+	go a.requestQuit()
+	return true
+}
+
+// nativeAction is a click in the menu bar menu or the app menu.
+func (a *App) nativeAction(action, id string) {
+	nav := func(section, id string) {
+		nativeShowWindow()
+		wruntime.EventsEmit(a.ctx, "nav", section, id)
+	}
+	switch action {
+	case "reveal":
+		if err := a.client.Do("POST", "/api/mounts/"+url.PathEscape(id)+"/reveal", nil, nil); err != nil {
+			nav("volumes", id) // the page says what's wrong
+		}
+	case "mount":
+		if err := a.client.Do("POST", "/api/mounts/"+url.PathEscape(id)+"/start", nil, nil); err != nil {
+			nav("volumes", id)
+		}
+	case "volume":
+		nav("volumes", id)
+	case "downloads":
+		nav("downloads", "")
+	case "settings":
+		nav("settings", "")
+	case "open":
+		nativeShowWindow()
+	}
+}
+
+func (a *App) startup(ctx context.Context) {
+	a.ctx = ctx
+	if hasTray {
+		nativeInit()
+	}
+}
+
+func (a *App) domReady(ctx context.Context) {
+	styleWindow()
+	if hasTray {
+		a.trayOnce.Do(func() { go a.trayLoop(ctx) })
+	}
+}
 
 // jsonError writes {"error": msg}, the shape the UI expects from the daemon.
 func jsonError(w http.ResponseWriter, msg string, code int) {
@@ -71,8 +162,9 @@ func main() {
 		}
 		return
 	}
-	app := &App{}
 	c := daemon.NewClient()
+	app := &App{client: c}
+	theApp = app
 	daemonErr := c.Ensure() // spawns `<this binary> daemon` when needed
 
 	target, _ := url.Parse("http://modalfsd")
@@ -80,11 +172,17 @@ func main() {
 	proxy.Transport = c.Transport()
 	var ensureMu sync.Mutex // one restart at a time, not one per failed request
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		// the daemon may have been quit from the CLI; try to bring it back,
-		// unless this window is quitting it
+		// The daemon quit on purpose (`modalfs quit`, or a logout): the app
+		// goes too, rather than mounting everything again.
+		if _, serr := os.Stat(daemon.InfoPath()); errors.Is(serr, fs.ErrNotExist) && app.ran.Load() && !app.quitting.Load() && app.ctx != nil {
+			app.quitting.Store(true)
+			go wruntime.Quit(app.ctx)
+		}
+		// Otherwise it crashed: bring it back, unless this window is quitting it.
 		if !app.quitting.Load() {
 			ensureMu.Lock()
 			ok := !app.quitting.Load() && c.Ensure() == nil
+			app.ran.Store(app.ran.Load() || ok)
 			ensureMu.Unlock()
 			if ok {
 				jsonError(w, "modalfs restarted, try again", http.StatusServiceUnavailable)
@@ -96,6 +194,7 @@ func main() {
 	if daemonErr != nil {
 		slog.Error("could not start daemon", "err", daemonErr)
 	}
+	app.ran.Store(daemonErr == nil)
 
 	err := wails.Run(&options.App{
 		Title:            "modalfs",
@@ -106,7 +205,9 @@ func main() {
 		BackgroundColour: background(),
 		AssetServer:      &assetserver.Options{Assets: webui.FS(), Handler: proxy},
 		Bind:             []interface{}{app},
-		OnDomReady:       func(context.Context) { styleWindow() },
+		OnStartup:        app.startup,
+		OnDomReady:       app.domReady,
+		OnBeforeClose:    app.beforeClose,
 		Mac: &mac.Options{
 			TitleBar:             mac.TitleBarHiddenInset(),
 			WebviewIsTransparent: true,

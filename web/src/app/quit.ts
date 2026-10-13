@@ -34,5 +34,6 @@ export async function quit(now = false) {
 export function quitDone() {
   if (phase !== 'quitting') return
   set('quit')
-  if (inApp) window.runtime?.Quit?.()
+  // The app asks for the quit checklist unless told the quitting is done.
+  if (inApp) void (window.go?.main?.App?.Quitting?.() ?? Promise.resolve()).finally(() => window.runtime?.Quit?.())
 }
