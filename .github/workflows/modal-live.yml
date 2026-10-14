@@ -5,9 +5,10 @@ name: Modal live
 # side shows up here before a user finds it.
 #
 # The tests create, fill and delete scratch volumes with the token in the
-# MODAL_TOKEN_ID and MODAL_TOKEN_SECRET secrets. A token reaches every volume
-# in its workspace, so use one from a workspace kept for testing, holding
-# nothing you care about.
+# MODAL_TOKEN_ID and MODAL_TOKEN_SECRET secrets of the modal-live environment,
+# which only runs from main can read. A token reaches every volume in its
+# workspace, so use one from a workspace kept for testing, holding nothing you
+# care about.
 
 on:
   schedule:
@@ -24,6 +25,7 @@ jobs:
   live:
     runs-on: macos-26
     timeout-minutes: 120
+    environment: modal-live
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -39,6 +41,10 @@ jobs:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
         run: |
+          if [ -z "$MODAL_TOKEN_ID" ] || [ -z "$MODAL_TOKEN_SECRET" ]; then
+            echo "::error::Set MODAL_TOKEN_ID and MODAL_TOKEN_SECRET in the modal-live environment (Settings → Environments), with a token from a workspace kept for testing."
+            exit 1
+          fi
           umask 077
           printf '[ci]\ntoken_id = "%s"\ntoken_secret = "%s"\n' "$MODAL_TOKEN_ID" "$MODAL_TOKEN_SECRET" > ~/.modal.toml
       - name: Contract tests
