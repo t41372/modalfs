@@ -67,7 +67,7 @@ test:
 
 # end-to-end tests: real NFS mounts (macOS) against a fake Modal with a slow network; no account needed
 test-e2e:
-    go test -tags e2e -count=1 -timeout 25m ./internal/e2e
+    go test -tags e2e -count=1 -timeout 40m ./internal/e2e
 
 # the end-to-end tests against real Modal: each test CREATES AND DELETES a scratch volume in the profile's workspace
 test-e2e-live profile *args:
