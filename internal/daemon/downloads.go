@@ -445,6 +445,11 @@ func (m *dlManager) ended(ctx context.Context, r downloads.Runner, j downloads.J
 		st.State, st.Speed, st.ETA = state, 0, nil
 	}
 	j, _ = m.store.Update(j.ID, func(j *downloads.Job) {
+		now := time.Now().Unix()
+		if j.Started > 0 {
+			j.Ran += max(now-j.Started, 0)
+		}
+		j.Ended = now
 		j.State, j.Error, j.ErrorKind, j.Stopping, j.Keep = state, msg, kind, "", false
 		if st != nil {
 			j.Status = st
@@ -745,7 +750,12 @@ type DownloadView struct {
 	// gone without a word from its container (status.json or the live
 	// channel): a minute or so when Modal moves it, longer when Modal
 	// doesn't start one.
-	Silent  int64             `json:"silent,omitempty"`
+	Silent int64 `json:"silent,omitempty"`
+	// Ran is how long its Functions ran in all (seconds), what it's billed
+	// for; Ended is when it last stopped. Unknown for downloads that ended
+	// before modalfs counted them.
+	Ran     int64             `json:"ran,omitempty"`
+	Ended   int64             `json:"ended,omitempty"`
 	Cookies bool              `json:"cookies,omitempty"`
 	WARP    bool              `json:"warp,omitempty"` // through Cloudflare WARP (Status.WARP: where it left)
 	Status  *downloads.Status `json:"status,omitempty"`
@@ -780,7 +790,7 @@ func (m *dlManager) view(j downloads.Job, account string) DownloadView {
 	v := DownloadView{ID: j.ID, AccountID: j.AccountID, AccountLabel: account, Environment: j.Environment,
 		VolumeID: j.VolumeID, VolumeName: j.VolumeName, Folder: j.Folder, URL: downloads.StripCredentials(j.URL),
 		Name: displayName(j, st), Tool: j.Tool, Size: j.Size, Created: j.Created, State: j.State, Error: j.Error,
-		ErrorKind: j.ErrorKind, Cookies: j.Cookies != "", WARP: j.WARP, Status: st}
+		ErrorKind: j.ErrorKind, Cookies: j.Cookies != "", WARP: j.WARP, Status: st, Ran: j.Ran, Ended: j.Ended}
 	if j.State == downloads.StateRunning && j.Started > 0 {
 		last := float64(j.Started)
 		if st != nil && st.T > j.Before {

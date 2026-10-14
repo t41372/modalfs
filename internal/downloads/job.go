@@ -71,6 +71,10 @@ type Job struct {
 	ErrorKind string `json:"error_kind,omitempty"`
 	// Started is when the last call was spawned (Unix seconds).
 	Started int64 `json:"started,omitempty"`
+	// Ran is how long its calls have run in all, in seconds, what it's billed
+	// for (counted each time a run ends); Ended is when it last ended.
+	Ran   int64 `json:"ran,omitempty"`
+	Ended int64 `json:"ended,omitempty"`
 	// Stopping is "pause" or "cancel" while the daemon is stopping the
 	// download's call for the user, so the call's end is read as that and
 	// not as a failure. Keep keeps the partial files of a cancel.

@@ -408,6 +408,9 @@ func TestDownloadLifecycle(t *testing.T) {
 	if done.Status == nil || len(done.Status.Files) != 1 || done.Status.Files[0].Path != "In/big.iso" {
 		t.Fatalf("done: %+v", done.Status)
 	}
+	if done.Ended == 0 || done.Ended < done.Created || done.Ran < 0 {
+		t.Fatalf("done: ended %d, ran %d s; the list needs when it ended and how long it ran", done.Ended, done.Ran)
+	}
 	if len(x.events("dl_done")) != 1 || len(x.events("dl_paused")) != 1 || len(x.events("dl_continued")) != 1 {
 		t.Fatalf("events: %+v", x.d.Events(0))
 	}
