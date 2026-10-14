@@ -79,14 +79,16 @@ func (p *progressReader) Read(b []byte) (int, error) {
 // Each block upload has a fixed cost on Modal's side (about a second and a
 // half before it answers), so one connection moves only a few MiB/s and a
 // fast link needs many uploads at once. On a slow link the same number
-// would only make each block take longer. upSlots sizes the uploads in
-// flight from the speed they reach together: enough that each block takes
-// about blockTarget, within [minUploads, maxUploads].
+// would only make each block take longer, and blocks waiting longer to be
+// committed (see vfs/ahead.go). upSlots sizes the uploads in flight from the
+// speed they reach together: enough that each block takes about
+// blockTarget, within [minUploads, maxUploads].
 const (
-	minUploads  = 4
-	maxUploads  = 32
-	blockTarget = 20 * time.Second
-	rateWindow  = 5 * time.Second
+	minUploads   = 4
+	firstUploads = 8 // until the speed is known
+	maxUploads   = 32
+	blockTarget  = 5 * time.Second
+	rateWindow   = 2 * time.Second
 )
 
 type upSlots struct {
@@ -103,7 +105,7 @@ type upSlots struct {
 }
 
 func newUpSlots() *upSlots {
-	s := &upSlots{limit: minUploads}
+	s := &upSlots{limit: firstUploads}
 	s.cond = sync.NewCond(&s.mu)
 	return s
 }
@@ -156,4 +158,10 @@ func (s *upSlots) moved(n int) {
 		s.cond.Broadcast()
 	}
 	s.winStart, s.winBytes, s.idle = time.Now(), 0, s.used == 0
+}
+
+func (s *upSlots) Limit() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.limit
 }

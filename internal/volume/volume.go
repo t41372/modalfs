@@ -238,6 +238,25 @@ func (v *Volume) PutChecked(ctx context.Context, files []modalapi.PutFile, check
 	return v.Client.PutChecked(ctx, v.ID, wire, check)
 }
 
+// Ahead uploads one block of a file before its commit (see
+// modalapi.Client.Ahead): plain is the block as the file holds it, and the
+// result is the hash a commit lists for it, as HashBlock gives. It relies on
+// sealing being deterministic, as every commit does: the hash comes from one
+// seal and the upload from another.
+func (v *Volume) Ahead(ctx context.Context, plain []byte) (hash []byte, sent bool, err error) {
+	wire := plain
+	if v.Cipher != nil {
+		wire = v.Cipher.SealBlock(plain)
+	}
+	sum := sha256.Sum256(wire)
+	stage, err := v.Path(".modalfs/upload-ahead")
+	if err != nil {
+		return nil, false, err
+	}
+	sent, err = v.Client.Ahead(ctx, v.ID, stage, sum[:], wire)
+	return sum[:], sent, err
+}
+
 func (v *Volume) WriteFile(ctx context.Context, p string, data []byte) error {
 	_, err := v.Put(ctx, []modalapi.PutFile{{Path: p, Size: int64(len(data)), Hashes: v.HashBlocks(data),
 		Block: func(i int) ([]byte, error) {

@@ -68,6 +68,9 @@ type Server struct {
 
 	mu      sync.Mutex
 	volumes map[string]*volume // by ID
+	// Like Modal, a block uploaded but not in a committed file yet counts
+	// for a commit only with a receipt its upload returned.
+	receipts map[string]map[string]bool // hex hash -> receipts handed out
 
 	pb.UnimplementedModalClientServer
 }
@@ -368,6 +371,7 @@ func (s *Server) VolumePutFiles2(_ context.Context, r *pb.VolumePutFiles2Request
 		return nil, err
 	}
 	var missing []*pb.VolumePutFiles2Response_MissingBlock
+	var vouched []string
 	for fi, f := range r.GetFiles() {
 		for _, component := range strings.Split(clean(f.GetPath()), "/") {
 			if len(component) > 255 {
@@ -379,7 +383,12 @@ func (s *Server) VolumePutFiles2(_ context.Context, r *pb.VolumePutFiles2Request
 			return nil, status.Errorf(codes.InvalidArgument, "%s: %d blocks for size %d", f.GetPath(), len(f.GetBlocks()), f.GetSize())
 		}
 		for bi, b := range f.GetBlocks() {
-			if !s.hasBlock(b.GetContentsSha256()) {
+			h := hex.EncodeToString(b.GetContentsSha256())
+			if rs, unconfirmed := s.receipts[h]; unconfirmed && rs[string(b.GetPutResponse())] {
+				vouched = append(vouched, h)
+				continue
+			}
+			if _, unconfirmed := s.receipts[h]; unconfirmed || !s.hasBlock(b.GetContentsSha256()) {
 				missing = append(missing, pb.VolumePutFiles2Response_MissingBlock_builder{
 					FileIndex: uint64(fi), BlockIndex: uint64(bi),
 					PutUrl: fmt.Sprintf("%s/put/%x", s.blobURL, b.GetContentsSha256()),
@@ -389,6 +398,9 @@ func (s *Server) VolumePutFiles2(_ context.Context, r *pb.VolumePutFiles2Request
 	}
 	if len(missing) > 0 {
 		return pb.VolumePutFiles2Response_builder{MissingBlocks: missing}.Build(), nil
+	}
+	for _, h := range vouched {
+		delete(s.receipts, h) // in a committed file now
 	}
 	now := uint64(time.Now().Unix())
 	for _, f := range r.GetFiles() {
@@ -512,7 +524,7 @@ func (s *Server) putBlock(w http.ResponseWriter, r *http.Request) {
 	if d := s.latency(); d > 0 {
 		time.Sleep(d)
 	}
-	data, err := io.ReadAll(s.up.reader(r.Context(), io.LimitReader(r.Body, BlockSize+1)))
+	data, err := io.ReadAll(&counting{s.up.reader(r.Context(), io.LimitReader(r.Body, BlockSize+1)), &s.received})
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -540,8 +552,34 @@ func (s *Server) putBlock(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	s.received.Add(int64(len(data)))
-	_, _ = w.Write([]byte("ok"))
+	receipt := "receipt-" + rand.Text()
+	s.mu.Lock()
+	if s.receipts == nil {
+		s.receipts = map[string]map[string]bool{}
+	}
+	h := hex.EncodeToString(want)
+	if s.receipts[h] == nil && !s.committedLocked(h) {
+		s.receipts[h] = map[string]bool{}
+	}
+	if s.receipts[h] != nil {
+		s.receipts[h][receipt] = true
+	}
+	s.mu.Unlock()
+	_, _ = w.Write([]byte(receipt))
+}
+
+// committedLocked: a committed file holds the block.
+func (s *Server) committedLocked(h string) bool {
+	for _, v := range s.volumes {
+		for _, f := range v.files {
+			for _, fh := range f.hashes {
+				if hex.EncodeToString(fh) == h {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // Received is how many block bytes have been uploaded so far.
@@ -610,5 +648,18 @@ func (lr *limitedReader) Read(p []byte) (int, error) {
 			return n, werr
 		}
 	}
+	return n, err
+}
+
+// counting counts the bytes read through it as they arrive, so a test can
+// tell an upload has begun before its block is complete.
+type counting struct {
+	r io.Reader
+	n *atomic.Int64
+}
+
+func (c *counting) Read(b []byte) (int, error) {
+	n, err := c.r.Read(b)
+	c.n.Add(int64(n))
 	return n, err
 }

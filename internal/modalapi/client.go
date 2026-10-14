@@ -161,6 +161,7 @@ type Client struct {
 	// Byte counters for block data transferred (for status displays).
 	BytesDown, BytesUp atomic.Int64
 	up                 *upSlots // the block uploads in flight, for every volume
+	receipts           receipts // for blocks uploaded but not committed yet (see Ahead)
 }
 
 func (c *Client) headers() map[string]string {
@@ -498,14 +499,19 @@ func (c *Client) PutChecked(ctx context.Context, volID string, files []PutFile, 
 		putResp[i] = map[int][]byte{}
 	}
 	uploaded := 0
+	useReceipts := true // until Modal refuses one
 	for round := 0; round < 6; round++ {
 		var pfs []*pb.VolumePutFiles2Request_File
+		usedReceipt := false
 		for fi, f := range files {
 			var blocks []*pb.VolumePutFiles2Request_Block
 			for bi, h := range f.Hashes {
 				b := pb.VolumePutFiles2Request_Block_builder{ContentsSha256: h}
 				if r, ok := putResp[fi][bi]; ok {
 					b.PutResponse = r
+				} else if r := c.receipts.get(volID, h); r != nil && useReceipts {
+					b.PutResponse = r // uploaded ahead (see Ahead)
+					usedReceipt = true
 				}
 				blocks = append(blocks, b.Build())
 			}
@@ -518,6 +524,12 @@ func (c *Client) PutChecked(ctx context.Context, volID string, files []PutFile, 
 		r, err := withRetry(ctx, func(ctx context.Context) (*pb.VolumePutFiles2Response, error) {
 			return c.Stub.VolumePutFiles2(ctx, pb.VolumePutFiles2Request_builder{VolumeId: volID, Files: pfs}.Build())
 		})
+		if err != nil && usedReceipt && !retryable(err) {
+			// A receipt from an upload ahead is refused (expired, or Modal
+			// changed how they work): commit without them, uploading again.
+			useReceipts = false
+			continue
+		}
 		if err != nil {
 			return uploaded, err
 		}
@@ -525,7 +537,7 @@ func (c *Client) PutChecked(ctx context.Context, volID string, files []PutFile, 
 		if len(missing) == 0 {
 			return uploaded, nil
 		}
-		n, err := c.uploadMissing(ctx, files, missing, putResp)
+		n, err := c.uploadMissing(ctx, volID, files, missing, putResp)
 		uploaded += n
 		if err != nil {
 			return uploaded, err
@@ -542,7 +554,7 @@ func (c *Client) PutChecked(ctx context.Context, volID string, files []PutFile, 
 // uploadMissing uploads the blocks the server asked for and records the
 // responses in putResp. It returns only once every worker has stopped, so no
 // Block callback runs after Put returns.
-func (c *Client) uploadMissing(ctx context.Context, files []PutFile, missing []*pb.VolumePutFiles2Response_MissingBlock, putResp []map[int][]byte) (int, error) {
+func (c *Client) uploadMissing(ctx context.Context, volID string, files []PutFile, missing []*pb.VolumePutFiles2Response_MissingBlock, putResp []map[int][]byte) (int, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	jobs := make(chan *pb.VolumePutFiles2Response_MissingBlock, len(missing))
@@ -578,6 +590,7 @@ func (c *Client) uploadMissing(ctx context.Context, files []PutFile, missing []*
 					}
 				} else {
 					putResp[fi][bi] = body
+					c.receipts.put(volID, files[fi].Hashes[bi], body)
 					uploaded++
 				}
 				mu.Unlock()
