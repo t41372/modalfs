@@ -38,7 +38,7 @@ datasets  work     mounted  /Users/me/ModalVolumes/datasets  0        0 B / 3 B
 
 - [Highlights](#highlights)
 - [Install](#install)
-- [Quick start](#quick-start)
+- [Quick start with the CLI](#quick-start-with-the-cli)
 - [The app](#the-app)
 - [Remote downloads](#remote-downloads)
 - [CLI reference](#cli-reference)
@@ -55,25 +55,16 @@ datasets  work     mounted  /Users/me/ModalVolumes/datasets  0        0 B / 3 B
 
 ## Highlights
 
-**Files open instantly.** modalfs streams only the parts of a file an app reads, straight from Modal's block store. Reading 4 KiB from the middle of a 100 GiB file fetches one 8 MiB block; reading from start to end prefetches ahead in parallel.
-
-**Saving uploads only what changed.** Change 4 KiB of a 100 GiB file and one 8 MiB block goes up. Renames and copies move no data at all. A big copy uploads in the background while the folder stays usable.
-
-**Works with the apps you already use.** It's a normal folder, so Finder, VS Code, Jupyter, `ffmpeg` and Blender need nothing extra. No kernel extension on macOS: the built-in NFS client mounts it. Linux uses FUSE.
-
-**Your Modal jobs see the same files.** A Function that mounts the volume reads what you saved, and what it commits shows up in your folder within seconds.
-
-**Download straight into a volume.** Paste a link and Modal downloads it into a volume while your Mac sleeps, with gopeed, aria2 or yt-dlp, and a live speed chart. Optional, and off until you turn it on, since it's the one feature that runs compute on Modal.
-
-**Nothing gets lost.** Edits are journaled until Modal has them, through crashes and power loss. When a file changed on both sides, both versions are kept.
-
-**Many accounts, never mixed up.** Each mount is pinned to its account and volume ID, so switching Modal CLI profiles or renaming a volume never points a mount somewhere else.
-
-**Names you choose.** Give a volume a label, with spaces, emoji or any language. It's kept in the volume, so everyone using modalfs on it sees the same name, and its folder in `~/ModalVolumes` takes that name the next time it's mounted (unless you chose the folder yourself), while scripts keep using the Volume name on Modal.
-
-**End-to-end encryption, if you want it.** An encrypted volume keeps its files, names and label unreadable to Modal. Its key, and nothing else, opens it on any computer.
-
-**A small native app**, a menu bar icon, and a CLI that does everything the app does.
+- **Files open instantly.** modalfs streams only the parts of a file an app reads, straight from Modal's block store. Reading 4 KiB from the middle of a 100 GiB file fetches one 8 MiB block; reading from start to end prefetches ahead in parallel.
+- **Saving uploads only what changed.** Change 4 KiB of a 100 GiB file and one 8 MiB block goes up. Renames and copies move no data at all. A big copy uploads in the background while the folder stays usable.
+- **Works with the apps you already use.** It's a normal folder, so Finder, VS Code, Jupyter, `ffmpeg` and Blender need nothing extra. No kernel extension on macOS: the built-in NFS client mounts it. Linux uses FUSE.
+- **Your Modal jobs see the same files.** A Function that mounts the volume reads what you saved, and what it commits shows up in your folder within seconds.
+- **Download straight into a volume.** Paste a link and Modal downloads it into a volume while your Mac sleeps, with gopeed, aria2 or yt-dlp, and a live speed chart. Optional, and off until you turn it on, since it's the one feature that runs compute on Modal.
+- **Nothing gets lost.** Edits are journaled until Modal has them, through crashes and power loss. When a file changed on both sides, both versions are kept.
+- **Many accounts, never mixed up.** Each mount is pinned to its account and volume ID, so switching Modal CLI profiles or renaming a volume never points a mount somewhere else.
+- **Names you choose.** Give a volume a label, with spaces, emoji or any language. It's kept in the volume, so everyone using modalfs on it sees the same name, and its folder in `~/ModalVolumes` takes that name the next time it's mounted (unless you chose the folder yourself), while scripts keep using the Volume name on Modal.
+- **End-to-end encryption, if you want it.** An encrypted volume keeps its files, names and label unreadable to Modal. Its key, and nothing else, opens it on any computer.
+- **A small native app**, a menu bar icon, and a CLI that does everything the app does.
 
 ## Install
 
@@ -115,7 +106,9 @@ On macOS 12 you can build the app yourself with Go 1.26 and `MIN_MACOS=12.0 just
 
 `go install github.com/t41372/modalfs/cmd/modalfs@latest` also works, but it can't build the UI: `modalfs ui` then shows a page saying so, and the CLI works as usual.
 
-## Quick start
+## Quick start with the CLI
+
+The app needs no guide: open it, connect your Modal account, and add a volume. These are the same steps in the terminal.
 
 1. **Add an account.** Create a token at [modal.com → Settings → API Tokens](https://modal.com/settings/tokens), then run:
 
