@@ -230,6 +230,19 @@ func (x *dlTest) events(code string) []Event {
 	return out
 }
 
+// waitEvents waits until n events with this code were sent: a download's
+// state is saved before its event goes out.
+func (x *dlTest) waitEvents(code string, n int) []Event {
+	x.t.Helper()
+	var ev []Event
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if ev = x.events(code); len(ev) >= n {
+			break
+		}
+	}
+	return ev
+}
+
 func TestDownloadsAreOffUntilTurnedOn(t *testing.T) {
 	x := newDLTest(t, false)
 	code, body := x.do("POST", "/api/downloads", map[string]any{"account": "acct-1", "volume": "v", "urls": []string{"https://example.com/a"}}, nil)
@@ -387,7 +400,10 @@ func TestDownloadLifecycle(t *testing.T) {
 	if code, body := x.do("POST", "/api/downloads/"+v.ID+"/resume", nil, nil); code != 200 {
 		t.Fatalf("resume: %d %s", code, body)
 	}
-	x.waitState(v.ID, "starting")
+	// The second call; the view may already show it running, from the
+	// container's live status.
+	for deadline := time.Now().Add(5 * time.Second); len(x.job(v.ID).Calls) < 2 && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+	}
 	j = x.job(v.ID)
 	if len(j.Calls) != 2 {
 		t.Fatalf("calls after resume: %v", j.Calls)
@@ -679,7 +695,7 @@ func TestDownloadRefusedByModal(t *testing.T) {
 	x.r.startErr = errors.New("RemoteError: Image build for im-AmHP9P7tCZr2GkFtM90o5A terminated due to external shut-down. Please try again.")
 	v := x.add("https://example.com/a.bin")
 	f := x.waitState(v.ID, "failed")
-	if f.ErrorKind != downloads.WhyUnexplained || len(x.events("dl_failed_unexplained")) != 1 {
+	if f.ErrorKind != downloads.WhyUnexplained || len(x.waitEvents("dl_failed_unexplained", 1)) != 1 {
 		t.Fatalf("refused without a reason: %+v, events %+v", f, x.d.Events(0))
 	}
 
@@ -688,7 +704,7 @@ func TestDownloadRefusedByModal(t *testing.T) {
 		t.Fatalf("resume: %d %s", code, body)
 	}
 	f = x.waitState(v.ID, "failed")
-	if f.ErrorKind != downloads.WhyBilling || len(x.events("dl_failed_billing")) != 1 {
+	if f.ErrorKind != downloads.WhyBilling || len(x.waitEvents("dl_failed_billing", 1)) != 1 {
 		t.Fatalf("refused for money: %+v", f)
 	}
 
