@@ -37,11 +37,6 @@ import (
 // BlockSize is the fixed Volume v2 block size.
 const BlockSize = 8 << 20
 
-// putWorkers is how many blocks one Put uploads at once, each held in
-// memory while it uploads. 16 came close to the link's speed where 8
-// reached about two thirds of it.
-const putWorkers = 16
-
 const clientVersion = "1.6.1"
 
 type Config struct {
@@ -165,6 +160,7 @@ type Client struct {
 	conn *grpc.ClientConn // nil for the HTTP/1.1 transport
 	// Byte counters for block data transferred (for status displays).
 	BytesDown, BytesUp atomic.Int64
+	up                 *upSlots // the block uploads in flight, for every volume
 }
 
 func (c *Client) headers() map[string]string {
@@ -182,7 +178,7 @@ func (c *Client) headers() map[string]string {
 }
 
 func New(cfg Config) (*Client, error) {
-	c := &Client{cfg: cfg}
+	c := &Client{cfg: cfg, up: newUpSlots()}
 	tr := &http.Transport{
 		Proxy:               http.ProxyFromEnvironment,
 		DialContext:         (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
@@ -447,7 +443,7 @@ func (c *Client) BlockURLs(ctx context.Context, volID, path string, first, n int
 // Download fetches a signed block URL and pads it to expectLen (the server
 // may omit trailing zero bytes when ClientPadsBlocks is set).
 func (c *Client) Download(ctx context.Context, url string, expectLen int) ([]byte, error) {
-	return withRetry(ctx, func(ctx context.Context) ([]byte, error) {
+	return transfer(ctx, func(ctx context.Context, w watch) ([]byte, error) {
 		req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
 		resp, err := c.HTTP.Do(req)
 		if err != nil {
@@ -463,7 +459,7 @@ func (c *Client) Download(ctx context.Context, url string, expectLen int) ([]byt
 			return nil, status.Errorf(code, "block GET %d: %s", resp.StatusCode, b)
 		}
 		buf := make([]byte, expectLen)
-		n, err := io.ReadFull(resp.Body, buf)
+		n, err := io.ReadFull(&progressReader{r: resp.Body, moved: w.moved}, buf)
 		if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
 			return nil, status.Error(codes.Unavailable, err.Error())
 		}
@@ -560,7 +556,7 @@ func (c *Client) uploadMissing(ctx context.Context, files []PutFile, missing []*
 		uploaded int
 		first    error
 	)
-	for w := 0; w < min(putWorkers, len(missing)); w++ {
+	for w := 0; w < min(maxUploads, len(missing)); w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -595,10 +591,19 @@ func (c *Client) uploadMissing(ctx context.Context, files []PutFile, missing []*
 	return uploaded, first
 }
 
+// upload sends one block, once a slot is free (see upSlots).
 func (c *Client) upload(ctx context.Context, url string, data []byte) ([]byte, error) {
-	return withRetry(ctx, func(ctx context.Context) ([]byte, error) {
-		req, _ := http.NewRequestWithContext(ctx, "PUT", url, bytes.NewReader(data))
+	if err := c.up.acquire(ctx); err != nil {
+		return nil, err
+	}
+	defer c.up.release()
+	return transfer(ctx, func(ctx context.Context, w watch) ([]byte, error) {
+		newBody := func() io.Reader {
+			return &progressReader{r: bytes.NewReader(data), moved: func(n int) { w.moved(n); c.up.moved(n) }, done: w.sent}
+		}
+		req, _ := http.NewRequestWithContext(ctx, "PUT", url, newBody())
 		req.ContentLength = int64(len(data))
+		req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(newBody()), nil }
 		resp, err := c.HTTP.Do(req)
 		if err != nil {
 			return nil, status.Error(codes.Unavailable, err.Error())

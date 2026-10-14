@@ -465,6 +465,16 @@ func TestRenameFolderWithPendingWrites(t *testing.T) {
 	}
 }
 
+// On a slow uplink a block can take minutes to upload, more so with others
+// sharing the link. As long as bytes keep moving it isn't given up on: the
+// file reaches Modal.
+func TestSlowUplink(t *testing.T) {
+	e := setup(t, modalfake.Options{UpBytesPerSec: 192 << 10}, []string{"-write-back", "1s"})
+	data := randomBytes(t, 32*MiB)
+	e.writeFile("slow.bin", data)
+	e.waitRemote("slow.bin", data, 5*time.Minute)
+}
+
 // conflictCopies lists the conflict copies of name ("shared.bin" ->
 // "shared.conflict-*.bin") at the top of the volume.
 func (e *env) conflictCopies(stem string) []string {
