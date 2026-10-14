@@ -289,6 +289,17 @@ func IsNotFound(err error) bool {
 	return status.Code(err) == codes.NotFound
 }
 
+// IsUnreachable reports whether err only says Modal couldn't be reached in
+// time: no network (as while a Mac wakes from sleep), a timeout, or trouble
+// on Modal's side. Trying again later may work.
+func IsUnreachable(err error) bool {
+	switch status.Code(err) {
+	case codes.Unavailable, codes.DeadlineExceeded:
+		return true
+	}
+	return errors.Is(err, context.DeadlineExceeded)
+}
+
 type VolumeInfo struct {
 	ID        string             `json:"id"`
 	Name      string             `json:"name"`
