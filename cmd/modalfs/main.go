@@ -314,6 +314,12 @@ func cmdMount(args []string) {
 	for _, m := range st.Mounts {
 		if m.AccountID == a.ID && m.VolumeName == pos[0] && m.Environment == *env {
 			must(c.Do("POST", "/api/mounts/"+m.ID+"/start", nil, nil))
+			// read again: a folder named after the label is chosen as it mounts
+			for _, x := range state(c).Mounts {
+				if x.ID == m.ID {
+					m = x
+				}
+			}
 			fmt.Printf("mounted %s at %s\n", m.VolumeName, m.Mountpoint)
 			return
 		}

@@ -287,6 +287,7 @@ func (d *Daemon) doStart(m config.Mount, ph *runMount) (_ *runMount, err error) 
 		return nil, err
 	}
 	d.setStep(m.ID, ph, StepMount)
+	m = d.followLabel(m, vol.ID)
 	mp := expandHome(m.Mountpoint)
 	if err := prepareMountpoint(mp); err != nil {
 		_ = fsys.Close()

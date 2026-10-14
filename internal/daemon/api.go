@@ -507,7 +507,9 @@ func (d *Daemon) routes() http.Handler {
 							if err != nil {
 								return err
 							}
-							m.Mountpoint = mp
+							if mp != m.Mountpoint {
+								m.Mountpoint, m.FollowLabel = mp, false // the user's choice from now on
+							}
 						}
 					case "write_back_ms":
 						f, _ := v.(float64)
@@ -957,6 +959,7 @@ func (d *Daemon) AddMount(m config.Mount) (config.Mount, error) {
 			if mp, err = checkMountpoint(mp, f, "", false); err != nil {
 				return err
 			}
+			m.FollowLabel = true
 		}
 		m.Mountpoint = mp
 		f.Mounts = append(f.Mounts, m)

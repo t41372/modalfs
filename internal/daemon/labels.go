@@ -70,6 +70,14 @@ func (s *labelStore) get(volID string) string {
 	return s.byVol[volID].Label
 }
 
+// lookup returns a volume's label and whether it has been read at all.
+func (s *labelStore) lookup(volID string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.byVol[volID]
+	return e.Label, ok
+}
+
 func (s *labelStore) set(volID, label string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

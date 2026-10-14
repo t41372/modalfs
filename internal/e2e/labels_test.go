@@ -320,3 +320,84 @@ func (a *artifact) write() {
 	}
 	a.t.Logf("scenario written to %s", a.path)
 }
+
+// A volume mounted in the mount root is in a folder named after its label,
+// so Finder shows that name, and it follows a new label the next time the
+// volume is mounted. A label that isn't a valid file name is made one, and
+// two volumes with the same label get two folders.
+func TestMountFolderFollowsTheLabel(t *testing.T) {
+	if live() {
+		t.Skip("runs on the fake: it starts a daemon with its own home")
+	}
+	bin := modalfsBinary(t)
+	root, err := os.MkdirTemp("", "mfs-fol-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
+	fake, err := modalfake.Start(filepath.Join(root, "blocks"), modalfake.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fake.Close)
+	api, err := modalapi.New(modalapi.Config{ServerURL: fake.URL, TokenID: "ak-fake", TokenSecret: "as-fake"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = api.Close() })
+	for _, name := range []string{"e2e", "e2e-two"} {
+		if _, err := api.LookupVolume(context.Background(), name, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	toml := filepath.Join(root, "modal.toml")
+	if err := os.WriteFile(toml, []byte(fmt.Sprintf("[fake]\ntoken_id = \"ak-fake\"\ntoken_secret = \"as-fake\"\nserver_url = %q\nactive = true\n", fake.URL)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The mount root in this test's own folder, never the user's ~/ModalVolumes.
+	home, mounts := filepath.Join(root, "h"), filepath.Join(root, "m")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(fmt.Sprintf(`{"accounts":[],"mounts":[],"settings":{"mount_root":%q}}`, mounts)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d := startDaemon(t, bin, home, toml)
+	d.must("account", "import", "fake")
+	waitMounted := func(p string) {
+		t.Helper()
+		deadline := time.Now().Add(30 * time.Second)
+		for !mounted(p) {
+			if time.Now().After(deadline) {
+				t.Fatalf("not mounted at %s:\n%s", p, d.must("status"))
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+	d.must("mount", "e2e")
+	waitMounted(filepath.Join(mounts, "e2e"))
+
+	// Labelled while mounted: it stays where it is until it's mounted again.
+	d.must("volume", "label", "e2e", "Data: 2024/raw")
+	if !mounted(filepath.Join(mounts, "e2e")) {
+		t.Fatal("setting the label moved a mounted volume")
+	}
+	d.must("unmount", "e2e")
+	d.must("mount", "e2e")
+	labelled := filepath.Join(mounts, "Data- 2024-raw")
+	waitMounted(labelled)
+	if _, err := os.Stat(filepath.Join(mounts, "e2e")); !os.IsNotExist(err) {
+		t.Fatalf("the old, empty folder is still there (err %v)", err)
+	}
+
+	// The same label on another volume: a second folder.
+	d.must("mount", "e2e-two")
+	waitMounted(filepath.Join(mounts, "e2e-two"))
+	d.must("volume", "label", "e2e-two", "Data: 2024/raw")
+	d.must("unmount", "e2e-two")
+	d.must("mount", "e2e-two")
+	waitMounted(labelled + " 2")
+	if !mounted(labelled) {
+		t.Fatal("mounting the second volume moved the first")
+	}
+}

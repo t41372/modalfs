@@ -43,6 +43,9 @@ type Mount struct {
 	VolumeName  string `json:"volume_name"`
 	VolumeID    string `json:"volume_id,omitempty"` // pinned on first mount
 	Mountpoint  string `json:"mountpoint"`
+	// FollowLabel: the mountpoint is a folder in the mount root named after
+	// the volume's label, chosen again at each mount (daemon/folder.go).
+	FollowLabel bool   `json:"follow_label,omitempty"`
 	Mode        string `json:"mode,omitempty"` // auto | nfs | fuse
 	ReadOnly    bool   `json:"read_only,omitempty"`
 	AutoMount   bool   `json:"auto_mount,omitempty"`
