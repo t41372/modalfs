@@ -1,0 +1,46 @@
+name: Modal live
+
+# Real Modal, every day: the contract tests (behaviour modalfs relies on
+# that Modal doesn't document) and the end-to-end tests. A change on Modal's
+# side shows up here before a user finds it.
+#
+# The tests create, fill and delete scratch volumes with the token in the
+# MODAL_TOKEN_ID and MODAL_TOKEN_SECRET secrets. A token reaches every volume
+# in its workspace, so use one from a workspace kept for testing, holding
+# nothing you care about.
+
+on:
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: modal-live
+
+jobs:
+  live:
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - name: Modal profile from the secrets
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          umask 077
+          printf '[ci]\ntoken_id = "%s"\ntoken_secret = "%s"\n' "$MODAL_TOKEN_ID" "$MODAL_TOKEN_SECRET" > ~/.modal.toml
+      - name: Contract tests
+        run: just test-modal-contract ci
+      - name: End-to-end tests (real NFS mounts, real Modal)
+        if: ${{ !cancelled() }}
+        run: just test-e2e-live ci

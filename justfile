@@ -73,6 +73,10 @@ test-e2e:
 test-e2e-live profile *args:
     MODALFS_E2E_PROFILE={{profile}} go test -tags e2e -count=1 -timeout 60m ./internal/e2e {{args}}
 
+# Modal behaviour modalfs relies on that Modal doesn't document, checked against real Modal: each test CREATES AND DELETES a scratch volume in the profile's workspace
+test-modal-contract profile *args:
+    MODALFS_E2E_PROFILE={{profile}} go test -tags live -count=1 -timeout 15m -v -run Contract ./internal/modalapi {{args}}
+
 # the remote download agent's tests: the agent's own (Python) and the Go side driving it, outside Modal
 test-agent:
     #!/bin/sh
