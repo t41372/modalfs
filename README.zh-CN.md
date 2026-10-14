@@ -31,6 +31,9 @@ datasets  work     mounted  /Users/me/ModalVolumes/datasets  0        0 B / 3 B
 > [!IMPORTANT]
 > modalfs 是独立项目，**与 Modal Labs 无关，也没有得到其认可**。它用的是 Modal 官方客户端 SDK 所用的同一套 gRPC API，其中一部分没有公开文档，可能随时变化。把重要数据放上去之前，请先读[限制](#限制)。
 
+> [!WARNING]
+> modalfs 用的是你自己的 Modal 账号，所以你用它做的一切都受 [Modal 服务条款](https://modal.com/legal/terms)约束：包括你存在 volume 上的内容，以及远程下载抓取的内容。违反条款的账号可能被 Modal 停用。条款（第 1.4 和 1.5 条）禁止的内容包括：侵犯版权的内容、点对点文件分享（P2P），以及用 Modal 为他人托管文件或提供媒体服务。种子下载就属于点对点文件分享：它在下载的同时也会上传给其他用户。
+
 ## 目录
 
 - [特点](#特点)
@@ -180,6 +183,7 @@ modalfs 会记住每个挂载，所以下次 `modalfs mount my-data` 会沿用�
 - **打开之前一直是关着的**：在“远程下载”页、设置里，或用 `modalfs download enable` 打开，因为这是 modalfs 里唯一会运行计算的功能。只有你添加或继续一个下载时才会启动 Function，下载完成、暂停或卡住时就停止。
 - **费用**：最小规格（0.125 CPU、512 MiB）下载期间每小时约 0.01 美元，另加 Modal 的网络费用（看实时速度会多出约下载量 2% 的流量）。第一次下载，以及 modalfs 更新后的第一次，会用一个短命的 Sandbox 部署 Function：大约 10 秒、0.0001 美元。不需要安装 Python。
 - **下载工具**：gopeed、aria2 和 yt-dlp（每次都用最新版）。modalfs 会为每个链接选一个，你也可以自己选。gopeed 在某个服务器上一直失败时，aria2 会自动接手，从头下载那个文件。
+- **Modal 的条款**：只下载你有权下载的内容。种子属于点对点文件分享，[Modal 的条款](https://modal.com/legal/terms)（第 1.5 条）禁止这种用途，所以下载种子可能导致账号被停用；见 [docs/known-issues.md](docs/known-issues.md#bittorrent-uploads-while-it-downloads)。
 - **中断**：Modal 有时会停掉容器来调度资源。下载工具的进度存在 volume 上，所以会在新容器上从原来的地方接着下载，通常一分钟内。一个 Function 最多运行 24 小时，更久的下载会自己换到新的 Function 继续。这些都会显示在下载的页面上，在速度图上标出来，也会用文字说明。
 - **实时速度**：在应用里看一个下载时每秒更新四次，由后台进程从容器转发。无论发生什么都留得下来的记录（状态、事件、速度历史）存在 volume 的 `.modalfs/downloads/` 里。
 - **Cloudflare WARP**：下载可以经由 Cloudflare WARP，适合会拒绝云服务器的网站。速度会慢一些，而且下载工具除了它什么都连不到：连不上 WARP 时下载会停下，而不是改成直连，你可以选择不经 WARP 重试。

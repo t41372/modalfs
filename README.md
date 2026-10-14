@@ -31,6 +31,9 @@ datasets  work     mounted  /Users/me/ModalVolumes/datasets  0        0 B / 3 B
 > [!IMPORTANT]
 > modalfs is an independent project. It is **not affiliated with or endorsed by Modal Labs**. It uses the same gRPC API as Modal's official client SDKs. Parts of that API are undocumented and may change without notice. Read [Limitations](#limitations) before you put data you care about on it.
 
+> [!WARNING]
+> modalfs works with your own Modal account, so [Modal's Terms of Service](https://modal.com/legal/terms) apply to everything you do with it: what you keep on your volumes and what remote downloads fetch. Modal can suspend an account that breaks them. Among other things, the terms (§1.4 and §1.5) forbid content that infringes copyright, peer-to-peer file sharing, and using Modal to host files or serve media for others. A torrent is peer-to-peer file sharing: while it downloads, it also uploads to other peers.
+
 ## Contents
 
 - [Highlights](#highlights)
@@ -180,6 +183,7 @@ Give modalfs a link and a Modal Function in your workspace downloads it straight
 - **Off until you turn it on**, on the Remote downloads page, in Settings, or with `modalfs download enable`, because it's the one thing in modalfs that runs compute. A Function starts only for a download you add or resume, and stops when it finishes, pauses or stalls.
 - **What it costs:** the smallest size (0.125 CPU, 512 MiB) is about $0.01 an hour while it downloads, plus Modal's network charges (watching the live view adds about 2% of the bytes downloaded). The first download, and the first after modalfs updates, deploys the Function from a short-lived Sandbox: about 10 seconds and $0.0001. You don't need Python.
 - **Downloaders:** gopeed, aria2 and yt-dlp (the latest version, every run). modalfs picks one for each link, or you choose. When gopeed keeps failing on a server, aria2 takes over by itself and starts that file over.
+- **Modal's terms:** download only what you have the right to. A torrent counts as peer-to-peer file sharing, which [Modal's terms](https://modal.com/legal/terms) (§1.5) forbid, so torrent downloads can get your account suspended; see [docs/known-issues.md](docs/known-issues.md#bittorrent-uploads-while-it-downloads).
 - **Interruptions:** Modal sometimes stops a container to move work around. The downloader's progress is saved on the volume, so the download continues on a new container from where it was, usually within a minute. A Function runs for at most 24 hours; a longer download continues in a new one by itself. Each of these shows on the download's page, on its speed chart and in plain words.
 - **Live speed**, four times a second, while you watch a download in the app; the daemon relays it from the container. The record that survives everything (status, events, the speed history) is kept on the volume in `.modalfs/downloads/`.
 - **Cloudflare WARP:** a download can go through Cloudflare WARP, for sites that refuse cloud servers. It's slower, and the downloader can reach nothing else: if WARP can't be reached, the download stops instead of going direct, and you can retry it without WARP.
