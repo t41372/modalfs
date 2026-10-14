@@ -7,7 +7,10 @@
 //    ?scenario=demo, so the pictures show an ordinary good day on sample data
 //    that belongs to no one, and it's served from a temporary folder.
 // 2. Each page is shot in Chromium with its glass left see-through (?glass), at
-//    the app's own window size (cmd/modalfs-gui: 1000 × 680).
+//    the app's own window size (cmd/modalfs-gui: 1000 × 680). Its clock starts
+//    at the same moment in the same time zone every time (CLOCK), so the
+//    pictures don't change from one run to the next, and the times on them
+//    don't depend on when or where they were taken.
 // 3. It's laid over a painting from docs/screenshots/backdrops/, the way macOS
 //    shows the window over a wallpaper: the painting behind the window blurred
 //    and tinted like the full-screen UI material, with the window's corners,
@@ -104,13 +107,17 @@ const port = (server.address() as { port: number }).port
 
 // ─── 2. Each page ───
 
+/** The moment every picture is taken at: an ordinary afternoon. */
+const CLOCK = { time: new Date('2026-10-14T14:10:00+08:00'), timezoneId: 'Asia/Taipei' }
+
 const browser = await chromium.launch()
 const stage = await browser.newPage({ viewport: STAGE, deviceScaleFactor: 2 })
 
 for (const { dir, lang } of LANGUAGES) {
   mkdirSync(join(out, dir), { recursive: true })
   for (const shot of shots) {
-    const page = await browser.newPage({ viewport: WINDOW, deviceScaleFactor: 2, colorScheme: shot.theme })
+    const page = await browser.newPage({ viewport: WINDOW, deviceScaleFactor: 2, colorScheme: shot.theme, timezoneId: CLOCK.timezoneId })
+    await page.clock.install({ time: CLOCK.time })
     await page.goto(`http://127.0.0.1:${port}/?glass&scenario=demo&lang=${lang}&theme=${shot.theme}&page=${shot.page}`)
     await page.locator('main h1').waitFor()
     await page.waitForTimeout(400)
