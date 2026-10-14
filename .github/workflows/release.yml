@@ -67,7 +67,7 @@ jobs:
           d=modalfs-gui-$v-linux-amd64
           mkdir -p $d && cp dist/modalfs-gui $d/ && cp LICENSE README.md $d/
           tar -czf out/$d.tar.gz $d
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux
           path: out/*
@@ -92,7 +92,7 @@ jobs:
           mkdir -p out
           # ditto keeps the bundle's signature and extended attributes intact.
           ditto -c -k --sequesterRsrc --keepParent dist/modalfs.app out/modalfs-${{ needs.version.outputs.version }}-macos.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos
           path: out/*
