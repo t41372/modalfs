@@ -4,24 +4,23 @@ import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { api } from '@/api/client'
-import { patchMount, refreshState, refreshUsage, useAction, useConflicts, useLoadedState, usePending, useTraffic, useUsage, useVolumes } from '@/api/queries'
+import { patchMount, patchSettings, refreshState, refreshUsage, useAction, useConflicts, useLoadedState, usePending, useTraffic, useUsage, useVolumes } from '@/api/queries'
 import type { Mount } from '@/api/types'
 import { navigate } from '@/app/nav'
 import { useIsDark } from '@/app/theme'
 import { AccountMark, Bar, Chip, glyphOf, Hint, Tile } from '@/components/bits'
 import { confirm } from '@/components/confirm'
-import { Card, Mono, Page, Row, Section } from '@/components/page'
+import { Card, Mono, Page, Section } from '@/components/page'
 import { Segmented } from '@/components/Segmented'
 import { Spinner } from '@/components/Spinner'
 import { duration, StopProgress } from '@/components/StopProgress'
 import { TrafficChart, type TrafficRange } from '@/components/TrafficChart'
+import { VolumeSettings } from '@/components/VolumeSettings'
 import { askUnmount, useVolumeMenu } from '@/components/VolumeMenu'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { Switch } from '@/components/ui/switch'
 import { encryptionHint, UnlockDialog } from '@/dialogs/Encryption'
-import { MountOptionsDialog } from '@/dialogs/MountOptions'
 import { ago, bytes, date, homeOf, speed, tilde } from '@/lib/format'
 import { live, look, nameOf, toneOf } from '@/lib/mounts'
 import { isMac } from '@/lib/platform'
@@ -50,17 +49,26 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
   const l = look(m)
   const mounted = m.state === 'mounted'
   const s = m.status
-  const [editing, setEditing] = useState(false)
   const [labeling, setLabeling] = useState(false)
   const [unlocking, setUnlocking] = useState(false)
-  const menu = useVolumeMenu(m, { onEditLabel: () => setLabeling(true) })
+  const menu = useVolumeMenu(m)
 
   const vols = useVolumes(m.account_id, m.environment ?? '')
   const info = vols.data?.find((v) => (m.volume_id ? v.id === m.volume_id : v.name === m.volume_name))
   const usage = useUsage(m.id)
   const traffic = useTraffic(m.id, mounted || m.state === 'stopping')
-  const [range, setRange] = useState<TrafficRange>('tenMinutes')
+  // The range last chosen, kept by the daemon (the page's origin changes with its port).
+  const range: TrafficRange = st.settings.chart_range ?? 'minute'
+  const setRange = useAction((r: TrafficRange) => patchSettings({ chart_range: r }), {
+    quiet: true,
+    optimistic: (state, r) => {
+      state.settings.chart_range = r
+    },
+  }).mutate
   const pending = usePending(m.id, (s?.pending_files ?? 0) > 0)
+  // The speed now, from the same samples as the chart, so the two agree.
+  const samples = traffic.data ?? []
+  const now = samples.length >= 2 ? rates(samples[samples.length - 2], samples[samples.length - 1]) : { up: m.up_speed ?? 0, down: m.down_speed ?? 0 }
   const conflicts = useConflicts(m.id, m.open_conflicts ?? 0)
 
   // A volume never measured is measured when its page opens; a measured one only when asked.
@@ -79,12 +87,6 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
         x.step = 'connect'
         x.error = undefined
       }
-    },
-  })
-  const autoMount = useAction((v: boolean) => patchMount(m.id, { auto_mount: v }), {
-    optimistic: (state, v) => {
-      const x = state.mounts.find((y) => y.id === m.id)
-      if (x) x.auto_mount = v
     },
   })
   const repin = useAction(async () => {
@@ -271,11 +273,11 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
           )}
         </Tile>
         <Tile
-          label={t('vol.session')}
-          value={live(m) && s ? `↑ ${bytes(s.bytes_up)}` : '—'}
-          hint={live(m) && s ? t('vol.sessionHint', { commits: s.commits, ago: m.started_at ? ago(m.started_at, lang, t('time.justNow')) : '' }) : undefined}
+          label={t('vol.speedTile')}
+          value={live(m) && s ? `↑ ${speed(now.up)}` : '—'}
+          hint={live(m) && s ? t('vol.sessionHint', { up: bytes(s.bytes_up), down: bytes(s.bytes_down), commits: s.commits, ago: m.started_at ? ago(m.started_at, lang, t('time.justNow')) : '' }) : undefined}
         >
-          <div className="mt-1 truncate text-[12px] text-muted-foreground tabular">{live(m) && s ? (m.up_speed || m.down_speed ? t('vol.speedNow', { up: speed(m.up_speed), down: speed(m.down_speed) }) : t('vol.read', { size: bytes(s.bytes_down) })) : m.last_used ? t('home.lastUsed', { ago: ago(m.last_used, lang, t('time.justNow')) }) : t('vol.state.off')}</div>
+          <div className="mt-1 truncate text-[12px] text-muted-foreground tabular">{live(m) && s ? t('vol.readSpeed', { speed: speed(now.down) }) : m.last_used ? t('home.lastUsed', { ago: ago(m.last_used, lang, t('time.justNow')) }) : t('vol.state.off')}</div>
         </Tile>
         <Tile
           label={t('vol.waiting')}
@@ -364,9 +366,12 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
         </Section>
       )}
 
+      <VolumeSettings m={m} />
+
       {folders.length > 0 && (
         <Section label={t('vol.byFolder')} aside={<span className="text-[12px] text-muted-foreground">{t('vol.measuredAgo', { ago: ago(u!.last!.at, lang, t('time.justNow')) })}</span>}>
-          <Card className="py-2 [&>*+*]:border-t-0">
+          {/* A volume can hold many folders: past a dozen rows, the list scrolls. */}
+          <Card className="max-h-[22rem] overflow-y-auto py-2 [&>*+*]:border-t-0">
             {folders.map((f) => (
               <FolderBar key={f.name} name={`${f.name}/`} size={f.bytes} pct={(f.bytes / top) * 100} hint={t('vol.folderFiles', { count: f.files })} />
             ))}
@@ -375,27 +380,6 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
         </Section>
       )}
 
-      <Section
-        label={t('vol.settings')}
-        aside={
-          <Button variant="ghost" size="sm" className="text-muted-foreground" disabled={m.state === 'starting' || m.state === 'stopping'} onClick={() => setEditing(true)}>
-            {t('vol.change')}
-          </Button>
-        }
-      >
-        <Card>
-          <Row title={t('vol.autoMount')} wrap={false}>
-            <Switch checked={!!m.auto_mount} onCheckedChange={(v) => autoMount.mutate(v)} aria-label={t('vol.autoMount')} />
-          </Row>
-          <Fact label={t('vol.where')} value={<Mono>{tilde(m.mountpoint, home)}</Mono>} />
-          <Fact label={t('vol.access')} value={t(m.read_only ? 'vol.readOnly' : 'vol.readWrite')} />
-          <Fact label={t('vol.onConflict')} value={t(m.on_conflict === 'overwrite' ? 'vol.overwrite' : 'vol.keepBoth')} warn={m.on_conflict === 'overwrite'} />
-          <Fact label={t('vol.litter')} value={t(m.filter_junk ? 'vol.litterOn' : 'vol.litterOff')} hint={t('vol.litterHint')} />
-          <Fact label={t('vol.mode')} value={`${m.mode === 'nfs' ? 'NFS' : m.mode === 'fuse' ? 'FUSE' : t('vol.modeAuto')}${m.active_mode ? ` → ${m.active_mode.toUpperCase()}` : ''}`} />
-        </Card>
-      </Section>
-
-      <MountOptionsDialog m={m} open={editing} onOpenChange={setEditing} />
       {m.locked && <UnlockDialog m={m} open={unlocking} onOpenChange={setUnlocking} />}
       {menu.dialogs}
     </Page>
@@ -425,16 +409,6 @@ function Notice({ tone, title, children }: { tone: 'bad' | 'up' | 'busy'; title:
         {title}
       </div>
       {children && <div className="mt-1.5 min-w-0 pl-5.5">{children}</div>}
-    </div>
-  )
-}
-
-function Fact({ label, value, hint, warn }: { label: string; value: React.ReactNode; hint?: string; warn?: boolean }) {
-  const title = <span className="text-[14px] font-medium">{label}</span>
-  return (
-    <div className="flex items-center gap-x-6 gap-y-1 px-5 py-3 max-[520px]:flex-col max-[520px]:items-start">
-      <div className="min-w-0 flex-1">{hint ? <Hint text={hint}>{title}</Hint> : title}</div>
-      <div className={`min-w-0 text-[13px] ${warn ? 'font-medium text-warn-ink' : 'text-muted-foreground'}`}>{value}</div>
     </div>
   )
 }
@@ -513,4 +487,10 @@ function LabelTitle({ m, editing, onEditing, t }: { m: Mount; editing: boolean; 
       </Hint>
     </span>
   )
+}
+
+/** Upload and read speeds between two traffic samples ([time, bytes up, bytes down]). */
+function rates(a: [number, number, number], b: [number, number, number]) {
+  const dt = Math.max(1, b[0] - a[0])
+  return { up: Math.max(0, (b[1] - a[1]) / dt), down: Math.max(0, (b[2] - a[2]) / dt) }
 }

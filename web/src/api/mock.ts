@@ -6,6 +6,7 @@
 // URL parameters set what the screenshots need: ?lang=en|zh-Hant|zh-Hans and
 // ?theme=light|dark.
 
+import { runSeconds } from '@/lib/downloads'
 import { isTorrent, warpByDefault } from '@/lib/links'
 import type { Account, Billing, Conflict, DaemonEvent, Download, DownloadEvent, Environment, Identity, Mount, PendingFile, Profile, Sample, State, TrafficSample, Usage, Volume } from './types'
 
@@ -635,8 +636,15 @@ function finishMock(m: MockDownload) {
   emit('info', m.d.volume_name, 'dl_done', [m.d.name, `${m.d.volume_name}:/${m.d.folder}`])
 }
 
-/** Oldest first, as the daemon lists them. */
-const listed = () => mockDownloads.map((x) => x.d).sort((a, b) => a.created - b.created)
+/** Oldest first, as the daemon lists them, with how long the ended ones ran and when they stopped. */
+const listed = () =>
+  mockDownloads
+    .map((x) => {
+      if (!ENDED_MOCK.has(x.d.state)) return x.d
+      const stops = x.events.filter((e) => e.ev === 'finished' || e.ev === 'paused' || e.ev === 'failed' || e.ev === 'interrupted')
+      return { ...x.d, ran: Math.round(runSeconds(x.events, false, 0)) || undefined, ended: stops.at(-1)?.t }
+    })
+    .sort((a, b) => a.created - b.created)
 
 function findDownload(id: string) {
   return mockDownloads.find((m) => m.d.id === id) ?? fail(`no download ${id}`)

@@ -68,6 +68,9 @@ type Settings struct {
 	RemoteDownloads      bool   `json:"remote_downloads,omitempty"`
 	DownloadSize         string `json:"download_size,omitempty"`          // small (default), medium, large
 	DownloadStallMinutes int    `json:"download_stall_minutes,omitempty"` // stop after this long without data (default 10)
+	// ChartRange is the time a volume's speed chart shows, as last chosen
+	// in the app: minute (default), tenMinutes or hour.
+	ChartRange string `json:"chart_range,omitempty"`
 }
 
 type VolumeEncryption struct {

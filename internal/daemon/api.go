@@ -633,6 +633,10 @@ func (d *Daemon) routes() http.Handler {
 			writeErr(w, errors.New("the stall limit must be at least 1 minute"))
 			return
 		}
+		if r := in.ChartRange; r != "" && r != "minute" && r != "tenMinutes" && r != "hour" {
+			writeErr(w, fmt.Errorf("unknown chart range %q (use minute, tenMinutes or hour)", r))
+			return
+		}
 		oldTransport := d.store.Snapshot().Settings.Transport
 		err := d.store.Update(func(f *config.File) error {
 			s := &f.Settings
@@ -670,6 +674,9 @@ func (d *Daemon) routes() http.Handler {
 			}
 			if in.DownloadStallMinutes > 0 {
 				s.DownloadStallMinutes = in.DownloadStallMinutes
+			}
+			if in.ChartRange != "" {
+				s.ChartRange = in.ChartRange
 			}
 			return nil
 		})

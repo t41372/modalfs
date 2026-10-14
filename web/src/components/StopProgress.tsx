@@ -25,8 +25,10 @@ function uploadRate(id: string, t: number, up: number): { rate: number; span: nu
 export function duration(sec: number, t: TFunction) {
   sec = Math.max(1, Math.round(sec))
   if (sec < 60) return t('time.s', { n: sec })
-  if (sec < 3600) return t('time.min', { n: Math.round(sec / 60) })
-  return t('time.h', { h: Math.floor(sec / 3600), m: Math.round((sec % 3600) / 60) })
+  // Rounded to the minute first, so 59 min 40 s is "1 h 0 min", never "60 min".
+  const min = Math.round(sec / 60)
+  if (min < 60) return t('time.min', { n: min })
+  return t('time.h', { h: Math.floor(min / 60), m: min % 60 })
 }
 
 /** What a stopping mount still has to upload: an estimate, since pending_bytes counts whole 8 MiB blocks and only drops when a file's commit finishes. */

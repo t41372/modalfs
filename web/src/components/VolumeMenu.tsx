@@ -1,5 +1,5 @@
 import type { TFunction } from 'i18next'
-import { Copy, Eject, FolderOpen, HardDrive, KeyRound, Lock, Pencil, RefreshCw, Tag, Trash2, Upload, X } from 'lucide-react'
+import { Copy, Eject, FolderOpen, HardDrive, Lock, RefreshCw, Settings2, Trash2, Upload, X } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -9,8 +9,8 @@ import type { Mount } from '@/api/types'
 import { navigate } from '@/app/nav'
 import { confirm } from '@/components/confirm'
 import { DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { askLock, ShowKeyDialog, UnlockDialog } from '@/dialogs/Encryption'
-import { DeleteVolumeDialog, LabelDialog, RenameVolumeDialog } from '@/dialogs/Volume'
+import { UnlockDialog } from '@/dialogs/Encryption'
+import { DeleteVolumeDialog } from '@/dialogs/Volume'
 import { bytes } from '@/lib/format'
 import { live, nameOf } from '@/lib/mounts'
 import { isMac } from '@/lib/platform'
@@ -19,11 +19,11 @@ import { isMac } from '@/lib/platform'
  * What can be done with a volume, as menu items for its ⋯ menu and its
  * right-click menu, and the dialogs they open. With `full`, the items start
  * with what the volume's page shows as buttons: mount, unmount, unlock and
- * Show in Finder. `onEditLabel` edits the label in place instead of in a dialog.
+ * Show in Finder. What can be set is on the volume's page, under Settings.
  */
-export function useVolumeMenu(m: Mount, { full = false, onEditLabel }: { full?: boolean; onEditLabel?: () => void } = {}) {
+export function useVolumeMenu(m: Mount, { full = false }: { full?: boolean } = {}) {
   const { t } = useTranslation()
-  const [dialog, setDialog] = useState<'' | 'label' | 'rename' | 'delete' | 'unlock' | 'key'>('')
+  const [dialog, setDialog] = useState<'' | 'delete' | 'unlock'>('')
   const close = (o: boolean) => !o && setDialog('')
   const mounted = m.state === 'mounted'
   const busy = m.state === 'starting' || m.state === 'stopping'
@@ -75,6 +75,11 @@ export function useVolumeMenu(m: Mount, { full = false, onEditLabel }: { full?: 
           <DropdownMenuSeparator />
         </>
       )}
+      <DropdownMenuItem onClick={() => openSettings(m)}>
+        <Settings2 />
+        {t('vol.openSettings')}
+      </DropdownMenuItem>
+      <DropdownMenuSeparator />
       <DropdownMenuItem disabled={!mounted || sync.isPending} onClick={() => sync.mutate()}>
         <Upload />
         {t('vol.syncNow')}
@@ -83,40 +88,11 @@ export function useVolumeMenu(m: Mount, { full = false, onEditLabel }: { full?: 
         <RefreshCw />
         {t('vol.measure')}
       </DropdownMenuItem>
-      <DropdownMenuItem
-        disabled={!m.volume_id || m.read_only || m.locked}
-        title={m.locked ? t('enc.labelLocked') : m.read_only ? t('vol.labelReadOnly') : undefined}
-        onClick={() => (onEditLabel ? onEditLabel() : setDialog('label'))}
-      >
-        <Tag />
-        {t('vol.editLabel')}
-      </DropdownMenuItem>
-      <DropdownMenuItem disabled={!volume} onClick={() => setDialog('rename')}>
-        <Pencil />
-        {t('vol.rename')}
-      </DropdownMenuItem>
       {m.volume_id && (
         <DropdownMenuItem onClick={() => navigator.clipboard?.writeText(m.volume_id!).then(() => toast(t('vol.copied')))}>
           <Copy />
           {t('vol.copyId')}
         </DropdownMenuItem>
-      )}
-      {m.encrypted && m.volume_id && (
-        <>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            disabled={m.locked || !m.key_remembered}
-            title={m.locked ? undefined : !m.key_remembered ? t('enc.showNotRemembered') : undefined}
-            onClick={() => setDialog('key')}
-          >
-            <KeyRound />
-            {t('enc.menuShow')}
-          </DropdownMenuItem>
-          <DropdownMenuItem disabled={m.locked || live(m)} title={live(m) ? t('enc.lockLive') : undefined} onClick={() => askLock(m, t)}>
-            <Lock />
-            {live(m) ? t('enc.menuLockLive') : t('enc.menuLock')}
-          </DropdownMenuItem>
-        </>
       )}
       <DropdownMenuSeparator />
       <DropdownMenuItem disabled={busy} onClick={() => askRemove(m, t)}>
@@ -132,14 +108,7 @@ export function useVolumeMenu(m: Mount, { full = false, onEditLabel }: { full?: 
 
   const dialogs = (
     <>
-      {!onEditLabel && <LabelDialog m={m} open={dialog === 'label'} onOpenChange={close} />}
-      {m.encrypted && m.volume_id && (
-        <>
-          <UnlockDialog m={m} open={dialog === 'unlock'} onOpenChange={close} />
-          <ShowKeyDialog m={m} open={dialog === 'key'} onOpenChange={close} />
-        </>
-      )}
-      <RenameVolumeDialog volume={dialog === 'rename' ? volume : null} onClose={() => setDialog('')} account={m.account_id} env={env} />
+      {m.encrypted && m.volume_id && <UnlockDialog m={m} open={dialog === 'unlock'} onOpenChange={close} />}
       <DeleteVolumeDialog volume={dialog === 'delete' ? volume : null} onClose={() => setDialog('')} account={m.account_id} env={env} onDeleted={() => navigate('volumes')} />
     </>
   )
@@ -174,4 +143,10 @@ function askRemove(m: Mount, t: TFunction) {
         .catch((e) => toast.error(e.message))
         .finally(refreshState),
   })
+}
+
+/** Opens the volume's page at its settings. */
+export function openSettings(m: Mount) {
+  navigate('volumes', m.id)
+  setTimeout(() => document.getElementById('volume-settings')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 120)
 }

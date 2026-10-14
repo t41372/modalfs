@@ -29,6 +29,12 @@ const PAUSE_DRIFT = 0.14
 /** Half the tangent's length, in pixels. */
 const REACH = 46
 
+/**
+ * A speed on the axis. Liveline keeps a margin under 0, and spreads a flat
+ * line over ±0.2: those ticks would read "-0 B/s" and repeat "0 B/s".
+ */
+export const axisSpeed = (v: number) => (v === 0 || v >= 1 ? speed(v) : '')
+
 export type Range = 'minute' | 'tenMinutes' | 'all'
 const RANGE_SECS: Record<Exclude<Range, 'all'>, number> = { minute: 60, tenMinutes: 600 }
 
@@ -126,7 +132,7 @@ function Chart({ points, running, value, range, happenings, dark }: Props) {
           paused={!running}
           loading={running && data.length < 2}
           emptyText={t('downloads.chart.empty')}
-          formatValue={speed}
+          formatValue={axisSpeed}
           formatTime={fmtTime}
           padding={{ ...PAD, right: g.right }}
           // a speed reads against zero: Liveline's range then starts there

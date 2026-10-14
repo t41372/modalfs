@@ -1,16 +1,16 @@
 import { cn } from 'cn'
-import { Activity, CloudDownload, HardDrive, type LucideIcon, Settings } from 'lucide-react'
+import { Activity, CloudDownload, HardDrive, type LucideIcon, Power, Settings } from 'lucide-react'
 import { motion } from 'motion/react'
 import { useTranslation } from 'react-i18next'
 import { useFeed } from '@/api/events'
 import { useAppState } from '@/api/queries'
-import { GlyphIcon, Hint, INK } from '@/components/bits'
-import { bytes } from '@/lib/format'
+import { Hint } from '@/components/bits'
 import { NEEDS_YOU } from '@/lib/downloads'
 import { easeOut } from '@/lib/motion'
 import { summary } from '@/lib/mounts'
 import { trafficLights } from '@/lib/platform'
 import { navigate, type Section, useRoute } from './nav'
+import { startQuit } from './quitFlow'
 
 const TOP: { id: Section; icon: LucideIcon }[] = [
   { id: 'volumes', icon: HardDrive },
@@ -29,7 +29,7 @@ export function Rail() {
           <RailItem key={p.id} id={p.id} icon={p.icon} />
         ))}
         <div className="flex-1" />
-        <Sync />
+        <Quit />
         <RailItem id="settings" icon={Settings} />
       </nav>
 
@@ -45,34 +45,22 @@ export function Rail() {
   )
 }
 
-/** Whether everything is on Modal, at a glance; the details on hover, the volumes on a click. */
-function Sync() {
+/**
+ * Unmount everything and stop modalfs, a step away from any page. Closing the
+ * window doesn't: the volumes stay mounted. (On a narrow window it's at the
+ * bottom of Settings.)
+ */
+function Quit() {
   const { t } = useTranslation()
-  const st = useAppState().data
-  if (!st) return null
-  const s = summary(st.mounts)
-  if (s.tone === 'off') return null
-  const word = s.tone === 'bad' ? t('sync.attention') : s.tone === 'up' ? t('sync.uploading') : t('sync.synced')
-  const detail = [
-    t('sync.mounted', { count: s.on }),
-    s.files > 0 ? t('sync.pending', { size: bytes(s.pending), count: s.files }) : t('sync.allOnModal'),
-    s.problems > 0 ? t('sync.problems', { count: s.problems }) : '',
-    s.files > 0 ? t('sync.dontSleep') : '',
-  ]
-    .filter(Boolean)
-    .join(' · ')
   return (
-    <Hint text={detail} side="right">
+    <Hint text={t('settings.quitD')} side="right">
       <button
         onMouseDown={(e) => e.preventDefault()}
-        onClick={() => navigate('volumes')}
-        aria-label={`${word}. ${detail}`}
-        className="pressable flex w-16 flex-col items-center gap-1 rounded-xl py-1.5 text-[10px] font-medium text-foreground/65 hover:text-foreground"
+        onClick={() => void startQuit()}
+        className="pressable flex min-h-12 w-16 flex-col items-center justify-center gap-0.5 rounded-[14px] py-1.5 text-foreground/65 hover:text-foreground"
       >
-        <span className={cn('flex', INK[s.tone])}>
-          <GlyphIcon glyph={s.tone === 'bad' ? 'alert' : s.tone === 'up' ? 'up' : 'check'} className="size-3.5" />
-        </span>
-        {word}
+        <Power className="size-5" strokeWidth={1.8} />
+        <span className="max-w-full px-0.5 text-center text-[10px] leading-[1.15] font-medium">{t('nav.quit')}</span>
       </button>
     </Hint>
   )
@@ -82,8 +70,11 @@ function RailItem({ id, icon: Icon, compact }: { id: Section; icon: LucideIcon; 
   const { t } = useTranslation()
   const active = useRoute().section === id
   const unseen = useFeed().unseen
-  const downloads = useAppState().data?.downloads ?? []
-  const count = id === 'activity' && !active ? unseen : id === 'downloads' ? downloads.filter((d) => NEEDS_YOU.has(d.state)).length : 0
+  const st = useAppState().data
+  const downloads = st?.downloads ?? []
+  // What needs a look: volumes with a problem, downloads waiting on you, events not seen yet.
+  const count =
+    id === 'activity' && !active ? unseen : id === 'downloads' ? downloads.filter((d) => NEEDS_YOU.has(d.state)).length : id === 'volumes' && st ? summary(st.mounts).problems : 0
   return (
     <button
       // Like a macOS sidebar, a click doesn't take focus; Tab still does.

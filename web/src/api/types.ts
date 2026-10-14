@@ -47,6 +47,8 @@ export interface Mount {
   /** The volume's label, kept in the volume itself; shown instead of its name. */
   label?: string
   mountpoint: string
+  /** The folder is named after the label, chosen again at each mount. */
+  follow_label?: boolean
   mode?: MountMode
   read_only?: boolean
   auto_mount?: boolean
@@ -143,6 +145,8 @@ export interface Settings {
   download_size?: DownloadSize
   /** Stop a download that has received nothing for this long (10 when unset). */
   download_stall_minutes?: number
+  /** The time a volume's speed chart shows, as last chosen (a minute when unset). */
+  chart_range?: 'minute' | 'tenMinutes' | 'hour'
 }
 
 export interface State {
@@ -293,6 +297,9 @@ export interface Download {
   /** Through Cloudflare WARP: the downloader can reach nothing else. */
   warp?: boolean
   status?: DownloadStatus
+  /** How long its Functions ran in all, in seconds (what it's billed for), and when it last stopped. Unknown for downloads that ended before modalfs counted them. */
+  ran?: number
+  ended?: number
 }
 
 /** An account's spending this month. Modal's API doesn't tell the credit left or the spend limit. */

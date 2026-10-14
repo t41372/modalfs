@@ -32,9 +32,9 @@ export function Page({
 }
 
 /** A labelled group: a small quiet label, then a card. */
-export function Section({ label, aside, children, className }: { label?: ReactNode; aside?: ReactNode; children: ReactNode; className?: string }) {
+export function Section({ label, aside, children, className, id }: { label?: ReactNode; aside?: ReactNode; children: ReactNode; className?: string; id?: string }) {
   return (
-    <section className={className}>
+    <section className={className} id={id}>
       {(label || aside) && (
         <div className="mb-2 flex min-h-5 items-center justify-between gap-3 px-1">
           <h2 className="text-[12.5px] font-medium text-muted-foreground">{label}</h2>

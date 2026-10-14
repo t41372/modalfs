@@ -332,8 +332,8 @@ function askDelete(d: Download, t: TFunction) {
   })
 }
 
-/** Take it off the list: its files stay where they are. */
-function askRemove(d: Download, t: TFunction) {
+/** Take it off the list: its files stay where they are. From its own page, go back to the list. */
+export function askRemove(d: Download, t: TFunction, { back = true } = {}) {
   confirm({
     title: t('dl.removeQ', { name: d.name }),
     desc: t(d.state === 'done' ? 'dl.removeDoneP' : 'dl.removeEmptyP'),
@@ -341,7 +341,7 @@ function askRemove(d: Download, t: TFunction) {
     dismiss: t('dl.keep'),
     run: () =>
       forget(d.id)
-        .then(() => navigate('downloads'))
+        .then(() => back && navigate('downloads'))
         .catch((e) => toast.error(e.message))
         .finally(() => {
           refreshDownloads()

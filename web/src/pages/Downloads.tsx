@@ -1,16 +1,17 @@
-import { ChevronDown, CloudDownload, ExternalLink, Plus } from 'lucide-react'
+import { ChevronRight, CloudDownload, ExternalLink, Plus, X } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api } from '@/api/client'
 import { patchSettings, refreshDownloads, useAction, useBilling, useDownloads, useLoadedState } from '@/api/queries'
 import type { Download, DownloadState } from '@/api/types'
 import { navigate } from '@/app/nav'
-import { Bar, type Glyph, StatusIcon, Tile } from '@/components/bits'
+import { Bar, type Glyph, Hint, StatusIcon, Tile } from '@/components/bits'
 import { Card, Empty, Page, Section } from '@/components/page'
 import { duration } from '@/components/StopProgress'
 import { Button } from '@/components/ui/button'
 import { AddDownloadDialog } from '@/dialogs/AddDownload'
-import { dollars, ENDED, HOURLY, hourlyFor, NEEDS_YOU, permanent, RESUMABLE, RUNNING, SILENT_WARN, speed } from '@/lib/downloads'
+import { askRemove } from '@/pages/Download'
+import { dollars, ENDED, HOURLY, hourlyFor, NEEDS_YOU, permanent, RESUMABLE, RUNNING, SILENT_WARN, speed, when } from '@/lib/downloads'
 import { bytes } from '@/lib/format'
 import type { Tone } from '@/lib/mounts'
 import { openExternal } from '@/lib/platform'
@@ -34,7 +35,8 @@ export function Downloads() {
   const list = useDownloads(on)
   const downloads = list.data ?? st.downloads ?? []
   const [adding, setAdding] = useState(false)
-  const [allDone, setAllDone] = useState(false)
+  const [showDone, setShowDone] = useState(false)
+  const billing = useBilling(downloads.at(-1)?.account_id, downloads.at(-1)?.environment ?? '')
 
   if (!on) return <TurnOn />
 
@@ -90,19 +92,23 @@ export function Downloads() {
               </Card>
             </Section>
           )}
+          {/* Finished ones are looked back at rarely: folded away, with what there is to know on each row. */}
           {ended.length > 0 && (
-            <Section label={t('dl.done')} aside={<span className="text-[12px] text-muted-foreground tabular">{t('dl.doneTotal', { count: ended.length })}</span>}>
-              <Card>
-                {(allDone ? ended : ended.slice(0, 3)).map((d) => (
-                  <DownloadRow key={d.id} d={d} />
-                ))}
-                {ended.length > 3 && (
-                  <button className="flex w-full items-center gap-1.5 px-5 py-2.5 text-left text-[12.5px] text-muted-foreground hover:text-foreground" onClick={() => setAllDone((x) => !x)}>
-                    <ChevronDown className={`size-3.5 transition-transform ${allDone ? 'rotate-180' : ''}`} />
-                    {allDone ? t('dl.showFewer') : t('dl.showAll', { count: ended.length })}
-                  </button>
-                )}
-              </Card>
+            <Section
+              label={
+                <button className="flex items-center gap-1 rounded hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none" aria-expanded={showDone} onClick={() => setShowDone((x) => !x)}>
+                  <ChevronRight className={`size-3.5 transition-transform duration-200 ${showDone ? 'rotate-90' : ''}`} />
+                  {t('dl.doneN', { count: ended.length })}
+                </button>
+              }
+            >
+              {showDone && (
+                <Card>
+                  {ended.map((d) => (
+                    <EndedRow key={d.id} d={d} hourly={hourlyFor(d.size, billing.data)} />
+                  ))}
+                </Card>
+              )}
             </Section>
           )}
         </>
@@ -242,6 +248,44 @@ function DownloadRow({ d }: { d: Download }) {
           <span className="text-[12px] text-muted-foreground">{t(`dl.state.${d.state}`)}</span>
         )}
       </div>
+    </div>
+  )
+}
+
+/** A download that has ended: where it went, how big, how long it ran and what that cost, and a way to take it off the list. */
+function EndedRow({ d, hourly }: { d: Download; hourly: number }) {
+  const { t, i18n } = useTranslation()
+  const s = d.status
+  const { glyph, tone } = downloadGlyph(d.state)
+  const size = s ? bytes(s.total > 0 ? s.total : s.done) : ''
+  const facts = [
+    size,
+    d.ran ? t('dl.ranFor', { time: duration(d.ran, t) }) : '',
+    d.ran ? `≈ ${dollars((d.ran / 3600) * hourly)}` : '',
+    d.ended ? when(d.ended, i18n.language) : '',
+  ].filter(Boolean)
+  return (
+    <div className="flex items-center gap-3 pr-3 pl-4">
+      <StatusIcon glyph={glyph} tone={tone} label={t(`dl.state.${d.state}`)} />
+      <button onClick={() => navigate('downloads', d.id)} className="flex min-w-0 flex-1 flex-col rounded-lg py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
+        <span className="block truncate text-[14px] font-medium tracking-[-0.01em]">{d.name}</span>
+        <span className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 text-[12.5px] text-muted-foreground">
+          <span className="max-w-full truncate font-mono text-[11.5px]">
+            → {d.volume_name}:/{d.folder}
+          </span>
+          {facts.map((f) => (
+            <span key={f} className="shrink-0 tabular">
+              {f}
+            </span>
+          ))}
+          {d.state !== 'done' && <span className="shrink-0">{t(`dl.state.${d.state}`)}</span>}
+        </span>
+      </button>
+      <Hint text={t('dl.removeHint')}>
+        <Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label={t('dl.remove')} onClick={() => askRemove(d, t, { back: false })}>
+          <X />
+        </Button>
+      </Hint>
     </div>
   )
 }

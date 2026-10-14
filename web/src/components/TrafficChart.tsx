@@ -2,7 +2,7 @@ import { Liveline } from 'liveline'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TrafficSample } from '@/api/types'
-import { timeFormat, tokenColor } from '@/components/SpeedChart'
+import { axisSpeed, timeFormat, tokenColor } from '@/components/SpeedChart'
 import { downsample } from '@/lib/downloads'
 import { speed } from '@/lib/format'
 
@@ -39,9 +39,11 @@ export function TrafficChart({ samples, range, dark }: { samples: TrafficSample[
   const series = useMemo(() => {
     const from = Date.now() / 1000 - window * 1.1
     const shown = (pts: Point[]) => downsample(pts.filter((p) => p.t >= from), window).map((p) => ({ time: p.t, value: p.v }))
+    // Named by id, not label: Liveline writes a label at each line's end,
+    // and two lines at the same speed (often both 0) put one over the other.
     return [
-      { id: 'up', label: t('vol.uploads'), color: brand, data: shown(up), value: up.at(-1)?.v ?? 0 },
-      { id: 'down', label: t('vol.reads'), color: muted, data: shown(down), value: down.at(-1)?.v ?? 0 },
+      { id: t('vol.uploads'), color: brand, data: shown(up), value: up.at(-1)?.v ?? 0 },
+      { id: t('vol.reads'), color: muted, data: shown(down), value: down.at(-1)?.v ?? 0 },
     ]
   }, [up, down, window, brand, muted, t])
   const fmtTime = useMemo(() => timeFormat(window, 0, i18n.language), [window, i18n.language])
@@ -60,7 +62,7 @@ export function TrafficChart({ samples, range, dark }: { samples: TrafficSample[
           pulse
           loading={up.length < 2}
           emptyText={t('downloads.chart.empty')}
-          formatValue={speed}
+          formatValue={axisSpeed}
           formatTime={fmtTime}
           padding={PAD}
           referenceLine={{ value: 0 }}

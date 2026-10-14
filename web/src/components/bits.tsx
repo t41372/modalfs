@@ -2,7 +2,7 @@
 // picture and name, and a hint that shows on hover.
 
 import { cn } from 'cn'
-import { ArrowDown, ArrowUp, Check, Lock, type LucideIcon, Minus, Pause, RefreshCw, TriangleAlert } from 'lucide-react'
+import { ArrowDown, ArrowUp, Check, CloudAlert, CloudCheck, CloudUpload, Lock, type LucideIcon, Minus, Pause, RefreshCw, TriangleAlert, Unplug } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { ReactElement, ReactNode } from 'react'
 import { Spinner } from '@/components/Spinner'
@@ -20,22 +20,39 @@ const TONE: Record<Tone, string> = {
 }
 
 /** What a status icon shows. The shape carries the meaning; the color only backs it up. */
-export type Glyph = 'check' | 'up' | 'down' | 'spin' | 'alert' | 'off' | 'pause' | 'moving' | 'lock'
+export type Glyph = 'check' | 'up' | 'down' | 'spin' | 'alert' | 'off' | 'pause' | 'moving' | 'lock' | 'synced' | 'uploading' | 'cantUpload' | 'unmounted'
 
-const GLYPH: Record<Exclude<Glyph, 'spin'>, LucideIcon> = { check: Check, up: ArrowUp, down: ArrowDown, alert: TriangleAlert, off: Minus, pause: Pause, moving: RefreshCw, lock: Lock }
+const GLYPH: Record<Exclude<Glyph, 'spin'>, LucideIcon> = {
+  check: Check,
+  up: ArrowUp,
+  down: ArrowDown,
+  alert: TriangleAlert,
+  off: Minus,
+  pause: Pause,
+  moving: RefreshCw,
+  lock: Lock,
+  // A mounted volume is a cloud on this computer: synced, uploading, or stuck. One that isn't is unplugged.
+  synced: CloudCheck,
+  uploading: CloudUpload,
+  cantUpload: CloudAlert,
+  unmounted: Unplug,
+}
+
+/** Glyphs drawn in finer strokes: they have more detail than a check or an arrow. */
+const FINE = new Set<Glyph>(['alert', 'moving', 'pause', 'lock', 'synced', 'uploading', 'cantUpload', 'unmounted'])
 
 /** A mount's look, as a glyph. */
 export const glyphOf: Record<Look, Glyph> = {
-  synced: 'check',
-  uploading: 'up',
-  stopping: 'up',
+  synced: 'synced',
+  uploading: 'uploading',
+  stopping: 'uploading',
   starting: 'spin',
   busy: 'moving',
   conflict: 'alert',
-  stalled: 'alert',
+  stalled: 'cantUpload',
   error: 'alert',
   locked: 'lock',
-  off: 'off',
+  off: 'unmounted',
 }
 
 /**
@@ -56,7 +73,7 @@ export function GlyphIcon({ glyph, className }: { glyph: Glyph; className?: stri
           exit={{ opacity: 0, scale: 0.6, filter: 'blur(2px)' }}
           transition={{ duration: 0.2, ease: easeOut }}
         >
-          {Icon ? <Icon className="size-full" strokeWidth={glyph === 'alert' || glyph === 'moving' || glyph === 'pause' || glyph === 'lock' ? 2.6 : 3} /> : <Spinner className="size-full border-2" />}
+          {Icon ? <Icon className="size-full" strokeWidth={FINE.has(glyph) ? 2.4 : 3} /> : <Spinner className="size-full border-2" />}
         </motion.span>
       </AnimatePresence>
     </span>
@@ -87,9 +104,9 @@ export function StatusIcon({ glyph, tone, label, className }: { glyph: Glyph; to
   )
 }
 
-/** A mount's state as a round icon. */
+/** A mount's state as a round icon, a little larger than a download's: its glyphs have more detail. */
 export function StateIcon({ look, tone, label, className }: { look: Look; tone: Tone; label: string; className?: string }) {
-  return <StatusIcon glyph={glyphOf[look]} tone={tone} label={label} className={className} />
+  return <StatusIcon glyph={glyphOf[look]} tone={tone} label={label} className={cn('size-7 [&>span]:size-3.5', className)} />
 }
 
 /** A small rounded label: a fact at a glance, with more on hover. */

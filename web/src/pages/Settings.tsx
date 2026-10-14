@@ -255,8 +255,9 @@ export function SettingsPage() {
             {t('settings.openLogs')}
           </Button>
         </span>
+        {/* Wider windows have it in the rail. */}
         <Hint text={t('settings.quitD')}>
-          <Button variant="outline" onClick={() => void startQuit()}>
+          <Button variant="outline" className="sm:hidden" onClick={() => void startQuit()}>
             {t('settings.quitButton')}
           </Button>
         </Hint>

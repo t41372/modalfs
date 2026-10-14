@@ -66,7 +66,7 @@ datasets  work     mounted  /Users/me/ModalVolumes/datasets  0        0 B / 3 B
 
 **Many accounts, never mixed up.** Each mount is pinned to its account and volume ID, so switching Modal CLI profiles or renaming a volume never points a mount somewhere else.
 
-**Names you choose.** Give a volume a label, with spaces, emoji or any language. It's kept in the volume, so everyone using modalfs on it sees the same name, while scripts keep using Modal's.
+**Names you choose.** Give a volume a label, with spaces, emoji or any language. It's kept in the volume, so everyone using modalfs on it sees the same name, and its folder in `~/ModalVolumes` takes that name the next time it's mounted (unless you chose the folder yourself), while scripts keep using the Volume name on Modal.
 
 **End-to-end encryption, if you want it.** An encrypted volume keeps its files, names and label unreadable to Modal. Its key, and nothing else, opens it on any computer.
 
@@ -145,19 +145,19 @@ modalfs saves each mount, so `modalfs mount my-data` reuses the same account, en
 
 | Page | What you can do |
 |---|---|
-| **Volumes** | The volumes modalfs manages, each with its state at a glance (synced, uploading, can't upload, a conflict, not mounted), its folder and its size. Add another volume from your account by searching for it, even among hundreds. A volume's page shows its size and largest folders, what's still waiting to upload, its upload and read speed over the last minute, ten minutes or hour, and its conflicts with both versions a click away in Finder. Mount, unmount (it says what's still uploading first), change its options, give it a label, remove it from modalfs, rename it on Modal or delete it. |
-| **Remote downloads** | Add links, pause, resume, delete. What's running, how fast in all and what it costs now; each one's speed over the whole run (point at the line for the acceleration there), and what happened to it. |
+| **Volumes** | The volumes modalfs manages, each with its state at a glance (synced, uploading, can't upload, a conflict, not mounted), its folder and its size. Add another volume from your account by searching for it, even among hundreds. A volume's page shows its speed now and over the last minute, ten minutes or hour, what's still waiting to upload, its conflicts with both versions a click away in Finder, and its size by folder. Its Settings hold everything that can be set: label, Volume name, mounting at login, folder, read-only, what to do on a conflict, encryption key. Mount, unmount (it says what's still uploading first), remove it from modalfs or delete it. |
+| **Remote downloads** | Add links, pause, resume, delete. What's running, how fast in all and what it costs now; each one's speed over the whole run (point at the line for the acceleration there), and what happened to it. Finished ones are folded away, each with how long it ran and what it cost. |
 | **Activity** | Mounts, uploads, conflicts, errors and crash recoveries, grouped by day, with notifications for the important ones. |
 | **Settings** | Your Modal accounts (connect, check or replace a token, rename, default environment, disconnect), start at login, mount location, light/dark mode, language (English / 繁體中文 / 简体中文), remote downloads, and under Advanced the cache, read-ahead and connection mode. |
 
-A dot at the bottom of the rail says whether everything is on Modal; point at it for what's still uploading.
+Quit is at the bottom of the rail, above Settings. A badge on Volumes counts the volumes that need a look.
 
 The window is only a remote control. Mounts live in the background daemon, so **closing the window never unmounts anything**: on macOS modalfs stays in the menu bar, where its icon shows whether everything is on Modal, lists your volumes (click one to open it in Finder, or to mount it) and reopens the window. **Quitting** (⌘Q, or Quit in the menu bar menu) is different: a checklist uploads what's left, unmounts each volume one by one, then quits; a volume an app still uses can be retried or forced, and Quit now skips the waiting without losing anything. On macOS the window is glass over your desktop. In a browser (`modalfs ui` without the app), or on a phone-sized window, the same UI moves its tabs to the bottom.
 
 <table>
   <tr>
     <td width="50%" valign="top">
-      <a href="docs/screenshots/en/volume.jpg"><img src="docs/screenshots/en/volume.jpg" alt="A volume's page in the dark theme: where it's mounted, its size by folder, its upload and read speed, and its mount options"></a>
+      <a href="docs/screenshots/en/volume.jpg"><img src="docs/screenshots/en/volume.jpg" alt="A volume's page in the dark theme: where it's mounted, its size, its upload and read speed now and over the last minute"></a>
     </td>
     <td width="50%" valign="top">
       <a href="docs/screenshots/en/activity.jpg"><img src="docs/screenshots/en/activity.jpg" alt="Activity: uploads, mounts and a recovery, grouped by day"></a>

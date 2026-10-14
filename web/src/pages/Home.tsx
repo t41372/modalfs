@@ -47,16 +47,12 @@ export function Home() {
               </Chip>
             )}
             {s.on > 0 && <Chip tone="ok" glyph="check">{t('home.mounted', { count: s.on })}</Chip>}
-            {s.on > 0 &&
-              (s.traffic.up > 0 || s.traffic.down > 0 ? (
-                <Chip tone="up" hint={t('home.speedHint', { up: bytes(s.traffic.sent), down: bytes(s.traffic.read) })}>
-                  <span className="tabular">{`↑ ${speed(s.traffic.up)} · ↓ ${speed(s.traffic.down)}`}</span>
-                </Chip>
-              ) : (
-                <Chip hint={t('home.trafficHint')}>
-                  <span className="tabular">{`↑ ${bytes(s.traffic.sent)} · ↓ ${bytes(s.traffic.read)}`}</span>
-                </Chip>
-              ))}
+            {/* What's moving now; the totals since each was mounted are on hover. */}
+            {s.on > 0 && (
+              <Chip tone={s.traffic.up > 0 || s.traffic.down > 0 ? 'up' : undefined} hint={t('home.speedHint', { up: bytes(s.traffic.sent), down: bytes(s.traffic.read) })}>
+                <span className="tabular">{`↑ ${speed(s.traffic.up)} · ↓ ${speed(s.traffic.down)}`}</span>
+              </Chip>
+            )}
             {s.files > 0 && (
               <Chip tone="up" glyph="up" hint={t('home.uploadingHint', { count: s.files })}>
                 {t('home.uploading', { size: bytes(s.pending) })}
