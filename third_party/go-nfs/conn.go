@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"time"
 
 	xdr2 "github.com/rasky/go-xdr/xdr2"
 	"github.com/willscott/go-nfs-client/nfs/rpc"
@@ -75,17 +76,32 @@ func (c *conn) serve(ctx context.Context) {
 			return
 		}
 		Log.Tracef("request: %v", w.req)
+		write := w.req.Header.Prog == nfsServiceID && w.req.Header.Proc == uint32(NFSProcedureWrite)
 		slots := sem
-		if w.req.Header.Prog == nfsServiceID && w.req.Header.Proc == uint32(NFSProcedureWrite) {
+		if write {
 			slots = writeSem
 		}
+		t0 := time.Now()
 		select {
 		case slots <- struct{}{}:
 		case <-connCtx.Done():
 			return
 		}
+		// modalfs: say when the mount kept the client waiting. Nothing is
+		// read from the connection while a request waits for its slot.
+		slow, _ := c.Server.Handler.(SlowLogger)
+		if waited := time.Since(t0); write && waited > slowRequest && slow != nil {
+			slow.Slow("NFS stopped reading requests: every write slot was busy", "for", waited.Round(time.Millisecond))
+		}
 		go func() {
 			defer func() { <-slots }()
+			if !write && slow != nil {
+				defer func() {
+					if took := time.Since(t0); took > slowRequest {
+						slow.Slow("slow NFS request", "proc", procName(w.req.Header), "took", took.Round(time.Millisecond))
+					}
+				}()
+			}
 			defer func() {
 				if r := recover(); r != nil {
 					// a handler bug fails this request, not the whole server
@@ -107,6 +123,17 @@ func (c *conn) serve(ctx context.Context) {
 			}
 		}()
 	}
+}
+
+// slowRequest is how long a request other than a write may take before
+// SlowLogger hears about it. Writes may wait longer on purpose, for room.
+const slowRequest = 2 * time.Second
+
+func procName(h rpc.Header) string {
+	if h.Prog == nfsServiceID {
+		return NFSProcedure(h.Proc).String()
+	}
+	return fmt.Sprintf("%d.%d", h.Prog, h.Proc)
 }
 
 // maxConcurrentRequests bounds the requests other than writes one

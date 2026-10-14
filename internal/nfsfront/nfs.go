@@ -21,7 +21,9 @@ import (
 // Serve runs the NFS server on l until it fails.
 func Serve(l net.Listener, fs *vfs.FS, readOnly bool) error {
 	b := &billyFS{fs: fs, ro: readOnly, uid: uint32(os.Getuid()), gid: uint32(os.Getgid())}
-	return nfs.Serve(l, newHandler(b))
+	h := newHandler(b)
+	h.log = fs.Logger()
+	return nfs.Serve(l, h)
 }
 
 type billyFS struct {

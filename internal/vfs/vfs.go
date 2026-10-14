@@ -214,6 +214,9 @@ func hidden(dir, name string) bool {
 // DirCacheTTL or fresh is set. Callers share a listing in flight only if no
 // invalidation happened since it started, so a fresh listing always
 // reflects every change made before the call.
+// Logger is the mount's log.
+func (fs *FS) Logger() *slog.Logger { return fs.log }
+
 func (fs *FS) listDir(dir string, fresh bool) (map[string]modalapi.Entry, error) {
 	fs.mu.Lock()
 	l := fs.dirs[dir]
