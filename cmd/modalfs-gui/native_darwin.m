@@ -10,13 +10,20 @@
 
 static NSStatusItem *statusItem;
 static NSMutableDictionary *trayImages; // name -> NSImage
+static NSWindow *appWindow;
 
-// The window Wails made: the app's only one that can become main.
+// The window Wails made: the app's only one that can become main. It's kept
+// once found, because a closed (hidden) window can't become main, and would
+// otherwise never be found again to show.
 static NSWindow *mainWindow(void) {
+	if (appWindow != nil) return appWindow;
 	for (NSWindow *w in [NSApp windows]) {
-		if ([w canBecomeMainWindow]) return w;
+		if ([w canBecomeMainWindow]) {
+			appWindow = [w retain];
+			break;
+		}
 	}
-	return nil;
+	return appWindow;
 }
 
 // A Dock icon while the window is open; menu bar only while it's closed.
@@ -61,6 +68,7 @@ void nativeShowWindow(void) {
 
 // The red button and ⌘W close the window; modalfs keeps running in the menu bar.
 static BOOL mfWindowShouldClose(id self, SEL _cmd, NSWindow *sender) {
+	mainWindow(); // found while it's still visible
 	[sender orderOut:nil];
 	updatePolicy();
 	return NO;
