@@ -119,7 +119,7 @@ func (s Settings) WithDefaults() Settings {
 		s.CacheSizeGB = 20
 	}
 	if s.ReadAhead == 0 {
-		s.ReadAhead = 8
+		s.ReadAhead = 16
 	}
 	if s.Language == "" {
 		s.Language = "system"

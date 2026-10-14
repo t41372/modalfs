@@ -58,7 +58,7 @@ func runLegacy(cmd string, argv []string) {
 	maxPending := fl.Duration("max-pending", 30*time.Second, "longest a file that keeps changing waits for its commit")
 	keepJunk := fl.Bool("keep-junk", false, "upload macOS litter (.DS_Store, ._*) instead of keeping it in memory")
 	dirTTL := fl.Duration("dir-cache-ttl", 10*time.Second, "how long directory listings are cached")
-	readAhead := fl.Int("read-ahead", 8, "sequential read-ahead, in 8 MiB blocks")
+	readAhead := fl.Int("read-ahead", 16, "sequential read-ahead, in 8 MiB blocks")
 	sidecarMin := fl.String("sidecar-min", "64M", "store block-hash sidecars (in /.modalfs) for files >= this size; 0 disables")
 	onConflict := fl.String("on-conflict", "keep-both", "keep-both | overwrite, when a file changed remotely while edited locally")
 	readOnly := fl.Bool("read-only", false, "mount read-only")

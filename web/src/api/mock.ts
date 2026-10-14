@@ -289,7 +289,7 @@ const state: State = {
   mounts,
   settings: {
     cache_size_gb: 20,
-    read_ahead: 8,
+    read_ahead: 16,
     language: lang === 'en' || lang === 'zh-Hant' || lang === 'zh-Hans' ? lang : 'system',
     appearance: params.get('theme') === 'dark' ? 'dark' : params.get('theme') === 'light' ? 'light' : 'system',
     mount_root: ROOT,
