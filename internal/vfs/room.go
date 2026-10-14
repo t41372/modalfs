@@ -24,6 +24,7 @@ var errClosing = errors.New("the volume is being unmounted")
 func (st *fileState) waitRoom(off int64, n int) error {
 	fs := st.fs
 	rounds := 0
+	paced := false
 	waiting := false
 	defer func() {
 		if waiting {
@@ -48,6 +49,24 @@ func (st *fileState) waitRoom(off int64, n int) error {
 		st.mu.Unlock()
 		if add == 0 {
 			return nil
+		}
+		if !paced {
+			paced = true
+			if d := fs.pace(add, int64(n)); d > 0 {
+				// nearly full: writes take turns at the upload's speed, each
+				// a little later, rather than all stop once it's full (the
+				// macOS NFS client turns that into pauses of half a minute)
+				if !waiting {
+					waiting = true
+					fs.waiting.Add(1)
+				}
+				select {
+				case <-time.After(d):
+				case <-fs.ctx.Done():
+					return errClosing
+				}
+				continue
+			}
 		}
 		ok, freed, stuck := fs.cache.room(add)
 		if ok {
@@ -78,6 +97,31 @@ func (st *fileState) waitRoom(off int64, n int) error {
 			return errClosing
 		}
 	}
+}
+
+// paceFrom is the share of the room for changes past which writes are paced.
+const paceFrom = 0.75
+
+// pace is how long a write of n bytes, adding add bytes of changed blocks,
+// waits for its turn once changes take more than paceFrom of their room:
+// data then comes in at the speed uploads go out, one write after another.
+// (It counts the bytes written: the writes filling one new block each find
+// it not changed yet, so counting the block would charge it several times.)
+func (fs *FS) pace(add, n int64) time.Duration {
+	room := fs.cache.pendingMax()
+	rate := fs.c.Client.UploadRate()
+	if room <= 0 || rate <= 0 || float64(fs.cache.Pending()+add) <= paceFrom*float64(room) {
+		return 0
+	}
+	fs.paceMu.Lock()
+	defer fs.paceMu.Unlock()
+	now := time.Now()
+	start := now
+	if fs.paceNext.After(now) {
+		start = fs.paceNext
+	}
+	fs.paceNext = start.Add(time.Duration(float64(n) / rate * float64(time.Second)))
+	return start.Sub(now)
 }
 
 // kickCommits frees room for waiting writes as soon as it can: a file being

@@ -71,6 +71,10 @@ func (r *receipts) get(volID string, hash []byte) []byte {
 // UploadLimit is how many block uploads run at once now (see upSlots).
 func (c *Client) UploadLimit() int { return c.up.Limit() }
 
+// UploadRate is the speed block uploads reached lately, in bytes a second
+// (0 until measured).
+func (c *Client) UploadRate() float64 { return c.up.Rate() }
+
 // Ahead uploads one block (data, whose SHA-256 is hash) so a later commit
 // of any file in the volume that holds it needn't upload it. stage names
 // the file the URL request is made for; it's never created. It reports

@@ -114,6 +114,9 @@ type FS struct {
 
 	noRoom atomic.Int64 // when a write last failed for lack of disk (unix seconds), to report it once a minute
 
+	paceMu   sync.Mutex
+	paceNext time.Time // when the next paced write may go on (see pace)
+
 	aheadKick chan struct{} // wakes aheadLoop
 	aheadOff  atomic.Bool   // Modal stopped behaving as uploading ahead needs
 }

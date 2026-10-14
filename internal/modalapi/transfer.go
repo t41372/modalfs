@@ -102,6 +102,7 @@ type upSlots struct {
 	winStart time.Time
 	winBytes int64
 	idle     bool
+	rate     float64 // bytes a second, over the last window with uploads all along
 }
 
 func newUpSlots() *upSlots {
@@ -154,6 +155,7 @@ func (s *upSlots) moved(n int) {
 	}
 	if !s.idle {
 		rate := float64(s.winBytes) / el.Seconds()
+		s.rate = rate
 		s.limit = min(max(int(rate*blockTarget.Seconds()/BlockSize), minUploads), maxUploads)
 		s.cond.Broadcast()
 	}
@@ -164,4 +166,10 @@ func (s *upSlots) Limit() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.limit
+}
+
+func (s *upSlots) Rate() float64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rate
 }
