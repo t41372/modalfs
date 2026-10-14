@@ -18,6 +18,10 @@ A cached block used whole (as the base of a write or a commit) is checked agains
 
 ## Performance
 
+### A copy larger than the cache size pauses in long stretches on macOS
+
+When changes fill the cache size, writes wait for uploads. modalfs holds each write for a block or two's upload (up to about 10 s on real Modal), but the macOS NFS client then often holds the copy's writes back by itself for 30 s or more at a time, and Finder pauses with it. A 1 GiB copy under a 256 MB cache ran at about 10 MiB/s with pauses of 30-38 s, where the same copy within the cache size ran at the speed of the upload with none. The client's delayed writes are flushed by a thread that wakes every 30 s; steady small delays don't trigger this, bursts of blocked writes do. **Fix:** slow writes down evenly as the cache fills, so they never all block at once (a first try, sharing the upload's speed across writes, had a bug and was set aside). Until then, keep the cache size larger than your largest copy. `internal/vfs/room.go`.
+
 ### Read-ahead isn't cancelled when a reader stops
 
 Read-ahead is bounded (it starts after three blocks read in a row and shares a limited number of slots), but a block already being prefetched finishes downloading even if the reader has gone. **Fix:** a context per reader, cancelled when it's been idle for a few seconds. `internal/vfs/vfs.go`.

@@ -594,7 +594,7 @@
     "cacheSize": "Cache size",
     "custom": "Custom…",
     "cacheSmall": "Below {{n}} GB, read-ahead and files you reopen are often downloaded again.",
-    "cacheSizeD": "Any whole number of GB from {{min}}. It's all the disk modalfs uses, changes not uploaded yet included: when they fill it, writes wait for uploads, so a bigger copy runs at the speed of your upload. If Modal can't be reached, apps writing to a volume wait, and on macOS give up after a few minutes. We recommend at least {{n}} GB, and more if you read many large files at once.",
+    "cacheSizeD": "Any whole number of GB from {{min}}. It's all the disk modalfs uses, changes not uploaded yet included: when they fill it, writes wait for uploads, so a bigger copy runs at the speed of your upload, and on macOS pauses for half a minute at a time. If Modal can't be reached, apps writing to a volume wait, and on macOS give up after a few minutes. We recommend at least {{n}} GB, and more if you read many large files at once.",
     "cacheSizeBad": "Enter a whole number of at least {{min}}.",
     "clearCache": "Clear cache",
     "clearQ": "Clear the local cache?",
