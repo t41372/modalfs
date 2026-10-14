@@ -197,6 +197,7 @@ Measured from a Linux arm64 sandbox through an HTTP/1.1 proxy with limited bandw
 - **Consistency.** A file you open shows the last version committed when you opened it, and folders are cached for 10 s, so changes from other computers show up within that time. Modal containers need `volume.reload()` to see what you wrote.
 - **Write-back delay.** NFS doesn't say when a file is closed, so a change reaches Modal about 3 s after the file stops changing, or every 30 s while it keeps changing. After a crash it's recovered. One exception: if the last second of an append was all zero bytes, those trailing zeros can be lost.
 - **Unmounting waits for uploads**, with progress shown. **Unmount now** unmounts at once and finishes uploading in the background, or at the next mount. macOS won't unmount a folder an app has open, and modalfs says which app.
+- **Large copies pause on a Mac with little memory.** There, the system's NFS client sends a long copy's writes in 30 s steps by itself (on a 7.5 GB Mac, about 100 MB per step), and the copy and Finder wait in between. See [known issues](docs/known-issues.md#large-copies-pause-on-a-mac-with-little-memory).
 - **The background process must keep running while volumes are mounted**, because it serves them. If it dies, the next start cleans up what it left mounted.
 - **The menu bar icon is macOS only.** On Linux, run `modalfs ui` to reopen the window.
 - **Undocumented API.** modalfs uses the same calls as Modal's SDKs. If Modal changes them, modalfs may stop working until it's updated.
