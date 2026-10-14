@@ -1,0 +1,29 @@
+name: zizmor
+
+# Checks the workflows and the Dependabot config for security mistakes:
+# unpinned actions, leaked credentials, template injection and the like.
+# Findings fail the job and are listed in its log. The repository is private
+# and has no code scanning, so nothing is uploaded to the Security tab.
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/**']
+  pull_request:
+    paths: ['.github/**']
+
+# Read access to check out the private repository; nothing else.
+permissions:
+  contents: read
+
+jobs:
+  zizmor:
+    # The action runs zizmor in a container, which needs Linux.
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          advanced-security: false

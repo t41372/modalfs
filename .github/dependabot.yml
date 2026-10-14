@@ -1,9 +1,13 @@
+# Each update waits a week after its release before Dependabot proposes it, so
+# a broken or compromised release is usually caught and pulled by then.
 version: 2
 updates:
   - package-ecosystem: gomod
     directory: /
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
     groups:
       go:
         patterns: ["*"]
@@ -11,10 +15,14 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
   - package-ecosystem: bun
     directory: /web
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
     groups:
       web:
         patterns: ["*"]

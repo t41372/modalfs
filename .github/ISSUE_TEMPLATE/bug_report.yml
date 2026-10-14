@@ -26,5 +26,5 @@ body:
   - type: textarea
     attributes:
       label: Daemon log
-      description: The relevant lines of `daemon.log` (see "Files and configuration" in the README). Check that it contains no token secrets.
+      description: The relevant lines of `daemon.log` (see "Files and settings" in the README). Check that it contains no token secrets.
       render: text
