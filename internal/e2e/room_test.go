@@ -92,11 +92,13 @@ func (e *env) writeTimed(name string, data []byte, sync bool) time.Duration {
 }
 
 // A copy four times the limit finishes, at the speed of the upload, without
-// modalfs taking more disk than the limit; each write waits for one batch
-// at most, far less than the minute after which macOS gives up on the
-// mount; and listings keep answering meanwhile. (A stat of the file being
-// copied can wait as long as a write: the NFS client sends the file's
-// writes before it asks for its size.)
+// modalfs taking more disk than the limit; no write waits anywhere near the
+// minute after which macOS gives up on the mount; and listings keep
+// answering meanwhile. modalfs holds a write for a block or two's upload,
+// but once writes wait, the macOS NFS client can hold the copy's writes
+// back by itself for up to about 30 s. (A stat of the file being copied
+// can wait as long as a write: the NFS client sends the file's writes
+// before it asks for its size.)
 func TestCopyLargerThanTheLimit(t *testing.T) {
 	const limit = 256 * MiB
 	e := setup(t, modalfake.Options{UpBytesPerSec: 20 * MiB, Latency: 20 * time.Millisecond}, []string{"-cache-size", "256M"})
@@ -115,13 +117,13 @@ func TestCopyLargerThanTheLimit(t *testing.T) {
 	if most > limit+64*MiB {
 		t.Errorf("modalfs used %d MiB of disk, limit %d MiB", most/MiB, limit/MiB)
 	}
-	if slowest > 30*time.Second {
+	if slowest > 45*time.Second {
 		t.Errorf("a write waited %v for room", slowest)
 	}
 	if worst > maxStall {
 		t.Errorf("listing the mount took %v while writes waited for room (limit %v)", worst, maxStall)
 	}
-	if worstStat > 30*time.Second {
+	if worstStat > 45*time.Second {
 		t.Errorf("a stat of the file being copied took %v", worstStat)
 	}
 }

@@ -110,9 +110,12 @@ type FS struct {
 	closed atomic.Bool // no more commit timers
 	nextID int64
 
-	upRate  atomic.Int64 // upload speed seen by recent commits, bytes a second (see commitBatch)
 	waiting atomic.Int32 // writes waiting for room (see waitRoom)
-	noRoom  atomic.Int64 // when a write last failed for lack of disk (unix seconds), to report it once a minute
+
+	noRoom atomic.Int64 // when a write last failed for lack of disk (unix seconds), to report it once a minute
+
+	aheadKick chan struct{} // wakes aheadLoop
+	aheadOff  atomic.Bool   // Modal stopped behaving as uploading ahead needs
 }
 
 func New(c *modalapi.Client, vol modalapi.VolumeInfo, opt Options) (*FS, error) {
@@ -171,7 +174,7 @@ func New(c *modalapi.Client, vol modalapi.VolumeInfo, opt Options) (*FS, error) 
 	mdb.chunkSize = remote.ChunkSize()
 	fs := &FS{c: remote, volID: vol.ID, opt: opt, log: opt.Logger, cache: bc, mdb: mdb,
 		dirs: map[string]*dirListing{}, files: map[string]*fileState{}, inflight: map[string]bool{},
-		eph: map[string]*ephFile{}, stray: map[string]bool{}, ctx: ctx, cancel: cancel}
+		eph: map[string]*ephFile{}, stray: map[string]bool{}, ctx: ctx, cancel: cancel, aheadKick: make(chan struct{}, 1)}
 	remote.Skipped = fs.reportStray
 	if err := fs.checkJournals(filepath.Join(base, "dirty")); err != nil {
 		mdb.Close()
@@ -180,6 +183,7 @@ func New(c *modalapi.Client, vol modalapi.VolumeInfo, opt Options) (*FS, error) 
 	}
 	if !opt.ReadOnly {
 		fs.recover(filepath.Join(base, "dirty"))
+		go fs.aheadLoop()
 	}
 	return fs, nil
 }

@@ -128,14 +128,20 @@ func (fs *FS) uploadFailed(err error) {
 	fs.ctr.uploadErr = err.Error()
 }
 
+// committedPart counts a commit of part of a file (see ahead.go) like any
+// other, without an Activity entry.
+func (fs *FS) committedPart() {
+	fs.ctr.commits.Add(1)
+	fs.ctr.mu.Lock()
+	fs.ctr.lastCommit = time.Now()
+	fs.ctr.uploadErr = ""
+	fs.ctr.mu.Unlock()
+}
+
 func (fs *FS) event(kind, p, detail string) {
 	switch kind {
 	case "commit":
-		fs.ctr.commits.Add(1)
-		fs.ctr.mu.Lock()
-		fs.ctr.lastCommit = time.Now()
-		fs.ctr.uploadErr = ""
-		fs.ctr.mu.Unlock()
+		fs.committedPart()
 	case "conflict":
 		fs.ctr.conflicts.Add(1)
 	case "error", "unreadable":

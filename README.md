@@ -291,6 +291,10 @@ Finder / editor / agent
 
 So a partial write works like this: keep the hashes of unchanged blocks, hash the changed ones, send the new manifest, and upload whatever the server says is missing.
 
+**Large writes upload as they go.** When a file has several changed blocks (a long copy, say), modalfs uploads each block once it has stopped changing for half a second, without waiting for the file to be done, and commits the file in parts: each part is the start of the file up to the first block that isn't on Modal yet, so it's one quick call with nothing left to upload. A part is always the file as it was, cut at a block boundary, never a mix of old and new. Once the file is idle, the usual commit finishes it. Uploads run several at a time, as many as keep each 8 MiB block to about 5 s on your link: 4 to 32 (one connection only moves a few MiB/s, because Modal takes about a second and a half to answer each block).
+
+**Behaviour Modal doesn't document.** Uploading ahead relies on three things measured, not promised: a commit request with a made-up first block never commits but still hands out upload URLs; a block uploaded that way counts for a later commit, of any file in the volume, only with the receipt its upload returned (receipts 15 minutes old still work; modalfs uses them for 10); and Modal refuses bytes that don't match their hash. The contract tests (`just test-modal-contract PROFILE`) check these against real Modal every day. If Modal changes, modalfs turns uploading ahead off and says so in Activity; each file is then uploaded when it's committed, as before, and nothing is lost. Blocks uploaded ahead but never committed (a file deleted first, or a crash) stay in Modal's block store; whether Modal removes or bills them isn't documented.
+
 **The catch:** the API never returns the hashes of existing blocks. modalfs learns them in three ways:
 
 1. **Local manifest DB** (bbolt). Every full block modalfs reads gets hashed and recorded under `(path, size, mtime)`.
@@ -340,7 +344,7 @@ Measured from a Linux arm64 sandbox through an HTTP/1.1 proxy with limited bandw
 - **8 MiB granularity.** Small random writes still upload whole 8 MiB blocks.
 - **Metadata.** Modal sets mtime at commit. modalfs accepts chmod, chown and utimes but ignores them. There are no symlinks, hard links or xattrs.
 - **Consistency** is close-to-open plus a 10 s directory cache. Changes from other machines show up within that window. Modal containers need `volume.reload()` to see what you wrote.
-- **Write-back delay.** NFS has no close event, so writes reach Modal about 3 s after a file goes idle, or every 30 s while it keeps changing (sooner during a long copy, which uploads in batches). After a crash they are recovered. One edge case: if the last second of an append was all zero bytes, those trailing zeros can be dropped.
+- **Write-back delay.** NFS has no close event, so writes reach Modal about 3 s after a file goes idle, or every 30 s while it keeps changing (a long copy uploads as it's written and is committed in parts). After a crash they are recovered. One edge case: if the last second of an append was all zero bytes, those trailing zeros can be dropped.
 - **Unmounting waits for uploads.** Turning a mount off first uploads what's pending, with progress shown; **Unmount now** unmounts at once and finishes uploading in the background (or at the next mount). macOS won't unmount a folder an app has open, and the app says which one.
 - **The daemon must keep running while volumes are mounted**, because the NFS/FUSE server lives inside it. If it dies, the next start cleans up stale mounts.
 - **The menu bar icon is macOS-only.** On Linux, use `modalfs ui` to reopen the window.
@@ -364,7 +368,7 @@ Measured from a Linux arm64 sandbox through an HTTP/1.1 proxy with limited bandw
 | Default mount folder | `~/ModalVolumes/` | `~/ModalVolumes/` |
 | Start at login | `~/Library/LaunchAgents/dev.modalfs.daemon.plist` | `~/.config/systemd/user/modalfs.service` |
 
-**Cache size.** This is all the disk modalfs uses: blocks read from Modal, shared by every volume, plus changes that aren't on Modal yet. Changes come first, and cached blocks make way for them. When changes fill the limit (all of it but a quarter, at most 1 GiB, kept for reading), new writes wait for uploads to make room. A copy larger than the limit still works, at the speed of your upload, and modalfs never fills your disk. A long copy uploads in batches as it goes, and each batch leaves the disk once it's on Modal, so a write waits for about one batch at most. Writes also wait while less than 1 GiB is free on the disk, or fail at once, with an error in Activity, if nothing waiting to upload could free it.
+**Cache size.** This is all the disk modalfs uses: blocks read from Modal, shared by every volume, plus changes that aren't on Modal yet. Changes come first, and cached blocks make way for them. When changes fill the limit (all of it but a quarter, at most 1 GiB, kept for reading), new writes wait for uploads to make room. A copy larger than the limit still works, at the speed of your upload, and modalfs never fills your disk. A long copy uploads as it's written, and each part leaves the disk once it's committed, so a write waits for a block or two to upload, not for the whole file. Writes also wait while less than 1 GiB is free on the disk, or fail at once, with an error in Activity, if nothing waiting to upload could free it.
 
 If Modal can't be reached, apps writing to a volume wait; on macOS they give up after a few minutes, like with a network drive that went away. What they already wrote stays on this computer and uploads later, and the app says it can't upload and why.
 

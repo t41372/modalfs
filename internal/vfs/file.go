@@ -30,6 +30,8 @@ type snapshot struct {
 	dirty                           map[int64]bool
 	saved                           map[int64]bool // snapshot content moved to <idx>.snap
 	floor                           int64          // lowest size the live file reached since
+	part                            bool           // the start of the file only (see ahead.go)
+	sig                             [2]uint64      // which part
 }
 
 func (sn *snapshot) cleanIsRemote(idx, chunkSize int64) bool {
@@ -84,9 +86,21 @@ type fileState struct {
 	// commitMu serializes commits of this file. Reads and writes never take
 	// it, so they carry on while a commit uploads.
 	commitMu   sync.Mutex
-	snap       *snapshot     // the commit in flight, if any
-	snapDone   chan struct{} // closed when that commit ends
-	prehashing bool          // prehashBase started for this state
+	snap       *snapshot // the commit in flight, if any
+	prehashing bool      // prehashBase started for this state
+	lastCommit time.Time // when a commit of it last ended
+	lastWrite  time.Time // when it was last changed in this run (zero if recovered)
+
+	// Uploading ahead (ahead.go): each changed block's version (bumped by
+	// every change), when it last changed, and its upload ahead.
+	bver     map[int64]uint64
+	touched  map[int64]time.Time
+	ahead    map[int64]aheadState
+	lastPart [2]uint64 // the last part committed (see partSigLocked)
+	// uploads ahead in flight, and a channel closed when they reach zero:
+	// a commit waits for them rather than upload the same blocks again
+	aheadBusy int
+	aheadIdle chan struct{}
 
 	// The conflict copy this file's earlier commits went to, as they left
 	// it on Modal. A long write committed in parts keeps saving to it, so
@@ -107,6 +121,7 @@ type fileState struct {
 func newFileState(fs *FS, p, id string, exists bool, e modalapi.Entry) *fileState {
 	st := &fileState{fs: fs, path: p, dir: filepath.Join(fs.opt.CacheDir, fs.volID, "dirty", id),
 		baseExists: exists, dirty: map[int64]bool{}, hashes: map[int64][]byte{}, unsynced: map[int64]bool{}, mtime: time.Now()}
+	st.initAhead()
 	if exists {
 		st.baseSize, st.baseMtime, st.size = e.Size, e.Mtime, e.Size
 		st.truncFloor = e.Size
@@ -182,18 +197,6 @@ func (st *fileState) accountLocked() {
 	}
 }
 
-// unsnappedLocked is the changed data the commit in flight doesn't carry:
-// what the next commit will upload.
-func (st *fileState) unsnappedLocked() int64 {
-	n := int64(0)
-	for i := range st.dirty {
-		if st.snap == nil || !st.snap.dirty[i] || st.snap.saved[i] {
-			n++
-		}
-	}
-	return n * st.fs.chunkSize()
-}
-
 func (st *fileState) baseBlocks() int64 { return int64(st.fs.numBlocks(st.baseSize)) }
 
 func (st *fileState) cleanIsRemote(idx int64) bool {
@@ -261,6 +264,7 @@ func (st *fileState) ensureDirtyFromLocked(idx int64, fullCover bool, base []byt
 	st.dirty[idx] = true
 	delete(st.hashes, idx)
 	st.unsynced[idx] = true
+	st.changedBlockLocked(idx)
 	return nil
 }
 
@@ -423,9 +427,11 @@ func (st *fileState) growLocked(newSize int64) error {
 		return nil
 	}
 	if st.size%st.fs.chunkSize() != 0 {
-		if err := st.ensureDirtyLocked(st.size/st.fs.chunkSize(), false); err != nil {
+		last := st.size / st.fs.chunkSize()
+		if err := st.ensureDirtyLocked(last, false); err != nil {
 			return err
 		}
+		st.changedBlockLocked(last) // it gets longer
 	}
 	st.size = newSize
 	return nil
@@ -487,6 +493,7 @@ func (st *fileState) writeAt(data []byte, off int64) (n int, err error) {
 		f.Close()
 		modified = true
 		st.unsynced[idx] = true
+		st.changedBlockLocked(idx)
 		if err != nil {
 			return n, err
 		}
@@ -495,11 +502,8 @@ func (st *fileState) writeAt(data []byte, off int64) (n int, err error) {
 	}
 	st.changedLocked()
 	st.writeJournalLocked(false)
-	// A long write is committed in batches, each about commitTarget of
-	// uploading, so the disk it takes stays bounded and a write that waits
-	// for room (waitRoom) waits for one batch at most.
-	if st.fs.opt.MaxPending >= 0 && st.snap == nil && st.unsnappedLocked() >= st.fs.commitBatch() {
-		st.scheduleLocked(0)
+	if st.aheadManagedLocked() {
+		st.fs.kickAhead()
 	}
 	return n, nil
 }
@@ -511,7 +515,7 @@ func (st *fileState) writeAt(data []byte, off int64) (n int, err error) {
 func (st *fileState) changedLocked() {
 	st.gen++
 	now := time.Now()
-	st.mtime = now
+	st.mtime, st.lastWrite = now, now
 	if st.dirtySince.IsZero() {
 		st.dirtySince = now
 	}
@@ -546,6 +550,7 @@ func (st *fileState) truncate(newSize int64) (err error) {
 				}
 				_ = os.Remove(st.blockFile(idx))
 				delete(st.dirty, idx)
+				st.forgetBlockLocked(idx)
 			}
 		}
 		if st.snap != nil {
@@ -569,6 +574,7 @@ func (st *fileState) truncate(newSize int64) (err error) {
 			if cerr := f.Close(); err == nil {
 				err = cerr
 			}
+			st.changedBlockLocked(idx)
 			if err != nil {
 				return err
 			}
@@ -607,7 +613,27 @@ func (st *fileState) scheduleLocked(d time.Duration) {
 		if st.fs.closed.Load() {
 			return
 		}
-		if err := st.flush(); err != nil {
+		commit, part := st.flush, false
+		st.mu.Lock()
+		writing := st.fs.opt.WriteBack - time.Since(st.lastWrite)
+		if st.fs.waiting.Load() > 0 {
+			writing = st.fs.opt.WriteBack // writes wait for room: it isn't idle
+		}
+		if st.aheadManagedLocked() && writing > 0 {
+			// -max-pending while it's still being written: its blocks are
+			// on their way already, so commit the start that has arrived,
+			// and the whole file once it's idle
+			commit, part = st.flushPart, true
+			st.scheduleLocked(writing)
+		}
+		st.mu.Unlock()
+		if part {
+			if err := commit(); err != nil {
+				st.fs.uploadFailed(err) // retried by the next part, or the whole commit
+			}
+			return
+		}
+		if err := commit(); err != nil {
 			// back off: 10 s, doubling up to 5 min
 			st.mu.Lock()
 			st.backoff = min(max(2*st.backoff, 10*time.Second), 5*time.Minute)
@@ -674,7 +700,13 @@ func (st *fileState) copyTarget(path string) string {
 // flush commits the file. It takes a snapshot under the lock, then hashes
 // and uploads without it, so the file (and the mount) stay usable while a
 // large commit runs; changes made meanwhile go into the next commit.
-func (st *fileState) flush() error {
+func (st *fileState) flush() error { return st.commit(false) }
+
+// flushPart commits the start of the file that's on Modal already (see
+// ahead.go), if there's anything new in it.
+func (st *fileState) flushPart() error { return st.commit(true) }
+
+func (st *fileState) commit(part bool) error {
 	st.commitMu.Lock()
 	defer st.commitMu.Unlock()
 
@@ -685,12 +717,27 @@ func (st *fileState) flush() error {
 	}
 	sn := &snapshot{gen: st.gen, size: st.size, baseExists: st.baseExists, baseSize: st.baseSize,
 		baseMtime: st.baseMtime, truncFloor: st.truncFloor, dirty: map[int64]bool{}, saved: map[int64]bool{}, floor: st.size}
-	for i := range st.dirty {
-		sn.dirty[i] = true
+	if part {
+		_, _, ok, whole := st.partLocked()
+		if !ok && !whole {
+			st.mu.Unlock()
+			return nil
+		}
+		part = !whole // everything is on Modal: commit it all, just as quickly
 	}
-	st.snap = sn
-	done := make(chan struct{})
-	st.snapDone = done
+	if part {
+		cut, blocks, _, _ := st.partLocked()
+		sn.size, sn.floor, sn.part = cut, cut, true
+		for _, i := range blocks {
+			sn.dirty[i] = true
+		}
+		sn.sig = st.partSigLocked(cut, blocks)
+	} else {
+		for i := range st.dirty {
+			sn.dirty[i] = true
+		}
+	}
+	st.snap = sn // no more uploads ahead start for this file (see aheadJobs)
 	path := st.path
 	st.mu.Unlock()
 
@@ -700,16 +747,16 @@ func (st *fileState) flush() error {
 		if !committed {
 			st.dropSnapshotLocked()
 		}
-		if st.snapDone == done {
-			st.snapDone = nil
-		}
-		close(done)
 		st.mu.Unlock()
+		st.fs.kickAhead() // its blocks were left alone while it committed
 	}()
 
 	fs := st.fs
 	t0 := time.Now()
 	target := path
+	if err := st.waitAhead(); err != nil {
+		return err
+	}
 
 	// Optimistic concurrency: has someone else changed the file since we
 	// based our edits on it? (Modal has no CAS, so this is best-effort.)
@@ -765,9 +812,7 @@ func (st *fileState) flush() error {
 			Block: func(i int) ([]byte, error) { return st.readSnapshotBlock(sn, int64(i)) },
 		}}, check)
 	}
-	putAt := time.Now()
 	uploaded, err := put(target, recheck)
-	fs.noteUpload(uploaded, time.Since(putAt))
 	if errors.Is(err, errLateConflict) {
 		target = st.copyTarget(path)
 		if target != st.conflictCopy {
@@ -819,8 +864,17 @@ func (st *fileState) flush() error {
 	}
 	n := len(hashes)
 	fs.ctr.uploadedBlocks.Add(int64(uploaded))
-	fs.event("commit", target, fmt.Sprintf("%d of %d blocks uploaded", uploaded, n))
-	fs.log.Info("committed", "path", target, "size", sn.size, "blocks", n, "dirty", len(sn.dirty), "uploaded", uploaded, "took", time.Since(t0).Round(time.Millisecond))
+	if sn.part {
+		// a long copy has many: Activity shows the file once it's done
+		fs.committedPart()
+		fs.log.Debug("committed part", "path", target, "size", sn.size, "blocks", n, "dirty", len(sn.dirty), "uploaded", uploaded, "took", time.Since(t0).Round(time.Millisecond))
+	} else {
+		fs.event("commit", target, fmt.Sprintf("%d of %d blocks uploaded", uploaded, n))
+		fs.log.Info("committed", "path", target, "size", sn.size, "blocks", n, "dirty", len(sn.dirty), "uploaded", uploaded, "took", time.Since(t0).Round(time.Millisecond))
+	}
+	if !finished {
+		st.maybePart() // more may have arrived meanwhile
+	}
 	return nil
 }
 
@@ -989,13 +1043,18 @@ func (st *fileState) dropSnapshotLocked() {
 func (st *fileState) finishCommitLocked(sn *snapshot, target string, mtime int64, hashes [][]byte) {
 	fs := st.fs
 	st.snap = nil
-	st.flushedGen = sn.gen
+	st.lastCommit = time.Now()
+	if sn.part {
+		st.lastPart = sn.sig
+	} else {
+		st.flushedGen = sn.gen
+	}
 	st.backoff = 0
 	defer st.accountLocked()
 	if st.deleted {
 		return
 	}
-	if st.gen == sn.gen {
+	if st.gen == sn.gen && !sn.part {
 		for i := range sn.dirty {
 			if int(i) < len(hashes) {
 				fs.cache.Adopt(hashes[i], st.blockFile(i), int64(st.fs.blockLen(sn.size, i)))
@@ -1004,6 +1063,7 @@ func (st *fileState) finishCommitLocked(sn *snapshot, target string, mtime int64
 		_ = os.RemoveAll(st.dir)
 		st.dirty = map[int64]bool{}
 		st.hashes = map[int64][]byte{}
+		st.initAhead()
 		st.dirtySince = time.Time{}
 		st.removed = true
 		if st.timer != nil {
@@ -1032,9 +1092,6 @@ func (st *fileState) finishCommitLocked(sn *snapshot, target string, mtime int64
 		st.releaseCommittedLocked(sn, hashes)
 	}
 	st.dirtySince = time.Now()
-	if fs.opt.MaxPending >= 0 && st.unsnappedLocked() >= fs.commitBatch() {
-		st.scheduleLocked(0) // the next batch is ready
-	}
 }
 
 // releaseCommittedLocked lets go of the blocks a commit made while the file
@@ -1067,6 +1124,7 @@ func (st *fileState) releaseCommittedLocked(sn *snapshot, hashes [][]byte) {
 		delete(st.dirty, i)
 		delete(st.hashes, i)
 		delete(st.unsynced, i)
+		st.forgetBlockLocked(i)
 	}
 }
 

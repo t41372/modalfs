@@ -78,6 +78,7 @@ func (fs *FS) recover(dirtyRoot string) {
 		st := &fileState{fs: fs, path: j.Path, dir: dir, baseExists: j.BaseExists, baseSize: j.BaseSize,
 			baseMtime: j.BaseMtime, truncFloor: j.TruncFloor, size: j.Size, dirty: map[int64]bool{},
 			hashes: map[int64][]byte{}, unsynced: map[int64]bool{}, mtime: time.Now(), gen: 1, recovered: true}
+		st.initAhead()
 		blocks, _ := os.ReadDir(dir)
 		for _, b := range blocks {
 			// not a block: the journal, or a *.tmp block still being built,
