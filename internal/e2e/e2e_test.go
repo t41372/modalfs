@@ -90,6 +90,7 @@ type env struct {
 	mnt    string
 	cache  string      // modalfs's cache directory: blocks, and changes not uploaded yet
 	proc   *os.Process // modalfs run
+	logs   *syncBuffer // what it logged
 
 	argv, cmdEnv []string // how to start modalfs run again (see launch)
 }
@@ -130,6 +131,7 @@ func (e *env) launch() {
 	cmd.Env = e.cmdEnv
 	var logs syncBuffer
 	cmd.Stdout, cmd.Stderr = &logs, &logs
+	e.logs = &logs
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -332,17 +334,44 @@ func (e *env) probe(stat string) func() time.Duration {
 // Copying a large file into the mount over a slow uplink: listings and
 // stats keep answering while it uploads, and the upload is exact. This is
 // the case that used to freeze the whole mount until macOS gave up on it.
+//
+// modalfs must answer every listing and stat at once. The app can still wait
+// longer for a stat of the file being copied: the NFS client sends the
+// file's writes before it asks for its size, and on a machine with little
+// memory (a CI runner) it holds a long copy's writes back by itself for up
+// to 30 s at a time, without sending modalfs anything.
 func TestLargeCopyStaysResponsive(t *testing.T) {
 	e := setup(t, modalfake.Options{UpBytesPerSec: 20 * MiB, Latency: 20 * time.Millisecond}, nil)
 	data := randomBytes(t, 400*MiB)
-	stop := e.probe("big.bin")
+	listing := e.probe("")
+	stat := e.probe("big.bin")
 	e.writeFile("big.bin", data)
 	e.waitRemote("big.bin", data, 3*time.Minute)
-	worst := stop()
-	t.Logf("slowest listing/stat while uploading: %v", worst)
-	if worst > maxStall {
-		t.Errorf("the mount stalled for %v while a file uploaded (limit %v)", worst, maxStall)
+	worst, worstStat := listing(), stat()
+	t.Logf("slowest listing while uploading: %v; slowest listing and stat of the file: %v", worst, worstStat)
+	if held := e.heldUp(); len(held) > 0 {
+		t.Errorf("modalfs kept the client waiting while a file uploaded:\n%s", strings.Join(held, "\n"))
 	}
+	if worst > maxStall {
+		t.Errorf("listing the mount took %v while a file uploaded (limit %v)", worst, maxStall)
+	}
+	if worstStat > 45*time.Second {
+		t.Errorf("a stat of the file being copied took %v", worstStat)
+	}
+}
+
+// heldUp is what modalfs logged about keeping the NFS client waiting: a
+// request other than a read or write that took over two seconds, or reading
+// requests stopped because every write slot was busy (see nfs.SlowLogger).
+func (e *env) heldUp() []string {
+	var out []string
+	for _, line := range strings.Split(e.logs.String(), "\n") {
+		slow := strings.Contains(line, `msg="slow NFS request"`) && !strings.Contains(line, "proc=Read ")
+		if slow || strings.Contains(line, "NFS stopped reading") {
+			out = append(out, line)
+		}
+	}
+	return out
 }
 
 // Writing to a file while its commit uploads: the commit sends one
