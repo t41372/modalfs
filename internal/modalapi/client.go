@@ -503,7 +503,9 @@ func (c *Client) Put(ctx context.Context, volID string, files []PutFile) (int, e
 // PutChecked is Put with a check that runs after the missing blocks are
 // uploaded and right before the request that commits the files; if it
 // returns an error, nothing is committed. Uploading can take minutes, so
-// this is where to look once more for a concurrent change.
+// this is where to look once more for a concurrent change. If Modal has
+// every block already, the first request commits and the check doesn't
+// run: the caller's own look must be recent.
 func (c *Client) PutChecked(ctx context.Context, volID string, files []PutFile, beforeCommit func() error) (int, error) {
 	putResp := make([]map[int][]byte, len(files))
 	for i := range putResp {

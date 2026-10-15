@@ -28,6 +28,10 @@ type Marker struct {
 	Fingerprint string `json:"fingerprint"`
 }
 
+// ErrUnreadable is a copy or removal that found an entry it can't decrypt.
+// modalfs doesn't leave behind or delete what it can't read.
+var ErrUnreadable = errors.New("doesn't decrypt with this volume's key")
+
 type Volume struct {
 	Client *modalapi.Client
 	ID     string
@@ -35,7 +39,8 @@ type Volume struct {
 	// Skipped, when set, is told about each entry of an encrypted volume
 	// that doesn't decrypt with its key: put there by another tool, or
 	// damaged. Listings then leave it out rather than fail, so one stray
-	// name never hides the rest of the volume. Without it, listing fails.
+	// name never hides the rest of the volume. Without it, listing fails
+	// (with ErrUnreadable), as ListAll always does.
 	Skipped func(raw string, err error)
 }
 
@@ -97,6 +102,15 @@ func (v *Volume) List(ctx context.Context, dir string, recursive bool) ([]modala
 	return v.decodeAll(es)
 }
 
+// ListAll is List for an operation on everything under dir, a copy or a
+// removal: an entry that doesn't decrypt fails it rather than being left
+// out, so nothing is left behind or deleted unseen.
+func (v *Volume) ListAll(ctx context.Context, dir string, recursive bool) ([]modalapi.Entry, error) {
+	all := *v
+	all.Skipped = nil
+	return all.List(ctx, dir, recursive)
+}
+
 // decodeAll decrypts a listing's names and sizes, leaving out the marker.
 func (v *Volume) decodeAll(es []modalapi.Entry) ([]modalapi.Entry, error) {
 	out := make([]modalapi.Entry, 0, len(es))
@@ -110,7 +124,7 @@ func (v *Volume) decodeAll(es []modalapi.Entry) ([]modalapi.Entry, error) {
 			continue
 		}
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%s %w (written by another tool, or damaged): %v", raw.Path, ErrUnreadable, err)
 		}
 		out = append(out, e)
 	}
@@ -268,15 +282,21 @@ func (v *Volume) WriteFile(ctx context.Context, p string, data []byte) error {
 }
 
 func (v *Volume) Remove(ctx context.Context, p string, recursive bool) error {
-	p, err := v.Path(p)
+	if v.Cipher != nil && recursive {
+		if _, err := v.ListAll(ctx, p, true); err != nil {
+			return err
+		}
+	}
+	raw, err := v.Path(p)
 	if err != nil {
 		return err
 	}
-	return v.Client.Remove(ctx, v.ID, p, recursive)
+	return v.Client.Remove(ctx, v.ID, raw, recursive)
 }
 
-// Copy keeps manifests on Modal. Every destination path is checked first,
-// and the caller removes sources only after all copies have succeeded.
+// Copy keeps manifests on Modal. Every source and destination path is
+// checked first, and the caller removes sources only after all copies have
+// succeeded.
 func (v *Volume) Copy(ctx context.Context, sources []string, dest string, recursive bool) error {
 	if v.Cipher == nil {
 		return v.Client.Copy(ctx, v.ID, sources, dest, recursive)
@@ -284,7 +304,7 @@ func (v *Volume) Copy(ctx context.Context, sources []string, dest string, recurs
 	type pair struct{ source, dest string }
 	var copies []pair
 	for _, source := range sources {
-		entries, err := v.List(ctx, source, recursive)
+		entries, err := v.ListAll(ctx, source, recursive)
 		if err != nil {
 			return err
 		}

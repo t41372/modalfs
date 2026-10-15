@@ -4,13 +4,16 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-// A dirty block file that isn't a full block (left by a failed first write)
-// must not be recovered as data, and temp files are ignored.
-func TestRecoverSkipsShortBlock(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "dirty")
+// A dirty block file that isn't a full block can only be damage: the
+// changes are set aside whole, and the user is told, rather than a file
+// committed with a hole nobody wrote.
+func TestRecoverSetsAsideDamagedBlock(t *testing.T) {
+	cache := t.TempDir()
+	root := filepath.Join(cache, "dirty")
 	d := filepath.Join(root, "1-1")
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		t.Fatal(err)
@@ -27,21 +30,20 @@ func TestRecoverSkipsShortBlock(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(d, journalName), raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	write("0", 0)
+	write("0", 100)
 	write("1", blockSize)
-	write("1.tmp", 100)
-	fs := testFS(t, t.TempDir())
+	fs := testFS(t, cache)
+	var told []string
+	fs.opt.OnEvent = func(kind, path, detail string) { told = append(told, kind+" "+path+": "+detail) }
 	fs.recover(root)
-	st := fs.files["a"]
-	if st == nil {
-		t.Fatal("journal not recovered")
+	if fs.files["a"] != nil {
+		t.Fatal("changes with a damaged block were recovered, to be committed")
 	}
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	if st.timer != nil {
-		st.timer.Stop() // there is no client to commit to
+	kept, _ := filepath.Glob(filepath.Join(cache, "dirty-orphan-*", "1-1", "1"))
+	if len(kept) != 1 {
+		t.Fatal("the changes weren't kept")
 	}
-	if st.dirty[0] || !st.dirty[1] || len(st.dirty) != 1 {
-		t.Fatalf("dirty blocks = %v, want only block 1", st.dirty)
+	if len(told) != 1 || !strings.HasPrefix(told[0], "error a: ") || !strings.Contains(told[0], "block 0 is damaged") {
+		t.Fatalf("told the user %q", told)
 	}
 }

@@ -6,6 +6,7 @@
 package vfs
 
 import (
+	"bytes"
 	"container/list"
 	"context"
 	"errors"
@@ -418,6 +419,17 @@ func (fs *FS) blockLen(size int64, idx int64) int {
 	return int(end - idx*fs.chunkSize())
 }
 
+// refused tells the user why a folder wasn't moved or deleted, if it holds
+// something that doesn't decrypt, and returns err.
+func (fs *FS) refused(p, what string, err error) error {
+	if errors.Is(err, volume.ErrUnreadable) {
+		detail := fmt.Sprintf("%s wasn't %s: %v. modalfs doesn't leave behind or delete what it can't read; move or delete that entry with the Modal CLI, then try again", p, what, err)
+		fs.log.Error(detail)
+		fs.event("error", p, detail)
+	}
+	return err
+}
+
 // reportStray tells the user, once per name, about an entry of an encrypted
 // volume that doesn't decrypt with its key. The mount leaves it out rather
 // than refuse to list the folder it's in.
@@ -483,6 +495,11 @@ func (fs *FS) remoteBlockURL(p string, size, mtime int64, idx int64, cache bool,
 			return nil, err
 		}
 		h := fs.c.HashBlock(data)
+		if known := fs.mdb.Hash(p, size, mtime, idx); known != nil && !bytes.Equal(known, h) {
+			// the same size but other content: replaced since
+			fs.invalidate(parentOf(p))
+			return nil, fmt.Errorf("%s changed remotely (block %d differs): %w", p, idx, syscall.ESTALE)
+		}
 		fs.mdb.SetHash(p, size, mtime, int(idx), h)
 		if cache {
 			fs.cache.Put(h, data)
@@ -735,6 +752,9 @@ func (fs *FS) getState(p string, create bool) (*fileState, error) {
 	}
 	fs.nextID++
 	st = newFileState(fs, p, fmt.Sprintf("%d-%d", time.Now().UnixNano(), fs.nextID), exists, e)
+	if m := fs.mdb.Get(p, e.Size, e.Mtime); exists && m != nil {
+		st.sure = m.Hashes // known before the edit began: the base's own
+	}
 	fs.files[p] = st
 	return st, nil
 }
@@ -923,8 +943,8 @@ func (fs *FS) Remove(p string) error {
 		return err
 	}
 	if a.IsDir {
-		m, err := fs.listDir(p, true)
-		if err != nil {
+		var m map[string]modalapi.Entry
+		if m, err = fs.listDir(p, true); err != nil {
 			return err
 		}
 		for name := range m {
@@ -940,7 +960,7 @@ func (fs *FS) Remove(p string) error {
 			}
 		}
 		fs.mu.Unlock()
-		err = fs.c.Remove(fs.ctx, p, true)
+		err = fs.refused(p, "deleted", fs.c.Remove(fs.ctx, p, true))
 		fs.ephDropTree(p)
 	} else {
 		fs.mu.Lock()
@@ -965,8 +985,9 @@ func (fs *FS) Remove(p string) error {
 	return err
 }
 
-func (fs *FS) Rename(oldp, newp string) error {
+func (fs *FS) Rename(oldp, newp string) (err error) {
 	oldp, newp = clean(oldp), clean(newp)
+	defer func() { fs.refused(oldp, "moved", err) }()
 	if err := fs.checkPath(newp); err != nil {
 		return err
 	}
@@ -1017,23 +1038,31 @@ func (fs *FS) Rename(oldp, newp string) error {
 			if err := fs.Remove(newp); err != nil { // must be empty
 				return err
 			}
-		} else {
-			// discard any pending local state of the destination
-			fs.mu.Lock()
-			if st := fs.files[newp]; st != nil {
-				delete(fs.files, newp)
-				fs.mu.Unlock()
-				st.discard()
-			} else {
-				fs.mu.Unlock()
-			}
 		}
 	}
 	if !a.IsDir {
+		// The file this replaces takes its pending changes with it, once the
+		// copy has replaced it. No commit of them may run until then: one
+		// landing after the copy would bring them back, or delete the copy.
+		fs.mu.Lock()
+		old := fs.files[newp]
+		fs.mu.Unlock()
+		if old != nil {
+			old.commitMu.Lock()
+			defer old.commitMu.Unlock()
+		}
 		// VolumeCopyFiles2 is a manifest-level copy (O(#blocks), no data
 		// transfer) and atomically replaces an existing destination file.
 		if err := fs.c.Copy(fs.ctx, []string{oldp}, newp, false); err != nil {
 			return err
+		}
+		if old != nil {
+			fs.mu.Lock()
+			if fs.files[newp] == old {
+				delete(fs.files, newp)
+			}
+			fs.mu.Unlock()
+			old.discard()
 		}
 		if err := fs.c.Remove(fs.ctx, oldp, false); err != nil && !modalapi.IsNotFound(err) {
 			return err
@@ -1045,8 +1074,9 @@ func (fs *FS) Rename(oldp, newp string) error {
 		}()
 	} else {
 		// Directory copy semantics are `cp -r src... dstdir/`; so create the
-		// destination dir and copy the children into it.
-		children, err := fs.listDir(oldp, true)
+		// destination dir and copy the children into it. All of them: one
+		// that doesn't decrypt stops the move before anything changes.
+		children, err := fs.c.ListAll(fs.ctx, oldp, false)
 		if err != nil {
 			return err
 		}
@@ -1054,8 +1084,8 @@ func (fs *FS) Rename(oldp, newp string) error {
 			return err
 		}
 		var srcs []string
-		for name := range children {
-			if name != KeepName {
+		for _, e := range children {
+			if name := path.Base(e.Path); name != KeepName {
 				srcs = append(srcs, path.Join(oldp, name))
 			}
 		}

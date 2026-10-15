@@ -147,3 +147,45 @@ func TestClosedMountStopsCounting(t *testing.T) {
 		t.Fatalf("pending = %d on a closed mount, want 0", got)
 	}
 }
+
+// A truncate that cuts through a block zeroes its tail in place: the next
+// sync must make that durable, or a power loss could bring the cut bytes
+// back.
+func TestTruncateZeroingIsSynced(t *testing.T) {
+	st := newFileState(testFS(t, t.TempDir()), "a", "1", false, modalapi.Entry{})
+	if _, err := st.writeAt(bytes.Repeat([]byte{7}, 1000), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.truncate(10); err != nil {
+		t.Fatal(err)
+	}
+	if !st.unsynced[0] {
+		t.Fatal("the block truncate zeroed isn't synced by the next sync")
+	}
+}
+
+// A sync that fails leaves what it couldn't sync for the next one, which
+// mustn't report success without it.
+func TestFailedSyncIsRetried(t *testing.T) {
+	st := newFileState(testFS(t, t.TempDir()), "a", "1", false, modalapi.Entry{})
+	if _, err := st.writeAt([]byte("x"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(st.blockFile(0), 0); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := st.sync(); err == nil {
+			t.Fatalf("sync %d succeeded with its block unreadable", i+1)
+		}
+	}
+	if err := os.Chmod(st.blockFile(0), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.sync(); err != nil {
+		t.Fatal(err)
+	}
+}

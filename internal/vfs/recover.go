@@ -30,8 +30,9 @@ type journal struct {
 const journalName = "meta.json"
 
 // writeJournalLocked persists the file's shape. force=false throttles to
-// one write per second unless the shape changed block count. Most callers
-// ignore its error: the journal is written again with the next change.
+// one write per second unless the shape changed block count (a sync writes
+// the latest). Most callers ignore its error: the journal is written again
+// with the next change.
 func (st *fileState) writeJournalLocked(force bool) error {
 	if !force {
 		if st.jSize == st.size && st.jFloor == st.truncFloor {
@@ -65,14 +66,19 @@ func (fs *FS) recover(dirtyRoot string) {
 	ents, _ := os.ReadDir(dirtyRoot)
 	sort.Slice(ents, func(i, j int) bool { return ents[i].Name() < ents[j].Name() }) // oldest first
 	orphan := filepath.Join(filepath.Dir(dirtyRoot), fmt.Sprintf("dirty-orphan-%d", time.Now().Unix()))
+	setAside := func(dir, path, why string) {
+		dest := filepath.Join(orphan, filepath.Base(dir))
+		_ = os.MkdirAll(orphan, 0o700)
+		_ = os.Rename(dir, dest)
+		fs.log.Warn("changes left from an earlier run set aside", "path", path, "kept_in", dest, "why", why)
+		fs.event("error", path, fmt.Sprintf("changes left from an earlier run weren't recovered (%s); they're kept in %s", why, dest))
+	}
 	for _, e := range ents {
 		dir := filepath.Join(dirtyRoot, e.Name())
 		raw, err := os.ReadFile(filepath.Join(dir, journalName))
 		var j journal
 		if err != nil || json.Unmarshal(raw, &j) != nil || j.Path == "" {
-			_ = os.MkdirAll(orphan, 0o700)
-			_ = os.Rename(dir, filepath.Join(orphan, e.Name()))
-			fs.log.Warn("unrecoverable leftover data moved aside", "dir", filepath.Join(orphan, e.Name()))
+			setAside(dir, "", "their journal is missing or damaged")
 			continue
 		}
 		st := &fileState{fs: fs, path: j.Path, dir: dir, baseExists: j.BaseExists, baseSize: j.BaseSize,
@@ -80,6 +86,7 @@ func (fs *FS) recover(dirtyRoot string) {
 			hashes: map[int64][]byte{}, unsynced: map[int64]bool{}, mtime: time.Now(), gen: 1, recovered: true}
 		st.initAhead()
 		blocks, _ := os.ReadDir(dir)
+		damaged := ""
 		for _, b := range blocks {
 			// not a block: the journal, or a *.tmp block still being built,
 			// or a commit's *.snap copy (the live block is newer)
@@ -90,34 +97,36 @@ func (fs *FS) recover(dirtyRoot string) {
 				}
 				continue
 			}
-			// A complete dirty block is exactly fs.chunkSize(); any other size is
-			// left over from a failed write (older versions) and holds no
-			// user data.
+			// A dirty block is built under a temporary name and is exactly
+			// fs.chunkSize(): any other size means the disk damaged it, and
+			// committing the file could publish what nobody wrote.
 			if info, err := b.Info(); err != nil || info.Size() != fs.chunkSize() {
-				fs.log.Warn("discarding incomplete dirty block", "path", j.Path, "block", idx)
-				_ = os.Remove(filepath.Join(dir, b.Name()))
-				continue
+				damaged = fmt.Sprintf("block %d is damaged", idx)
+				break
 			}
 			st.dirty[idx] = true
 			// The journal's size is throttled, so it can lag the last
-			// second of appends. Dirty blocks at or past it reveal the
-			// real end (trailing zero bytes are indistinguishable from
-			// padding and are dropped).
+			// second of appends that weren't synced. Dirty blocks at or
+			// past it reveal the real end (trailing zero bytes are
+			// indistinguishable from padding and are dropped).
 			if (idx+1)*fs.chunkSize() > j.Size {
 				if end := dataEnd(filepath.Join(dir, b.Name())); end > 0 && idx*fs.chunkSize()+end > st.size {
 					st.size = idx*fs.chunkSize() + end
 				}
 			}
 		}
+		if damaged != "" {
+			setAside(dir, j.Path, damaged)
+			continue
+		}
 		st.jSize, st.jFloor = st.size, st.truncFloor
 		st.accountLocked() // not shared yet: no lock needed
 		fs.mu.Lock()
 		if old := fs.files[j.Path]; old != nil {
-			// a newer journal for the same path wins; park the older one
+			// a newer journal for the same path wins; set the older one aside
 			old.removed = true
 			old.accountLocked()
-			_ = os.MkdirAll(orphan, 0o700)
-			_ = os.Rename(old.dir, filepath.Join(orphan, filepath.Base(old.dir)))
+			setAside(old.dir, j.Path, "newer changes to the file were recovered instead")
 		}
 		fs.files[j.Path] = st
 		fs.mu.Unlock()

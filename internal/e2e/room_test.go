@@ -5,11 +5,9 @@ package e2e
 import (
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -139,15 +137,7 @@ func TestCrashAfterBlocksWereLetGo(t *testing.T) {
 	if n := diskUse(e.cache); n >= int64(len(data)) {
 		t.Fatalf("modalfs holds %d MiB for a %d MiB file: nothing was let go", n/MiB, len(data)/MiB)
 	}
-	if err := e.proc.Signal(syscall.SIGKILL); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(500 * time.Millisecond)
-	if mounted(e.mnt) {
-		if err := exec.Command("/sbin/umount", "-f", e.mnt).Run(); err != nil {
-			t.Fatal(err)
-		}
-	}
+	e.crash()
 	e.launch()
 	e.waitRemote("crash.bin", data, 3*time.Minute)
 }

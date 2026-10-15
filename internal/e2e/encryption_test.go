@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -449,6 +450,47 @@ func TestEncryptedVolume(t *testing.T) {
 	if err := backend.client.Remove(ctx, vol.ID, stray, false); err != nil {
 		t.Fatal(err)
 	}
+	// In a folder, such a file keeps the folder from being moved (it would
+	// be left behind) or deleted (with it): modalfs can't show it.
+	folderRaw := path.Dir(path.Dir(rawNames["renamed-folder/nested/秘密.txt"]))
+	subRaw := path.Dir(rawNames["empty-folder/sub/.modalfs_keep"])
+	if folderRaw == "." || subRaw == "." {
+		t.Fatal("the raw names of the folders weren't found")
+	}
+	strays := []string{folderRaw + "/" + stray, subRaw + "/" + stray}
+	for _, p := range strays {
+		putRemote(t, backend.client, vol.ID, p, []byte("not encrypted"))
+	}
+	if err := os.Rename(filepath.Join(c.mnt, "renamed-folder"), filepath.Join(c.mnt, "moved-folder")); err == nil {
+		t.Fatal("moved a folder holding a file that doesn't decrypt")
+	}
+	if _, err := os.Stat(filepath.Join(c.mnt, "moved-folder")); !os.IsNotExist(err) {
+		t.Fatalf("the refused move left a folder behind: %v", err)
+	}
+	if err := os.Remove(filepath.Join(c.mnt, "empty-folder", "sub")); err == nil {
+		t.Fatal("deleted a folder holding a file that doesn't decrypt")
+	}
+	for _, p := range strays {
+		if _, err := backend.client.ReadFile(ctx, vol.ID, p, 100); err != nil {
+			t.Fatalf("%s after the refused move and delete: %v", p, err)
+		}
+	}
+	verifyEncryptedFiles(t, c.mnt, expected, emptyDirs...)
+	daemonJSON(t, c, "GET", "/api/events", nil, &strayEvents)
+	moveExplained, deleteExplained := false, false
+	for _, e := range strayEvents {
+		moveExplained = moveExplained || e.Kind == "error" && strings.Contains(e.Message, "renamed-folder wasn't moved") && strings.Contains(e.Message, stray)
+		deleteExplained = deleteExplained || e.Kind == "error" && strings.Contains(e.Message, "empty-folder/sub wasn't deleted") && strings.Contains(e.Message, stray)
+	}
+	if !moveExplained || !deleteExplained {
+		t.Fatalf("the refused move or delete wasn't explained: %+v", strayEvents)
+	}
+	for _, p := range strays {
+		if err := backend.client.Remove(ctx, vol.ID, p, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	art.step("a folder holding a file that doesn't decrypt", "moving and deleting it are refused and explained; the file and the folder's contents stay", nil)
 	art.step("a plaintext file put by another tool", "unlock, mount and recovery still give every encrypted file; the stray file is reported", map[string]any{"recovery": out})
 	alias := filepath.Join(root, "mount-alias")
 	if err := os.Symlink(c.mnt, alias); err != nil {

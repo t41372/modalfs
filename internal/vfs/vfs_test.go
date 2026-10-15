@@ -9,15 +9,22 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	pb "github.com/modal-labs/modal-client/go/proto/modal_proto"
 	"github.com/t41372/modalfs/internal/modalapi"
 	"github.com/t41372/modalfs/internal/modalfake"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // fakeFS is an FS on an in-process fake Modal: no account, no mount.
@@ -345,5 +352,405 @@ func TestPendingFilesMatchStatus(t *testing.T) {
 	}
 	if sum != st.PendingBytes {
 		t.Fatalf("pending bytes %d, status says %d", sum, st.PendingBytes)
+	}
+}
+
+// refuseCopy fails every copy, as Modal does when it's not allowed.
+type refuseCopy struct{ pb.ModalClientClient }
+
+func (refuseCopy) VolumeCopyFiles2(context.Context, *pb.VolumeCopyFiles2Request, ...grpc.CallOption) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.PermissionDenied, "copy refused")
+}
+
+// A rename onto a file with changes not on Modal yet, if it fails, leaves
+// those changes as they were.
+func TestFailedRenameKeepsReplacedFile(t *testing.T) {
+	f := newFakeFS(t, Options{WriteBack: time.Hour, MaxPending: -1})
+	f.put(t, "a", []byte("a"))
+	f.put(t, "b", []byte("old b"))
+	if _, err := f.WriteAt("b", []byte("NEW"), 0); err != nil {
+		t.Fatal(err)
+	}
+	f.client.Stub = refuseCopy{f.client.Stub}
+	if err := f.Rename("a", "b"); err == nil {
+		t.Fatal("rename succeeded")
+	}
+	buf := make([]byte, 10)
+	if n, err := f.ReadAt("b", buf, 0); err != nil || string(buf[:n]) != "NEW b" {
+		t.Fatalf("b reads %q (%v) after the failed rename, want %q", buf[:n], err, "NEW b")
+	}
+	if len(f.PendingFiles()) != 1 {
+		t.Fatal("b's changes are no longer pending")
+	}
+}
+
+// commitGate holds the answer to the request that commits path until
+// released: a commit that has landed on Modal but not ended yet.
+type commitGate struct {
+	pb.ModalClientClient
+	path            string
+	landed, release chan struct{}
+	once            sync.Once
+}
+
+func (g *commitGate) VolumePutFiles2(ctx context.Context, in *pb.VolumePutFiles2Request, opts ...grpc.CallOption) (*pb.VolumePutFiles2Response, error) {
+	r, err := g.ModalClientClient.VolumePutFiles2(ctx, in, opts...)
+	if err == nil && len(r.GetMissingBlocks()) == 0 && in.GetFiles()[0].GetPath() == g.path {
+		g.once.Do(func() {
+			close(g.landed)
+			<-g.release
+		})
+	}
+	return r, err
+}
+
+// A rename onto a file whose commit is landing waits for that commit, which
+// could otherwise bring the old file back, or delete the renamed one.
+func TestRenameOntoFileBeingCommitted(t *testing.T) {
+	f := newFakeFS(t, Options{WriteBack: time.Hour, MaxPending: -1})
+	f.put(t, "a", []byte("renamed"))
+	f.put(t, "b", []byte("old b"))
+	if _, err := f.WriteAt("b", []byte("NEW"), 0); err != nil {
+		t.Fatal(err)
+	}
+	g := &commitGate{ModalClientClient: f.client.Stub, path: "b", landed: make(chan struct{}), release: make(chan struct{})}
+	f.client.Stub = g
+	committed := make(chan error, 1)
+	go func() { committed <- f.Flush("b") }()
+	<-g.landed
+	renamed := make(chan error, 1)
+	go func() { renamed <- f.Rename("a", "b") }()
+	select {
+	case err := <-renamed:
+		t.Fatalf("the rename didn't wait for the commit in flight (%v)", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(g.release)
+	if err := <-committed; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-renamed; err != nil {
+		t.Fatal(err)
+	}
+	f.invalidate("")
+	if _, err := f.Stat("a"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a after the rename: %v", err)
+	}
+	buf := make([]byte, 10)
+	if n, err := f.ReadAt("b", buf, 0); err != nil || string(buf[:n]) != "renamed" {
+		t.Fatalf("b reads %q (%v), want %q", buf[:n], err, "renamed")
+	}
+}
+
+// refuseRemove fails every removal.
+type refuseRemove struct{ pb.ModalClientClient }
+
+func (refuseRemove) VolumeRemoveFile2(context.Context, *pb.VolumeRemoveFile2Request, ...grpc.CallOption) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.PermissionDenied, "remove refused")
+}
+
+// A folder Modal didn't remove isn't reported as removed.
+func TestFailedRmdirIsReported(t *testing.T) {
+	f := newFakeFS(t, Options{})
+	if err := f.Mkdir("d"); err != nil {
+		t.Fatal(err)
+	}
+	f.client.Stub = refuseRemove{f.client.Stub}
+	if err := f.Remove("d"); err == nil {
+		t.Fatal("removing the folder succeeded, though Modal refused it")
+	}
+}
+
+// slowBase holds every request for the blocks of path until released, and
+// tells of each listing once it's read.
+type slowBase struct {
+	pb.ModalClientClient
+	path    string
+	release chan struct{}
+	listed  chan struct{}
+}
+
+type readListing struct {
+	grpc.ServerStreamingClient[pb.VolumeListFiles2Response]
+	done func()
+}
+
+func (r readListing) Recv() (*pb.VolumeListFiles2Response, error) {
+	m, err := r.ServerStreamingClient.Recv()
+	if err == io.EOF {
+		r.done()
+	}
+	return m, err
+}
+
+func (s *slowBase) VolumeGetFile2(ctx context.Context, in *pb.VolumeGetFile2Request, opts ...grpc.CallOption) (*pb.VolumeGetFile2Response, error) {
+	if in.GetPath() == s.path {
+		<-s.release
+	}
+	return s.ModalClientClient.VolumeGetFile2(ctx, in, opts...)
+}
+
+func (s *slowBase) VolumeListFiles2(ctx context.Context, in *pb.VolumeListFiles2Request, opts ...grpc.CallOption) (grpc.ServerStreamingClient[pb.VolumeListFiles2Response], error) {
+	stream, err := s.ModalClientClient.VolumeListFiles2(ctx, in, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return readListing{stream, func() {
+		select {
+		case s.listed <- struct{}{}:
+		default:
+		}
+	}}, nil
+}
+
+// A commit that first reads the blocks it didn't change, and so commits
+// long after it looked for a change on Modal, looks again before it
+// commits, though Modal has every block and nothing is uploaded. The other
+// version is the same size, so the block it read may be the other
+// version's (here it's the same): the changes are set aside, not mixed
+// into a conflict copy.
+func TestReplacedWhileReadingTheBase(t *testing.T) {
+	f := newFakeFS(t, Options{WriteBack: time.Hour, MaxPending: -1})
+	ours := randBytes(blockSize) // on Modal already, so the commit uploads nothing
+	f.put(t, "x", ours)
+	base := randBytes(2 * blockSize)
+	f.put(t, "f", base)
+	time.Sleep(time.Second) // a change gets another mtime
+	s := &slowBase{ModalClientClient: f.client.Stub, path: "f", release: make(chan struct{}), listed: make(chan struct{}, 1)}
+	f.client.Stub = s
+	if _, err := f.WriteAt("f", ours, 0); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-s.listed:
+	default:
+	}
+	committed := make(chan error, 1)
+	go func() { committed <- f.Flush("f") }()
+	<-s.listed // the commit looked: no change yet
+	theirs := append(randBytes(blockSize), base[blockSize:]...)
+	f.put(t, "f", theirs)
+	time.Sleep(1100 * time.Millisecond)
+	close(s.release)
+	if err := <-committed; err != nil {
+		t.Fatal(err)
+	}
+	f.invalidate("")
+	buf := make([]byte, len(theirs))
+	if n, err := f.ReadAt("f", buf, 0); err != nil || !bytes.Equal(buf[:n], theirs) {
+		t.Fatalf("the other version of f was overwritten (%d bytes, %v)", n, err)
+	}
+	ents, err := f.ReadDir("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ents {
+		if strings.Contains(e.Name, ".conflict-") {
+			t.Fatalf("a conflict copy was made: %s", e.Name)
+		}
+	}
+	if notes, _ := filepath.Glob(filepath.Join(f.opt.CacheDir, f.volID, "unsaved", "*", "README.txt")); len(notes) != 1 {
+		t.Fatalf("the changes weren't set aside: %v", notes)
+	}
+}
+
+// When every block a conflict copy keeps unchanged was known before the
+// edit began, the copy is made though the other version is the same size,
+// and it's exactly ours.
+func TestSameSizeConflictCopy(t *testing.T) {
+	f := newFakeFS(t, Options{WriteBack: time.Hour, MaxPending: -1})
+	base := randBytes(2 * blockSize)
+	f.put(t, "f", base)
+	buf := make([]byte, len(base))
+	if _, err := f.ReadAt("f", buf, 0); err != nil { // learns both blocks
+		t.Fatal(err)
+	}
+	time.Sleep(time.Second) // a change gets another mtime
+	if _, err := f.WriteAt("f", []byte("ours"), 10); err != nil {
+		t.Fatal(err)
+	}
+	theirs := randBytes(len(base))
+	f.put(t, "f", theirs)
+	if err := f.Flush("f"); err != nil {
+		t.Fatal(err)
+	}
+	ours := bytes.Clone(base)
+	copy(ours[10:], "ours")
+	f.invalidate("")
+	if n, err := f.ReadAt("f", buf, 0); err != nil || !bytes.Equal(buf[:n], theirs) {
+		t.Fatalf("the other version was overwritten (%d bytes, %v)", n, err)
+	}
+	ents, err := f.ReadDir("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var copies []string
+	for _, e := range ents {
+		if strings.Contains(e.Name, ".conflict-") {
+			copies = append(copies, e.Name)
+		}
+	}
+	if len(copies) != 1 {
+		t.Fatalf("conflict copies %v, want 1", copies)
+	}
+	if n, err := f.ReadAt(copies[0], buf, 0); err != nil || !bytes.Equal(buf[:n], ours) {
+		t.Fatalf("the conflict copy isn't our version (%d bytes, %v)", n, err)
+	}
+}
+
+// refuseBlocks fails every request for a file's blocks.
+type refuseBlocks struct{ pb.ModalClientClient }
+
+func (refuseBlocks) VolumeGetFile2(context.Context, *pb.VolumeGetFile2Request, ...grpc.CallOption) (*pb.VolumeGetFile2Response, error) {
+	return nil, status.Error(codes.PermissionDenied, "blocks refused")
+}
+
+// A truncate that fails, here because it can't read the block it cuts
+// through, leaves the file as it was, pending writes past the cut too.
+func TestFailedTruncateKeepsPendingTail(t *testing.T) {
+	f := newFakeFS(t, Options{WriteBack: time.Hour, MaxPending: -1})
+	f.put(t, "f", randBytes(2*blockSize))
+	ours := randBytes(blockSize)
+	if _, err := f.WriteAt("f", ours, blockSize); err != nil {
+		t.Fatal(err)
+	}
+	f.client.Stub = refuseBlocks{f.client.Stub}
+	if err := f.Truncate("f", blockSize/2); err == nil {
+		t.Fatal("the truncate succeeded without the block it cuts through")
+	}
+	buf := make([]byte, blockSize)
+	if n, err := f.ReadAt("f", buf, blockSize); err != nil || !bytes.Equal(buf[:n], ours) {
+		t.Fatalf("after the failed truncate, the pending write past the cut reads back wrong (%d bytes, %v)", n, err)
+	}
+}
+
+// A block downloaded again (here, dropped from the cache) that isn't the
+// one already known for that version means the file was replaced with
+// one of the same size: it's reported stale, not learned as that version.
+func TestSameSizeReplacementIsStale(t *testing.T) {
+	f := newFakeFS(t, Options{ReadAhead: -1})
+	f.put(t, "f", randBytes(blockSize))
+	buf := make([]byte, blockSize)
+	if _, err := f.ReadAt("f", buf, 0); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := f.Stat("f")
+	h := f.mdb.Hash("f", a.Size, a.Mtime.Unix(), 0)
+	if err := os.Remove(f.cache.path(fmt.Sprintf("%x", h))); err != nil {
+		t.Fatal(err)
+	}
+	f.put(t, "f", randBytes(blockSize)) // the listing still has the old version
+	if _, err := f.ReadAt("f", buf, 0); !errors.Is(err, syscall.ESTALE) {
+		t.Fatalf("reading the replaced file as the old version: %v, want ESTALE", err)
+	}
+	if got := f.mdb.Hash("f", a.Size, a.Mtime.Unix(), 0); !bytes.Equal(got, h) {
+		t.Fatal("the replacement's block was learned as the old version's")
+	}
+}
+
+// A conflict copy's name fits Modal's 255 bytes however long the name is,
+// and keeps the extension.
+func TestLongConflictName(t *testing.T) {
+	f := newFakeFS(t, Options{})
+	name := strings.Repeat("長", 80) + ".txt" // 244 bytes
+	got := path.Base(f.conflictName("d/" + name))
+	if len(got) > maxName || !utf8.ValidString(got) || !strings.HasSuffix(got, ".txt") || !strings.Contains(got, ".conflict-") {
+		t.Fatalf("conflict copy named %q (%d bytes)", got, len(got))
+	}
+}
+
+// Changes that can't be set aside aren't reported as set aside: the
+// commit fails, to be tried again, and the changes stay.
+func TestFailedParkIsAnError(t *testing.T) {
+	f := newFakeFS(t, Options{WriteBack: time.Hour, MaxPending: -1})
+	if err := f.Create("f", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt("f", []byte("ours"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.opt.CacheDir, f.volID, "unsaved"), nil, 0o600); err != nil {
+		t.Fatal(err) // a file where the folder for set-aside changes goes
+	}
+	st := f.files["f"]
+	if err := st.park(&snapshot{}, errBaseLost); err == nil {
+		t.Fatal("park succeeded without setting the changes aside")
+	}
+	if f.files["f"] != st || len(f.PendingFiles()) != 1 {
+		t.Fatal("the changes that couldn't be set aside are no longer pending")
+	}
+}
+
+// An edit that read part of the file from Modal while editing it, replaced
+// meanwhile by a version of the same size, is set aside, not mixed into a
+// conflict copy: what it read may be the other version's.
+func TestSameSizeReplacementSetAside(t *testing.T) {
+	f := newFakeFS(t, Options{WriteBack: time.Hour, MaxPending: -1})
+	f.put(t, "f", randBytes(2*blockSize))
+	time.Sleep(time.Second) // a change gets another mtime
+	// a partial write: block 0 is read from Modal
+	if _, err := f.WriteAt("f", []byte("ours"), 10); err != nil {
+		t.Fatal(err)
+	}
+	theirs := randBytes(2 * blockSize)
+	f.put(t, "f", theirs)
+	if err := f.Flush("f"); err != nil {
+		t.Fatal(err)
+	}
+	f.invalidate("")
+	buf := make([]byte, len(theirs))
+	if n, err := f.ReadAt("f", buf, 0); err != nil || !bytes.Equal(buf[:n], theirs) {
+		t.Fatalf("the other version was overwritten (%d bytes, %v)", n, err)
+	}
+	ents, err := f.ReadDir("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ents {
+		if strings.Contains(e.Name, ".conflict-") {
+			t.Fatalf("a conflict copy was made: %s", e.Name)
+		}
+	}
+	if notes, _ := filepath.Glob(filepath.Join(f.opt.CacheDir, f.volID, "unsaved", "*", "README.txt")); len(notes) != 1 {
+		t.Fatalf("the changes weren't set aside: %v", notes)
+	}
+}
+
+// A block built from what was read of the base, then overwritten whole,
+// holds only our bytes: a same-size replacement gets a conflict copy, as
+// for any edit of ours alone.
+func TestOverwrittenBlockIsOurs(t *testing.T) {
+	f := newFakeFS(t, Options{WriteBack: time.Hour, MaxPending: -1})
+	f.put(t, "f", randBytes(blockSize))
+	time.Sleep(time.Second) // a change gets another mtime
+	// a partial write: block 0 is read from Modal
+	if _, err := f.WriteAt("f", []byte("partial"), 10); err != nil {
+		t.Fatal(err)
+	}
+	ours := randBytes(blockSize)
+	if _, err := f.WriteAt("f", ours, 0); err != nil {
+		t.Fatal(err)
+	}
+	f.put(t, "f", randBytes(blockSize))
+	if err := f.Flush("f"); err != nil {
+		t.Fatal(err)
+	}
+	f.invalidate("")
+	ents, err := f.ReadDir("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var copies []string
+	for _, e := range ents {
+		if strings.Contains(e.Name, ".conflict-") {
+			copies = append(copies, e.Name)
+		}
+	}
+	if len(copies) != 1 {
+		t.Fatalf("conflict copies %v, want 1", copies)
+	}
+	buf := make([]byte, blockSize)
+	if n, err := f.ReadAt(copies[0], buf, 0); err != nil || !bytes.Equal(buf[:n], ours) {
+		t.Fatalf("the conflict copy isn't ours (%d bytes, %v)", n, err)
 	}
 }

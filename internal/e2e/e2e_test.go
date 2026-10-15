@@ -211,6 +211,21 @@ func watchForStall(t *testing.T, cmd *exec.Cmd, logs *syncBuffer, mnt string) {
 	t.Cleanup(func() { timer.Stop() })
 }
 
+// crash kills modalfs run (SIGKILL: nothing pending is committed) and
+// forces its mount off, for a test to launch it again.
+func (e *env) crash() {
+	e.t.Helper()
+	if err := e.proc.Signal(syscall.SIGKILL); err != nil {
+		e.t.Fatal(err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if mounted(e.mnt) {
+		if err := exec.Command("/sbin/umount", "-f", e.mnt).Run(); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+}
+
 func mounted(mnt string) bool {
 	out, _ := exec.Command("/sbin/mount").Output()
 	return bytes.Contains(out, []byte(" "+mnt+" ")) || bytes.Contains(out, []byte("/private"+mnt+" "))
@@ -453,6 +468,67 @@ func TestDeleteDuringCommit(t *testing.T) {
 	if n := e.net.Received(); n >= 80*MiB {
 		t.Errorf("the whole deleted file was uploaded anyway (%d MiB)", n/MiB)
 	}
+}
+
+// Renaming a file onto one that's uploading waits for that upload, then
+// replaces it: nothing of the upload lands afterwards.
+func TestRenameOntoFileDuringCommit(t *testing.T) {
+	src := randomBytes(t, 1000)
+	put := func(c *modalapi.Client, volID string) {
+		_, err := c.Put(context.Background(), volID, []modalapi.PutFile{{
+			Path: "new.bin", Size: int64(len(src)), Hashes: modalapi.HashBlocks(src),
+			Block: func(int) ([]byte, error) { return src, nil },
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := setup(t, modalfake.Options{UpBytesPerSec: 4 * MiB}, nil, put)
+	e.writeFile("old.bin", randomBytes(t, 24*MiB)) // too few blocks to upload ahead: its commit uploads them
+	e.waitUploading(30 * time.Second)
+	if err := os.Rename(filepath.Join(e.mnt, "new.bin"), filepath.Join(e.mnt, "old.bin")); err != nil {
+		t.Fatal(err)
+	}
+	e.waitRemote("old.bin", src, time.Minute)
+	if _, err := e.remote("new.bin"); err == nil {
+		t.Fatal("the renamed file is still there under its old name")
+	}
+	time.Sleep(3 * time.Second)
+	if got, err := e.remote("old.bin"); err != nil || sum(got) != sum(src) {
+		t.Fatalf("after the rename, old.bin changed again: %d bytes (%v)", len(got), err)
+	}
+}
+
+// A sync makes what was written durable, the file's length too. Zeros
+// appended right after a change must survive a crash, though modalfs saves
+// a growing file's length at most once a second and can't tell trailing
+// zeros from a block's padding. So must a new empty file, which has no
+// blocks at all: NFS creates a file for good when it answers.
+func TestCrashKeepsSyncedZeros(t *testing.T) {
+	e := setup(t, modalfake.Options{}, []string{"-write-back", "10m", "-max-pending", "-1s"})
+	empty, err := os.Create(filepath.Join(e.mnt, "empty.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty.Close()
+	f, err := os.Create(filepath.Join(e.mnt, "zeros.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append([]byte{1}, make([]byte, 100)...)
+	for _, part := range [][]byte{want[:1], want[1:]} {
+		if _, err := f.Write(part); err != nil {
+			t.Fatal(err)
+		}
+		if err := fsync.File(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.Close()
+	e.crash()
+	e.launch()
+	e.waitRemote("zeros.bin", want, time.Minute)
+	e.waitRemote("empty.bin", nil, time.Minute)
 }
 
 // Reading a large remote file over a slow downlink streams it: the first
