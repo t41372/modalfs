@@ -27,7 +27,7 @@ type Runner interface {
 	// from earlier calls is picked up.
 	Start(ctx context.Context, j Job) (string, error)
 	// Result returns a call's summary once it has ended; ok is false while
-	// it runs.
+	// it runs, and while that can't be told (err says why: a poll failed).
 	Result(ctx context.Context, callID string) (summary map[string]any, ok bool, err error)
 	// Cancel stops a call at once. The agent gets no chance to save, so ask
 	// it to pause first (Pause).

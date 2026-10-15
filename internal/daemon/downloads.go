@@ -400,6 +400,9 @@ func (m *dlManager) ended(ctx context.Context, r downloads.Runner, j downloads.J
 	}
 	if (callErr == nil && sum["state"] == "continued" || callErr != nil && st != nil && st.State == "continued") && next != "" {
 		_, _ = m.store.Update(j.ID, func(j *downloads.Job) { j.Calls = append(j.Calls, next) })
+		if j.Stopping != "" {
+			go m.stopCall(j.ID) // asked to stop as it handed over: stop the successor
+		}
 		name := displayName(j, nil)
 		m.d.emitC("info", "dl_continued", "", j.VolumeName, name+" reached the Function's time limit and continues in a new one", name)
 		return false
@@ -434,7 +437,11 @@ func (m *dlManager) ended(ctx context.Context, r downloads.Runner, j downloads.J
 		}
 	}
 	if j.Stopping == "cancel" && state != "done" {
-		if err := m.discard(ctx, r, j); err != nil {
+		var err error
+		if !j.Keep {
+			err = m.discard(ctx, r, j)
+		}
+		if err != nil {
 			state, msg = "paused", "cancelled, but its partial files couldn't be deleted: "+err.Error()
 		} else {
 			state, msg = downloads.StateCancelled, ""
@@ -586,7 +593,7 @@ func (m *dlManager) stopCall(id string) {
 		m.mu.Unlock()
 	}()
 	deadline := time.Now().Add(m.stopAfter)
-	asked := false
+	asked := "" // the call asked to pause
 	for time.Now().Before(deadline) {
 		j, err := m.job(id)
 		if err != nil || j.Stopping == "" || downloads.Ended(j.State) {
@@ -602,7 +609,7 @@ func (m *dlManager) stopCall(id string) {
 			cancel()
 			return // follow records it
 		}
-		if !asked {
+		if asked != call {
 			st, ok := m.cachedStatus(id)
 			if fresh, err := downloads.ReadStatus(ctx, r.Volume(j), j); err == nil && fresh.T > j.Before {
 				st, ok = fresh, true
@@ -610,7 +617,7 @@ func (m *dlManager) stopCall(id string) {
 			}
 			if ok && st.LiveURL != "" && st.Running() {
 				if err := downloads.Pause(ctx, st, j); err == nil {
-					asked = true
+					asked = call
 				} else {
 					m.d.log.Info("download: pause through the live channel failed", "id", id, "err", err)
 				}
@@ -685,13 +692,21 @@ func (m *dlManager) Resume(ctx context.Context, id string, warp *bool) error {
 	if warp != nil && *warp && downloads.IsBitTorrent(j.URL) {
 		return errNoWARPForTorrents(j.URL)
 	}
-	if _, err := m.store.Update(id, func(j *downloads.Job) {
-		j.State, j.Error, j.ErrorKind = downloads.StatePreparing, "", ""
-		if warp != nil {
-			j.WARP = *warp
+	// Another resume may have come in meanwhile: only one starts a call.
+	from, won := j.State, false
+	j, err = m.store.Update(id, func(j *downloads.Job) {
+		if won = j.State == from; won {
+			j.State, j.Error, j.ErrorKind = downloads.StatePreparing, "", ""
+			if warp != nil {
+				j.WARP = *warp
+			}
 		}
-	}); err != nil {
+	})
+	if err != nil {
 		return err
+	}
+	if !won {
+		return fmt.Errorf("download %s is %s already", id, j.State)
 	}
 	go m.launch(id)
 	return nil

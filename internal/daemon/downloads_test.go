@@ -514,6 +514,18 @@ func TestDownloadCancel(t *testing.T) {
 	if partial(v.ID) {
 		t.Fatal("cancel kept the partial file")
 	}
+	// A running one with keep: stopped the same way, and nothing is deleted.
+	k := x.add("https://example.com/c.bin")
+	x.waitState(k.ID, "starting")
+	x.r.record(t, k.ID, "work/a.bin", "partial")
+	x.r.record(t, k.ID, "status.json", map[string]any{"state": "running", "done": 7, "t": 1})
+	if code, body := x.do("POST", "/api/downloads/"+k.ID+"/cancel", map[string]any{"keep": true}, nil); code != 200 {
+		t.Fatalf("cancel: %d %s", code, body)
+	}
+	x.waitState(k.ID, downloads.StateCancelled)
+	if !partial(k.ID) {
+		t.Fatal("cancel with keep deleted a running download's partial file")
+	}
 	// A paused one with keep: nothing is deleted.
 	w := x.add("https://example.com/b.bin")
 	x.waitState(w.ID, "starting")
@@ -839,5 +851,73 @@ func TestDownloadWARP(t *testing.T) {
 	x.r.mu.Unlock()
 	if sent.WARP {
 		t.Fatal("the new run still asks for WARP")
+	}
+}
+
+// slowResults takes a moment to say how a call ended, as Modal does: two
+// resumes then overlap.
+type slowResults struct{ *fakeRunner }
+
+func (r slowResults) Result(ctx context.Context, id string) (map[string]any, bool, error) {
+	time.Sleep(100 * time.Millisecond)
+	return r.fakeRunner.Result(ctx, id)
+}
+
+// Resumes asked at once (the app and the command line, say) start one
+// call: two would download the same file into the same place, both billed.
+func TestConcurrentResumesStartOneCall(t *testing.T) {
+	x := newDLTest(t, true)
+	j, err := downloads.NewJob("acct-1", "main", "vo-1", "data", "", "https://example.com/file.bin", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.State, j.Calls = "paused", []string{"previous"}
+	x.r.end("previous", map[string]any{"state": "paused"})
+	if err := x.d.dl.store.Put(j); err != nil {
+		t.Fatal(err)
+	}
+	x.d.dl.runnerFor = func(string, string) (downloads.Runner, error) { return slowResults{x.r}, nil }
+	results := make(chan error, 8)
+	for range cap(results) {
+		go func() { results <- x.d.dl.Resume(context.Background(), j.ID, nil) }()
+	}
+	accepted := 0
+	for range cap(results) {
+		if <-results == nil {
+			accepted++
+		}
+	}
+	if accepted != 1 {
+		t.Fatalf("%d resumes accepted at once, want 1", accepted)
+	}
+	x.waitState(j.ID, "starting")
+	x.r.mu.Lock()
+	defer x.r.mu.Unlock()
+	if x.r.n != 1 {
+		t.Fatalf("%d calls started, want 1", x.r.n)
+	}
+}
+
+// A pause that comes as the call hands over to its successor (the 24 h
+// limit) pauses the successor: it mustn't go on running.
+func TestPauseAtHandoverPausesTheSuccessor(t *testing.T) {
+	x := newDLTest(t, true)
+	v := x.add("https://example.com/a.bin")
+	x.waitState(v.ID, "starting")
+	j := x.job(v.ID)
+	x.r.mu.Lock()
+	x.r.calls["successor"] = &fakeCall{job: j}
+	x.r.mu.Unlock()
+	// the old call ends before the pause has seen it end, or follow has
+	// learned of the successor
+	x.r.end(j.Calls[0], map[string]any{"state": "continued", "next_call": "successor"})
+	if err := x.d.dl.Pause(v.ID); err != nil {
+		t.Fatal(err)
+	}
+	x.waitState(v.ID, "paused")
+	x.r.mu.Lock()
+	defer x.r.mu.Unlock()
+	if !x.r.calls["successor"].ended {
+		t.Fatal("the pause left the successor running")
 	}
 }
