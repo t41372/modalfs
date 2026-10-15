@@ -19,6 +19,7 @@ import (
 	"github.com/t41372/modalfs/internal/downloads"
 	"github.com/t41372/modalfs/internal/encryption"
 	"github.com/t41372/modalfs/internal/modalapi"
+	"github.com/t41372/modalfs/internal/vfs"
 	"github.com/t41372/modalfs/internal/volume"
 	"github.com/t41372/modalfs/internal/webui"
 )
@@ -601,12 +602,20 @@ func (d *Daemon) routes() http.Handler {
 			writeErr(w, errors.New("mount not found"))
 			return
 		}
-		mp := expandHome(m.Mountpoint)
-		if fi, err := os.Stat(mp); err != nil || !fi.IsDir() {
-			writeErr(w, fmt.Errorf("%s is not a folder yet; mount it first", mp))
+		// What's mounted is asked of the mount itself: this process serves
+		// it, and file I/O on it from here can deadlock (see AGENTS.md).
+		var fsys *vfs.FS
+		var mp string
+		d.mu.Lock()
+		if rm := d.running[m.ID]; rm != nil && rm.state == StateMounted {
+			fsys, mp = rm.fs, rm.mountpoint
+		}
+		d.mu.Unlock()
+		if fsys == nil {
+			writeErr(w, fmt.Errorf("%s isn't mounted; mount it first", m.VolumeName))
 			return
 		}
-		if err := revealIn(mp, in.Path); err != nil {
+		if err := revealIn(fsys, mp, in.Path); err != nil {
 			writeErr(w, err)
 			return
 		}

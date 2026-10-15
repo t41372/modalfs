@@ -923,6 +923,23 @@ func TestPauseAtHandoverPausesTheSuccessor(t *testing.T) {
 	}
 }
 
+// Revealing a file of a volume that isn't mounted says so, rather than
+// open the empty folder it would be mounted at.
+func TestRevealNeedsTheMount(t *testing.T) {
+	x := newDLTest(t, false)
+	folder := t.TempDir()
+	if err := x.d.store.Update(func(f *config.File) error {
+		f.Mounts = append(f.Mounts, config.Mount{ID: "mnt-1", AccountID: "acct-1", VolumeName: "data", Mountpoint: folder})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	code, body := x.do("POST", "/api/mounts/mnt-1/reveal", map[string]any{"path": "a.txt"}, nil)
+	if code == 200 || !strings.Contains(body, "isn't mounted") {
+		t.Fatalf("reveal of an unmounted volume: %d %s", code, body)
+	}
+}
+
 // A conflict policy modalfs doesn't have is refused, from any client.
 func TestUnknownConflictPolicyIsRefused(t *testing.T) {
 	x := newDLTest(t, false)

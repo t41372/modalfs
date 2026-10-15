@@ -258,7 +258,22 @@ func InstallService() error {
 	if err != nil {
 		return err
 	}
-	return writeService(currentSpec(exe))
+	return installService(currentSpec(exe))
+}
+
+// installService writes the service file and enables it. If that fails, a
+// file that wasn't there before goes again: start at login shows as on only
+// when it is.
+func installService(s serviceSpec) error {
+	_, err := os.Stat(servicePath())
+	existed := err == nil
+	if err := writeService(s); err != nil {
+		if !existed {
+			_ = os.Remove(servicePath())
+		}
+		return err
+	}
+	return nil
 }
 
 func writeService(s serviceSpec) error {
@@ -281,25 +296,38 @@ func writeService(s serviceSpec) error {
 	}
 	if runtime.GOOS == "linux" {
 		_, unit := serviceID()
-		systemctl("daemon-reload")
-		systemctl("enable", unit)
+		err := systemctl("daemon-reload")
+		if err == nil {
+			err = systemctl("enable", unit)
+		}
+		if err != nil {
+			return fmt.Errorf("can't set up start at login: %w", err)
+		}
 	}
 	return nil
 }
 
 // systemctl runs `systemctl --user`; tests replace it.
-var systemctl = func(args ...string) {
-	_ = exec.Command("systemctl", append([]string{"--user"}, args...)...).Run()
+var systemctl = func(args ...string) error {
+	out, err := exec.Command("systemctl", append([]string{"--user"}, args...)...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("systemctl --user %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func UninstallService() error {
 	p := servicePath()
+	var disable error
 	if runtime.GOOS == "linux" {
 		_, unit := serviceID()
-		systemctl("disable", unit)
+		disable = systemctl("disable", unit)
 	}
 	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 		return err
+	}
+	if disable != nil {
+		return fmt.Errorf("removed start at login, but %w", disable)
 	}
 	return nil
 }

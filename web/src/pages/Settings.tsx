@@ -65,9 +65,12 @@ export function SettingsPage() {
       dismiss: t('settings.dlKeepOn'),
       alt: { label: t('settings.dlOffOnly'), run: () => patchSettings({ remote_downloads: false }).finally(refreshState) },
       run: async () => {
-        await Promise.allSettled(running.map((d) => api('POST', `/downloads/${d.id}/pause`, {})))
-        await patchSettings({ remote_downloads: false })
+        const paused = await Promise.allSettled(running.map((d) => api('POST', `/downloads/${d.id}/pause`, {})))
         refreshDownloads()
+        // one that didn't pause would go on billing: don't turn downloads off as if it had
+        const failed = paused.find((p) => p.status === 'rejected')
+        if (failed) throw failed.reason
+        await patchSettings({ remote_downloads: false })
         refreshState()
       },
     })

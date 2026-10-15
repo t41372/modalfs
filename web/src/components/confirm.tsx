@@ -1,5 +1,6 @@
 import { type ReactNode, useState, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -23,7 +24,7 @@ interface Ask {
   /** A second way out, left of the dismiss button, such as "Pause instead". */
   alt?: { label: string; run: () => Promise<unknown> }
   danger?: boolean
-  /** Runs when confirmed; the dialog stays open, busy, until it settles. */
+  /** Runs when confirmed; the dialog stays open, busy, until it settles. If it fails, the error shows and the dialog stays, to try again or dismiss. */
   run: () => Promise<unknown>
 }
 
@@ -45,6 +46,17 @@ export function Confirmer() {
   const { t } = useTranslation()
   const [busy, setBusy] = useState(false)
   const close = () => !busy && set(null)
+  const settle = async (run: () => Promise<unknown>) => {
+    setBusy(true)
+    try {
+      await run()
+      set(null)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
   return (
     <AlertDialog open={!!ask} onOpenChange={(o) => !o && close()}>
       <AlertDialogContent>
@@ -59,16 +71,7 @@ export function Confirmer() {
               variant="ghost"
               className="sm:mr-auto"
               disabled={busy}
-              onClick={async () => {
-                const alt = ask.alt!
-                setBusy(true)
-                try {
-                  await alt.run()
-                } finally {
-                  setBusy(false)
-                  set(null)
-                }
-              }}
+              onClick={() => settle(ask.alt!.run)}
             >
               {ask.alt.label}
             </Button>
@@ -77,16 +80,7 @@ export function Confirmer() {
           <Button
             variant={ask?.danger ? 'destructive' : 'default'}
             disabled={busy}
-            onClick={async () => {
-              if (!ask) return
-              setBusy(true)
-              try {
-                await ask.run()
-              } finally {
-                setBusy(false)
-                set(null)
-              }
-            }}
+            onClick={() => ask && settle(ask.run)}
           >
             {busy && <Spinner />}
             {ask?.action}
