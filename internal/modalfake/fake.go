@@ -169,11 +169,23 @@ func newID() string {
 	return "vo-" + hex.EncodeToString(b)
 }
 
-// CreateVolume makes a v2 volume directly, for test setup.
+// defaultEnv is the environment a request without one is for, as with
+// Modal: the workspace's default.
+const defaultEnv = "main"
+
+func envOrDefault(env string) string {
+	if env == "" {
+		return defaultEnv
+	}
+	return env
+}
+
+// CreateVolume makes a v2 volume directly, in the default environment, for
+// test setup.
 func (s *Server) CreateVolume(name string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	v := &volume{id: newID(), name: name, created: float64(time.Now().Unix()), files: map[string]*file{}}
+	v := &volume{id: newID(), name: name, env: defaultEnv, created: float64(time.Now().Unix()), files: map[string]*file{}}
 	s.volumes[v.id] = v
 	return v.id
 }
@@ -188,7 +200,7 @@ func (s *Server) vol(id string) (*volume, error) {
 
 func (s *Server) byName(name, env string) *volume {
 	for _, v := range s.volumes {
-		if v.name == name && (env == "" || v.env == env || v.env == "") {
+		if v.name == name && v.env == envOrDefault(env) {
 			return v
 		}
 	}
@@ -211,7 +223,7 @@ func (s *Server) VolumeGetOrCreate(_ context.Context, r *pb.VolumeGetOrCreateReq
 		if create != pb.ObjectCreationType_OBJECT_CREATION_TYPE_CREATE_IF_MISSING && create != pb.ObjectCreationType_OBJECT_CREATION_TYPE_CREATE_FAIL_IF_EXISTS {
 			return nil, status.Errorf(codes.NotFound, "Volume '%s' not found", r.GetDeploymentName())
 		}
-		v = &volume{id: newID(), name: r.GetDeploymentName(), env: r.GetEnvironmentName(), created: float64(time.Now().Unix()), files: map[string]*file{}}
+		v = &volume{id: newID(), name: r.GetDeploymentName(), env: envOrDefault(r.GetEnvironmentName()), created: float64(time.Now().Unix()), files: map[string]*file{}}
 		s.volumes[v.id] = v
 	}
 	return pb.VolumeGetOrCreateResponse_builder{VolumeId: v.id, Metadata: meta(v)}.Build(), nil
@@ -222,7 +234,9 @@ func (s *Server) VolumeList(_ context.Context, r *pb.VolumeListRequest) (*pb.Vol
 	defer s.mu.Unlock()
 	var items []*pb.VolumeListItem
 	for _, v := range s.volumes {
-		items = append(items, pb.VolumeListItem_builder{Label: v.name, VolumeId: v.id, CreatedAt: v.created, Metadata: meta(v)}.Build())
+		if v.env == envOrDefault(r.GetEnvironmentName()) {
+			items = append(items, pb.VolumeListItem_builder{Label: v.name, VolumeId: v.id, CreatedAt: v.created, Metadata: meta(v)}.Build())
+		}
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].GetLabel() < items[j].GetLabel() })
 	return pb.VolumeListResponse_builder{Items: items}.Build(), nil

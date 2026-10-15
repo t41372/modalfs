@@ -31,14 +31,15 @@ import (
 type dlManager struct {
 	d     *Daemon
 	store *downloads.Store
-	// runnerFor and volumeFor reach Modal; tests replace them.
-	runnerFor   func(accountID, env string) (downloads.Runner, error)
-	volumeFor   func(ctx context.Context, accountID, env, name string) (modalapi.VolumeInfo, error)
-	checkVolume func(context.Context, string, string, string) error
-	billingFor  func(ctx context.Context, accountID, env string) (Billing, error)
-	poll        time.Duration // how often a running download's records are read
-	stopAfter   time.Duration // how long a pause may take before the call is cancelled
-	quit        <-chan struct{}
+	// runnerFor, environmentFor and volumeFor reach Modal; tests replace them.
+	runnerFor      func(accountID, env string) (downloads.Runner, error)
+	environmentFor func(ctx context.Context, accountID, env string) (string, error)
+	volumeFor      func(ctx context.Context, accountID, env, name string) (modalapi.VolumeInfo, error)
+	checkVolume    func(context.Context, string, string, string) error
+	billingFor     func(ctx context.Context, accountID, env string) (Billing, error)
+	poll           time.Duration // how often a running download's records are read
+	stopAfter      time.Duration // how long a pause may take before the call is cancelled
+	quit           <-chan struct{}
 
 	mu        sync.Mutex
 	runners   map[clientKey]*downloads.Modal
@@ -61,6 +62,7 @@ func newDLManager(d *Daemon, dir string, quit <-chan struct{}) (*dlManager, erro
 		status: map[string]downloads.Status{}, history: map[string]*downloads.History{}, live: map[string]*liveFeed{}}
 	m.checkVolume = d.refuseEncryptedDownload
 	m.runnerFor = m.modalRunner
+	m.environmentFor = d.environment
 	m.billingFor = m.readBilling
 	m.volumeFor = func(ctx context.Context, accountID, env, name string) (modalapi.VolumeInfo, error) {
 		c, _, err := d.clientFor(accountID, env)
@@ -186,9 +188,9 @@ func (m *dlManager) Add(ctx context.Context, in addRequest) ([]downloads.Job, er
 	if len(in.URLs) == 0 {
 		return nil, errors.New("give at least one link")
 	}
-	env := in.Environment
-	if env == "" {
-		env = a.Environment
+	env, err := m.environmentFor(ctx, a.ID, in.Environment) // the job is pinned to it, like a mount
+	if err != nil {
+		return nil, err
 	}
 	if in.Size == "" {
 		in.Size = s.DownloadSize

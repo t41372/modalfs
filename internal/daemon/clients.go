@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sync"
@@ -40,6 +41,36 @@ func (d *Daemon) clientConfig(accountID, env string) (modalapi.Config, config.Ac
 		server = "https://api.modal.com"
 	}
 	return modalapi.Config{TokenID: a.TokenID, TokenSecret: secret, ServerURL: server, Environment: env, Transport: d.transport()}, a, nil
+}
+
+// environment names the environment env stands for: itself, or for "" the
+// account's, or else the workspace's default. Mounts and downloads are
+// pinned to it, so a change of either default moves neither.
+func (d *Daemon) environment(ctx context.Context, accountID, env string) (string, error) {
+	if env != "" {
+		return env, nil
+	}
+	a, ok := d.store.Account(accountID)
+	if !ok {
+		return "", fmt.Errorf("account %q not found", accountID)
+	}
+	if a.Environment != "" {
+		return a.Environment, nil
+	}
+	c, _, err := d.clientFor(accountID, "")
+	if err != nil {
+		return "", err
+	}
+	envs, err := c.ListEnvironments(ctx)
+	if err != nil {
+		return "", friendly(err)
+	}
+	for _, e := range envs {
+		if e.Default {
+			return e.Name, nil
+		}
+	}
+	return "", fmt.Errorf("Modal named no default environment for account %s; choose one in its settings", a.Label)
 }
 
 func (d *Daemon) transport() string {

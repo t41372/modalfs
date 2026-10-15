@@ -943,10 +943,14 @@ func (d *Daemon) AddMount(m config.Mount) (config.Mount, error) {
 		m.Mode = "auto"
 	}
 	m.ID = config.NewID("mnt")
+	if m.Environment == "" {
+		m.Environment = a.Environment // or, for the workspace's default, pinned when it mounts
+	}
 	var dup config.Mount
 	err := d.store.Update(func(f *config.File) error {
 		for _, x := range f.Mounts {
-			if x.AccountID == m.AccountID && x.VolumeName == m.VolumeName && x.Environment == m.Environment {
+			// a mount not pinned yet may be for any environment
+			if x.AccountID == m.AccountID && x.VolumeName == m.VolumeName && (x.Environment == m.Environment || x.Environment == "" || m.Environment == "") {
 				dup = x
 				return errors.New("this volume already has a saved mount")
 			}

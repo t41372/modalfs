@@ -207,7 +207,8 @@ func (s *Store) Snapshot() File {
 	return f
 }
 
-// Update applies fn to the config and persists it atomically.
+// Update applies fn to the config and persists it atomically: if it can't
+// be saved, it isn't applied either.
 func (s *Store) Update(fn func(f *File) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -218,8 +219,13 @@ func (s *Store) Update(fn func(f *File) error) error {
 	if err := fn(&cp); err != nil {
 		return err
 	}
+	old := s.f
 	s.f = cp
-	return s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		s.f = old
+		return err
+	}
+	return nil
 }
 
 func (s *Store) Account(id string) (Account, bool) {

@@ -156,6 +156,7 @@ func newTestManager(t *testing.T, d *Daemon, dir string, quit chan struct{}, r d
 	m.poll, m.stopAfter = 20*time.Millisecond, 2*time.Second
 	m.checkVolume = func(context.Context, string, string, string) error { return nil }
 	m.runnerFor = func(string, string) (downloads.Runner, error) { return r, nil }
+	m.environmentFor = func(_ context.Context, _, env string) (string, error) { return env, nil }
 	m.volumeFor = func(_ context.Context, _, _, name string) (modalapi.VolumeInfo, error) {
 		return modalapi.VolumeInfo{ID: "vo-1", Name: name}, nil
 	}
