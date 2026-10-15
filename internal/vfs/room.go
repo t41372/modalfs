@@ -68,13 +68,17 @@ func (st *fileState) waitRoom(off int64, n int) error {
 				continue
 			}
 		}
-		ok, freed, stuck := fs.cache.room(add)
+		ok, freed, stuck, left := fs.cache.room(add)
 		if ok {
 			return nil
 		}
 		if stuck {
 			if now := time.Now().Unix(); now-fs.noRoom.Swap(now) >= 60 {
-				fs.event("error", "", fmt.Sprintf("writes refused: less than %d GiB is free on the disk modalfs keeps its data on, and nothing waiting to upload could free it. Free some space.", minFree>>30))
+				why := fmt.Sprintf("writes refused: less than %d GiB is free on the disk modalfs keeps its data on, and nothing waiting to upload could free it. Free some space.", minFree>>30)
+				if left {
+					why = "writes refused: changes of volumes that aren't mounted fill the cache size, and nothing waiting to upload could free it. Mount those volumes with write access so their changes upload, or raise the cache size in Settings."
+				}
+				fs.event("error", "", why)
 			}
 			return syscall.ENOSPC
 		}

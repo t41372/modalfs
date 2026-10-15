@@ -716,6 +716,80 @@ func TestSameSizeReplacementSetAside(t *testing.T) {
 	}
 }
 
+// refusePut fails every commit.
+type refusePut struct{ pb.ModalClientClient }
+
+func (refusePut) VolumePutFiles2(context.Context, *pb.VolumePutFiles2Request, ...grpc.CallOption) (*pb.VolumePutFiles2Response, error) {
+	return nil, status.Error(codes.PermissionDenied, "commit refused")
+}
+
+// What a mount leaves on disk when it closes (here, unable to commit)
+// still counts toward the cache size, also after a restart, until its
+// volume is mounted again and takes it over, counted once.
+func TestLeftChangesCount(t *testing.T) {
+	dir := t.TempDir()
+	fake, err := modalfake.Start(filepath.Join(dir, "fake"), modalfake.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(fake.Close)
+	c, err := modalapi.New(modalapi.Config{ServerURL: fake.URL, TokenID: "ak-fake", TokenSecret: "as-fake"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vol, err := c.LookupVolume(context.Background(), "test", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheDir := filepath.Join(dir, "cache")
+	mount := func(bc *BlockCache) *FS {
+		fs, err := New(c, vol, Options{CacheDir: cacheDir, Cache: bc, WriteBack: time.Hour, MaxPending: -1, Logger: slog.New(slog.DiscardHandler)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fs
+	}
+	cache := func() *BlockCache {
+		bc, err := NewBlockCache(filepath.Join(cacheDir, "blocks"), 1<<30)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return bc
+	}
+	bc := cache()
+	fs := mount(bc)
+	if err := fs.Create("a", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.WriteAt("a", []byte("x"), 0); err != nil {
+		t.Fatal(err)
+	}
+	stub := c.Stub
+	c.Stub = refusePut{stub}
+	if err := fs.Close(); err == nil {
+		t.Fatal("closed with a commit Modal refused")
+	}
+	if bc.Pending() != blockSize || bc.Left(vol.ID) != blockSize {
+		t.Fatalf("after closing: pending %d, left %d; want one block each", bc.Pending(), bc.Left(vol.ID))
+	}
+	bc = cache() // a restart
+	if bc.Pending() != blockSize || bc.Left(vol.ID) != blockSize {
+		t.Fatalf("after a restart: pending %d, left %d; want one block each", bc.Pending(), bc.Left(vol.ID))
+	}
+	c.Stub = stub
+	fs = mount(bc)
+	t.Cleanup(func() { fs.Close() })
+	if bc.Pending() != blockSize || bc.Left(vol.ID) != 0 {
+		t.Fatalf("mounted again: pending %d, left %d; want the block counted once, as the mount's", bc.Pending(), bc.Left(vol.ID))
+	}
+	if err := fs.Flush("a"); err != nil {
+		t.Fatal(err)
+	}
+	if bc.Pending() != 0 {
+		t.Fatalf("pending %d once committed, want 0", bc.Pending())
+	}
+}
+
 // A block built from what was read of the base, then overwritten whole,
 // holds only our bytes: a same-size replacement gets a conflict copy, as
 // for any edit of ours alone.

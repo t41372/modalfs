@@ -123,8 +123,10 @@ type fileState struct {
 	copySize, copyMtime int64
 
 	// held is the disk this file's pending changes take, as counted in the
-	// shared cache's pending bytes (see accountLocked).
-	held int64
+	// shared cache's pending bytes (see accountLocked). leftover: the mount
+	// closed, and they're counted as its volume's now.
+	held     int64
+	leftover bool
 
 	// last journal written (crash recovery)
 	jSize, jFloor int64
@@ -193,11 +195,11 @@ func copyFile(src, dst string) error {
 
 // accountLocked brings the shared count of pending bytes up to date with
 // the block files this file keeps: its dirty blocks and the copies set
-// aside for the commit in flight. Every change to them ends with it. Once
-// the mount closes, what's left is the next mount's to count.
+// aside for the commit in flight. Every change to them ends with it. What a
+// closed mount leaves is counted as its volume's (see Close).
 func (st *fileState) accountLocked() {
 	var n int64
-	if !st.removed && !st.fs.closed.Load() {
+	if !st.removed && !st.leftover {
 		n = int64(len(st.dirty))
 		if st.snap != nil {
 			n += int64(len(st.snap.saved))

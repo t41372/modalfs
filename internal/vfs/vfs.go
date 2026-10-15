@@ -186,6 +186,7 @@ func New(c *modalapi.Client, vol modalapi.VolumeInfo, opt Options) (*FS, error) 
 		return nil, err
 	}
 	if !opt.ReadOnly {
+		bc.takeOver(vol.ID) // recovery counts the changes it finds itself
 		fs.recover(filepath.Join(base, "dirty"))
 		go fs.aheadLoop()
 	}
@@ -900,7 +901,8 @@ func (fs *FS) Close() error {
 		if st.timer != nil {
 			st.timer.Stop()
 		}
-		st.accountLocked() // closed: drops this file from the count
+		fs.cache.leave(fs.volID, st.held) // still on disk: counted until the volume is mounted again
+		st.held, st.leftover = 0, true
 		st.mu.Unlock()
 	}
 	fs.cancel()
