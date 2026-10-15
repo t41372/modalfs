@@ -295,7 +295,7 @@ On Linux, FUSE must be available (the `fuse3` package and `/dev/fuse`). `go inst
    modalfs unmount my-data
    ```
 
-modalfs remembers each mount, so `modalfs mount my-data` uses the same account, environment and folder next time.
+modalfs remembers each mount, so `modalfs mount my-data` uses the same account, environment and folder next time. Options you give it then, like `--ro`, change what it remembers.
 
 ### Reference
 
@@ -306,6 +306,7 @@ Everyday
   modalfs status                              mounts and what they're uploading
   modalfs mount VOLUME [MOUNTPOINT]           mount and remember it
         [--account A] [--env E] [--ro] [--auto] [--mode auto|nfs|fuse] [--keep-junk]
+        [--on-conflict keep-both|overwrite] [--write-back 3s]
   modalfs unmount VOLUME|PATH [--now]         upload what's pending, then unmount;
                                               --now unmounts at once and uploads the rest in the background
   modalfs sync VOLUME|PATH                    upload what's pending now
@@ -358,6 +359,8 @@ Background process
   modalfs quit [--now]                        upload everything, unmount, stop it;
                                               --now stops at once (what's pending uploads at the next mount)
   modalfs service install|uninstall           start at login (LaunchAgent / systemd user unit)
+  modalfs settings [NAME VALUE]               show the settings, or change one: cache-size, read-ahead,
+                                              mount-root, transport, download-size, download-stall
   modalfs cache clear                         delete the block cache (changes not uploaded yet are kept)
 
 Without the background process (scripts, debugging)

@@ -30,8 +30,9 @@ Everyday:
   modalfs ui [--print]                      open the modalfs window (starts the background daemon);
                                             --print shows the browser URL instead
   modalfs status                            mounts and their sync state
-  modalfs mount VOLUME [MOUNTPOINT]         mount (default ~/ModalVolumes/VOLUME); saved for next time
-        [--account A] [--env E] [--ro] [--auto] [--mode auto|nfs|fuse]
+  modalfs mount VOLUME [MOUNTPOINT]         mount (default ~/ModalVolumes/VOLUME); saved for next time,
+        [--account A] [--env E] [--ro] [--auto]   and what's given here changes a saved mount
+        [--mode auto|nfs|fuse] [--keep-junk] [--on-conflict keep-both|overwrite] [--write-back 3s]
   modalfs unmount VOLUME|PATH [--now]       commit pending writes, then unmount; --now unmounts
                                             at once and uploads the rest in the background
   modalfs sync VOLUME                       commit pending writes now
@@ -75,6 +76,9 @@ Background process:
   modalfs quit [--now]                      commit everything, unmount, stop the daemon; --now
                                             doesn't wait: the rest is uploaded at the next mount
   modalfs service install|uninstall         start at login (LaunchAgent / systemd user unit)
+  modalfs settings [NAME VALUE]             show the settings, or change one: cache-size,
+                                            read-ahead, mount-root, transport, download-size,
+                                            download-stall (modalfs settings help says more)
   modalfs cache clear                       delete the local block cache (changes not yet
                                             uploaded are kept)
 
@@ -135,6 +139,8 @@ func main() {
 		cmdAccount(args)
 	case "quit", "stop":
 		cmdQuit(args)
+	case "settings", "setting":
+		cmdSettings(args)
 	case "cache":
 		if len(args) != 1 || args[0] != "clear" {
 			fatal(errors.New("usage: modalfs cache clear"))
@@ -303,33 +309,84 @@ func cmdMount(args []string) {
 	auto := fl.Bool("auto", false, "mount automatically whenever modalfs starts")
 	mode := fl.String("mode", "auto", "auto | nfs | fuse")
 	noFilter := fl.Bool("keep-junk", false, "upload .DS_Store / ._* files too")
+	onConflict := fl.String("on-conflict", "keep-both", "keep-both | overwrite: when a file changed on Modal while you edited it")
+	writeBack := fl.Duration("write-back", 3*time.Second, "how long a file must stay unchanged before it's committed")
 	pos := parseFlags(fl, args)
 	if len(pos) < 1 || len(pos) > 2 {
 		fatal(errors.New("usage: modalfs mount VOLUME [MOUNTPOINT] [--account A]"))
 	}
-	c := client()
-	st := state(c)
-	a := pickAccount(st, *acct)
-	// existing saved mount?
-	for _, m := range st.Mounts {
-		if m.AccountID == a.ID && m.VolumeName == pos[0] && m.Environment == *env {
-			must(c.Do("POST", "/api/mounts/"+m.ID+"/start", nil, nil))
-			// read again: a folder named after the label is chosen as it mounts
-			for _, x := range state(c).Mounts {
-				if x.ID == m.ID {
-					m = x
-				}
-			}
-			fmt.Printf("mounted %s at %s\n", m.VolumeName, m.Mountpoint)
-			return
-		}
+	if *onConflict != "keep-both" && *onConflict != "overwrite" {
+		fatal(fmt.Errorf("--on-conflict is keep-both or overwrite, not %q", *onConflict))
+	}
+	if *writeBack < 100*time.Millisecond {
+		fatal(errors.New("--write-back is a duration of at least 100ms, like 3s"))
 	}
 	mp := ""
 	if len(pos) == 2 {
 		mp, _ = filepath.Abs(pos[1])
 	}
+	c := client()
+	st := state(c)
+	a := pickAccount(st, *acct)
+	// a saved mount: one pinned to any environment, unless --env says which
+	var saved []daemon.MountView
+	for _, m := range st.Mounts {
+		if m.AccountID == a.ID && m.VolumeName == pos[0] && (*env == "" || m.Environment == *env) {
+			saved = append(saved, m)
+		}
+	}
+	if len(saved) > 1 {
+		var envs []string
+		for _, m := range saved {
+			envs = append(envs, m.Environment)
+		}
+		fatal(fmt.Errorf("%s has saved mounts in several environments (%s); say which with --env", pos[0], strings.Join(envs, ", ")))
+	}
+	for _, m := range saved {
+		// what's given here changes the saved mount; the rest stays as saved
+		change := map[string]any{}
+		fl.Visit(func(f *flag.Flag) {
+			switch f.Name {
+			case "ro":
+				change["read_only"] = *ro
+			case "auto":
+				change["auto_mount"] = *auto
+			case "mode":
+				change["mode"] = *mode
+			case "keep-junk":
+				change["filter_junk"] = !*noFilter
+			case "on-conflict":
+				change["on_conflict"] = *onConflict
+			case "write-back":
+				change["write_back_ms"] = writeBack.Milliseconds()
+			}
+		})
+		if mp != "" {
+			change["mountpoint"] = mp
+		}
+		if len(change) > 0 {
+			must(c.Do("PATCH", "/api/mounts/"+m.ID, change, nil))
+		}
+		must(c.Do("POST", "/api/mounts/"+m.ID+"/start", nil, nil))
+		// read again: a folder named after the label is chosen as it mounts
+		for _, x := range state(c).Mounts {
+			if x.ID == m.ID {
+				m = x
+			}
+		}
+		fmt.Printf("mounted %s at %s\n", m.VolumeName, m.Mountpoint)
+		return
+	}
 	in := map[string]any{"account_id": a.ID, "environment": *env, "volume_name": pos[0], "mountpoint": mp,
 		"read_only": *ro, "auto_mount": *auto, "mode": *mode, "filter_junk": !*noFilter, "start": true, "wait": true}
+	fl.Visit(func(f *flag.Flag) { // left out, they follow the defaults
+		switch f.Name {
+		case "on-conflict":
+			in["on_conflict"] = *onConflict
+		case "write-back":
+			in["write_back_ms"] = writeBack.Milliseconds()
+		}
+	})
 	var out struct {
 		Mount config.Mount `json:"mount"`
 		Error string       `json:"error"`

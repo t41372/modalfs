@@ -295,7 +295,7 @@ Linux 上需要支持 FUSE（`fuse3` 软件包和 `/dev/fuse`）。`go install g
    modalfs unmount my-data
    ```
 
-modalfs 会记住每个挂载，所以下次 `modalfs mount my-data` 会沿用同一个账号、环境和文件夹。
+modalfs 会记住每个挂载，所以下次 `modalfs mount my-data` 会沿用同一个账号、环境和文件夹。那时给的选项（如 `--ro`）会改掉记住的设置。
 
 ### 命令参考
 
@@ -306,6 +306,7 @@ modalfs 会记住每个挂载，所以下次 `modalfs mount my-data` 会沿用�
   modalfs status                              各个挂载及其上传情况
   modalfs mount VOLUME [MOUNTPOINT]           挂载并记住它
         [--account A] [--env E] [--ro] [--auto] [--mode auto|nfs|fuse] [--keep-junk]
+        [--on-conflict keep-both|overwrite] [--write-back 3s]
   modalfs unmount VOLUME|PATH [--now]         上传待上传的内容，然后卸载；
                                               --now 立即卸载，剩下的在后台继续上传
   modalfs sync VOLUME|PATH                    立即上传待上传的内容
@@ -358,6 +359,8 @@ Volume
   modalfs quit [--now]                        上传所有内容、卸载、停止后台进程；
                                               --now 立即停止（待上传的内容在下次挂载时上传）
   modalfs service install|uninstall           登录时启动（LaunchAgent / systemd 用户单元）
+  modalfs settings [NAME VALUE]               显示设置，或改其中一项：cache-size、read-ahead、
+                                              mount-root、transport、download-size、download-stall
   modalfs cache clear                         删除块缓存（还没上传的修改会保留）
 
 不经过后台进程（脚本、调试）

@@ -922,3 +922,23 @@ func TestPauseAtHandoverPausesTheSuccessor(t *testing.T) {
 		t.Fatal("the pause left the successor running")
 	}
 }
+
+// A conflict policy modalfs doesn't have is refused, from any client.
+func TestUnknownConflictPolicyIsRefused(t *testing.T) {
+	x := newDLTest(t, false)
+	if code, body := x.do("POST", "/api/mounts", map[string]any{"account_id": "acct-1", "volume_name": "data", "on_conflict": "merge"}, nil); code == 200 || !strings.Contains(body, "unknown on_conflict") {
+		t.Fatalf("added a mount with an unknown conflict policy: %d %s", code, body)
+	}
+	if err := x.d.store.Update(func(f *config.File) error {
+		f.Mounts = append(f.Mounts, config.Mount{ID: "mnt-1", AccountID: "acct-1", VolumeName: "data", Mountpoint: t.TempDir()})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := x.do("PATCH", "/api/mounts/mnt-1", map[string]any{"on_conflict": "merge"}, nil); code == 200 {
+		t.Fatalf("set an unknown conflict policy: %s", body)
+	}
+	if m, _ := x.d.store.Mount("mnt-1"); m.OnConflict != "" {
+		t.Fatalf("the mount's policy is now %q", m.OnConflict)
+	}
+}
