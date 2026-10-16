@@ -56,9 +56,9 @@ func onWrite(ctx context.Context, w *response, userHandle Handler) error {
 		if os.IsNotExist(err) {
 			return &NFSStatusError{NFSStatusNoEnt, err}
 		}
-		return &NFSStatusError{NFSStatusAccess, err}
+		return &NFSStatusError{statusFromNameError(err, NFSStatusAccess), err}
 	}
-	if !info.Mode().IsRegular() {
+	if info.IsDir() {
 		return &NFSStatusError{NFSStatusInval, os.ErrInvalid}
 	}
 	preOpCache := ToFileAttribute(info, fullPath).AsCache()
@@ -66,11 +66,11 @@ func onWrite(ctx context.Context, w *response, userHandle Handler) error {
 	// now the actual op.
 	file, err := fs.OpenFile(fs.Join(path...), os.O_RDWR, info.Mode().Perm())
 	if err != nil {
-		return &NFSStatusError{NFSStatusAccess, err}
+		return &NFSStatusError{statusFromNameError(err, NFSStatusAccess), err}
 	}
 	if req.Offset > 0 {
 		if _, err := file.Seek(int64(req.Offset), io.SeekStart); err != nil {
-			return &NFSStatusError{NFSStatusIO, err}
+			return &NFSStatusError{statusFromNameError(err, NFSStatusIO), err}
 		}
 	}
 	end := req.Count
@@ -92,7 +92,7 @@ func onWrite(ctx context.Context, w *response, userHandle Handler) error {
 		if req.How == uint32(unstable) {
 			stability = unstable
 		} else if err := s.SyncPath(fullPath); err != nil {
-			return &NFSStatusError{NFSStatusIO, err}
+			return &NFSStatusError{statusFromNameError(err, NFSStatusIO), err}
 		}
 	}
 

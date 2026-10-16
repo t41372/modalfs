@@ -131,6 +131,7 @@ func setup(t *testing.T, opt modalfake.Options, args []string, before ...func(*m
 	flags := append([]string{"run", "-cache-dir", cache, "-cache-size", "2G"}, b.flags...)
 	e := &env{t: t, net: b.net, client: b.client, vol: b.vol, mnt: mnt, cache: cache,
 		argv: append([]string{bin}, append(append(flags, args...), b.vol.Name, mnt)...), cmdEnv: append(os.Environ(), b.env...)}
+	e.cmdEnv = append(e.cmdEnv, "MODALFS_HOME="+filepath.Join(root, "home"), "MODALFS_NO_KEYCHAIN=1")
 	e.launch()
 	return e
 }

@@ -85,7 +85,7 @@ func startLive(t *testing.T, profile string, opt modalfake.Options) backend {
 	}
 	t.Cleanup(func() { _ = client.Close() })
 	ctx := context.Background()
-	short := strings.ToLower(strings.TrimPrefix(t.Name(), "Test"))
+	short := strings.ToLower(strings.ReplaceAll(strings.TrimPrefix(t.Name(), "Test"), "/", "-"))
 	name := fmt.Sprintf("modalfs-e2e-%s-%d", short, time.Now().Unix())
 	vol, err := client.LookupVolume(ctx, name, true)
 	if err != nil {

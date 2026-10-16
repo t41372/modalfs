@@ -43,14 +43,14 @@ func onSymlink(ctx context.Context, w *response, userHandle Handler) error {
 		return &NFSStatusError{NFSStatusExist, os.ErrExist}
 	}
 	if s, err := fs.Stat(fs.Join(path...)); err != nil {
-		return &NFSStatusError{NFSStatusAccess, err}
+		return &NFSStatusError{statusFromNameError(err, NFSStatusAccess), err}
 	} else if !s.IsDir() {
 		return &NFSStatusError{NFSStatusNotDir, nil}
 	}
 
 	err = fs.Symlink(string(target), newFilePath)
 	if err != nil {
-		return &NFSStatusError{NFSStatusAccess, err}
+		return &NFSStatusError{statusFromNameError(err, NFSStatusAccess), err}
 	}
 
 	fp := userHandle.ToHandle(fs, append(path, string(obj.Filename)))

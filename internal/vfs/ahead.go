@@ -162,7 +162,7 @@ func (fs *FS) aheadJobs(max int) (jobs []aheadJob, unsettled bool) {
 	now := time.Now()
 	for _, st := range files {
 		st.mu.Lock()
-		if st.removed || st.deleted || st.snap != nil || !st.aheadManagedLocked() {
+		if st.removed || st.deleted || st.blocked != nil || st.snap != nil || !st.aheadManagedLocked() {
 			st.mu.Unlock()
 			continue
 		}

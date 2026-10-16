@@ -235,6 +235,9 @@ func statusFromWriteError(err error) NFSStatus {
 	if err == nil {
 		return NFSStatusOk
 	}
+	if errors.Is(err, syscall.ENOTSUP) {
+		return NFSStatusNotSupp
+	}
 	if errors.Is(err, syscall.ENOSPC) {
 		return NFSStatusNoSPC
 	}
@@ -249,6 +252,12 @@ func statusFromWriteError(err error) NFSStatus {
 
 // A backend may impose a smaller name limit than the NFS protocol.
 func statusFromNameError(err error, fallback NFSStatus) NFSStatus {
+	if errors.Is(err, syscall.ENOTSUP) {
+		return NFSStatusNotSupp
+	}
+	if errors.Is(err, syscall.ENOTEMPTY) {
+		return NFSStatusNotEmpty
+	}
 	if errors.Is(err, syscall.ENAMETOOLONG) {
 		return NFSStatusNameTooLong
 	}
