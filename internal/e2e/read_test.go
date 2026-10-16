@@ -1,4 +1,4 @@
-//go:build e2e && darwin
+//go:build e2e
 
 package e2e
 
@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -171,9 +170,8 @@ func TestStreamingReadThroughput(t *testing.T) {
 		}
 		defer f.Close()
 		if nocache {
-			// bypass the NFS client's own cache, so every read reaches modalfs
-			if _, _, errno := syscall.Syscall(syscall.SYS_FCNTL, f.Fd(), syscall.F_NOCACHE, 1); errno != 0 {
-				t.Fatal(errno)
+			if err := uncached(f); err != nil {
+				t.Fatal(err)
 			}
 		}
 		t0 := time.Now()

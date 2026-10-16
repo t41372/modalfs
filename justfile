@@ -65,7 +65,7 @@ lint: web-deps
 test:
     go test -race {{pkgs}}
 
-# end-to-end tests: real NFS mounts (macOS) against a fake Modal with a slow network; no account needed
+# end-to-end tests: real mounts (NFS on macOS, FUSE on Linux) against a fake Modal with a slow network; no account needed
 test-e2e:
     go test -tags e2e -count=1 -timeout 40m ./internal/e2e
 

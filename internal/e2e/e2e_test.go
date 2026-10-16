@@ -1,16 +1,16 @@
-//go:build e2e && darwin
+//go:build e2e
 
-// End-to-end tests: a real macOS NFS mount of modalfs, backed by the fake
-// Modal in internal/modalfake with a slow network, or by real Modal (see
-// backend_test.go). They check what a user would see: the mount stays
-// responsive while large files upload, and what lands on "Modal" is exactly
-// what was written.
+// End-to-end tests: a real mount of modalfs (NFS on macOS, FUSE on Linux),
+// backed by the fake Modal in internal/modalfake with a slow network, or by
+// real Modal (see backend_test.go). They check what a user would see: the
+// mount stays responsive while large files upload, and what lands on
+// "Modal" is exactly what was written.
 //
 //	go test -tags e2e ./internal/e2e    (or: just test-e2e)
 //
 // modalfs runs as its own process (`modalfs run`, built with the race
-// detector), as it does for users: a process must never do file I/O on an
-// NFS mount that it serves itself, or the kernel and the Go runtime can wait
+// detector), as it does for users: a process must never do file I/O on a
+// mount that it serves itself, or the kernel and the Go runtime can wait
 // on each other forever. The fake (and the proxy, on live runs) still serve
 // the mount from this process, so syncs here use fsync.File, never
 // os.File.Sync (see internal/fsync). The tests check results through Modal's
@@ -158,7 +158,7 @@ func (e *env) launch() {
 		select {
 		case <-done:
 		case <-time.After(3 * time.Minute):
-			_ = exec.Command("/sbin/umount", "-f", mnt).Run()
+			_ = forceUnmount(mnt)
 			_ = cmd.Process.Kill()
 			<-done
 			t.Error("modalfs run didn't exit within 3 minutes of SIGINT")
@@ -206,7 +206,7 @@ func watchForStall(t *testing.T, cmd *exec.Cmd, logs *syncBuffer, mnt string) {
 		if err := os.WriteFile(dump, []byte(logs.String()), 0o644); err != nil {
 			dump = err.Error()
 		}
-		_ = exec.Command("/sbin/umount", "-f", mnt).Run()
+		_ = forceUnmount(mnt)
 		fmt.Fprintf(os.Stderr, "%s: still running after %v; modalfs's goroutines are in %s\n", t.Name(), after, dump)
 	})
 	t.Cleanup(func() { timer.Stop() })
@@ -221,15 +221,10 @@ func (e *env) crash() {
 	}
 	time.Sleep(500 * time.Millisecond)
 	if mounted(e.mnt) {
-		if err := exec.Command("/sbin/umount", "-f", e.mnt).Run(); err != nil {
+		if err := forceUnmount(e.mnt); err != nil {
 			e.t.Fatal(err)
 		}
 	}
-}
-
-func mounted(mnt string) bool {
-	out, _ := exec.Command("/sbin/mount").Output()
-	return bytes.Contains(out, []byte(" "+mnt+" ")) || bytes.Contains(out, []byte("/private"+mnt+" "))
 }
 
 type syncBuffer struct {

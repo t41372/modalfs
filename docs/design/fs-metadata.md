@@ -49,7 +49,7 @@ None of this adds API calls when operations succeed. Types come from the listing
 
 - A rename is a copy and then a removal. If a container's newer write hasn't reached the API yet, the copy can take the previous version; in experiments the copy was the last published version, never damaged data.
 - Deleting a file with waiting changes, when Modal then refuses the deletion, drops the changes, as before.
-- Linux FUSE was checked by hand on a real mount (against the fake and real Modal). No CI job mounts FUSE yet.
+- On Linux, CI runs these tests on a real FUSE mount against the fake Modal. Against real Modal, Linux FUSE was checked by hand.
 
 ## What would close the gaps
 
