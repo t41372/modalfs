@@ -369,8 +369,29 @@ func (c *Client) LookupVolume(ctx context.Context, name string, create bool) (Vo
 type Entry struct {
 	Path  string // volume-relative, no leading slash
 	IsDir bool
+	Type  pb.FileEntry_FileType
 	Size  int64
 	Mtime int64 // unix seconds
+}
+
+// Mode reports the entry's type with synthetic permissions. The public API
+// does not expose permissions, even for regular files.
+func (e Entry) Mode() os.FileMode {
+	if e.IsDir {
+		return os.ModeDir | 0o755
+	}
+	switch e.Type {
+	case pb.FileEntry_FILE:
+		return 0o644
+	case pb.FileEntry_SYMLINK:
+		return os.ModeSymlink | 0o777
+	case pb.FileEntry_FIFO:
+		return os.ModeNamedPipe | 0o644
+	case pb.FileEntry_SOCKET:
+		return os.ModeSocket | 0o755
+	default:
+		return os.ModeIrregular
+	}
 }
 
 func (c *Client) List(ctx context.Context, volID, dir string, recursive bool) ([]Entry, error) {
@@ -396,6 +417,7 @@ func (c *Client) List(ctx context.Context, volID, dir string, recursive bool) ([
 				out = append(out, Entry{
 					Path:  strings.Trim(e.GetPath(), "/"),
 					IsDir: e.GetType() == pb.FileEntry_DIRECTORY,
+					Type:  e.GetType(),
 					Size:  int64(e.GetSize()),
 					Mtime: int64(e.GetMtime()),
 				})
@@ -430,6 +452,7 @@ func (c *Client) Walk(ctx context.Context, volID, dir string, fn func([]Entry)) 
 			batch = append(batch, Entry{
 				Path:  strings.Trim(e.GetPath(), "/"),
 				IsDir: e.GetType() == pb.FileEntry_DIRECTORY,
+				Type:  e.GetType(),
 				Size:  int64(e.GetSize()),
 				Mtime: int64(e.GetMtime()),
 			})

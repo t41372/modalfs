@@ -35,9 +35,9 @@ func onRemove(ctx context.Context, w *response, userHandle Handler) error {
 			return &NFSStatusError{NFSStatusNoEnt, err}
 		}
 		if os.IsPermission(err) {
-			return &NFSStatusError{NFSStatusAccess, err}
+			return &NFSStatusError{statusFromNameError(err, NFSStatusAccess), err}
 		}
-		return &NFSStatusError{NFSStatusIO, err}
+		return &NFSStatusError{statusFromNameError(err, NFSStatusIO), err}
 	}
 	if !dirInfo.IsDir() {
 		return &NFSStatusError{NFSStatusNotDir, nil}
@@ -53,9 +53,9 @@ func onRemove(ctx context.Context, w *response, userHandle Handler) error {
 			return &NFSStatusError{NFSStatusNoEnt, err}
 		}
 		if os.IsPermission(err) {
-			return &NFSStatusError{NFSStatusAccess, err}
+			return &NFSStatusError{statusFromNameError(err, NFSStatusAccess), err}
 		}
-		return &NFSStatusError{NFSStatusIO, err}
+		return &NFSStatusError{statusFromNameError(err, NFSStatusIO), err}
 	}
 
 	if err := userHandle.InvalidateHandle(fs, toDeleteHandle); err != nil {

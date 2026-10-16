@@ -105,11 +105,12 @@ type FS struct {
 	ctr   counters
 	reads readTracker // sequential reads, for read-ahead (own lock)
 
-	sf     singleflight.Group
-	ctx    context.Context
-	cancel context.CancelFunc
-	closed atomic.Bool // no more commit timers
-	nextID int64
+	sf            singleflight.Group
+	ctx           context.Context
+	cancel        context.CancelFunc
+	closed        atomic.Bool // no more commit timers
+	readlinkNoted atomic.Bool // Activity said once that links can't be read
+	nextID        int64
 
 	waiting atomic.Int32 // writes waiting for room (see waitRoom)
 
@@ -321,13 +322,7 @@ func (fs *FS) remoteStat(p string, fresh bool) (modalapi.Entry, error) {
 }
 
 func entryAttr(e modalapi.Entry) Attr {
-	a := Attr{Name: path.Base(e.Path), IsDir: e.IsDir, Size: e.Size, Mtime: time.Unix(e.Mtime, 0)}
-	if e.IsDir {
-		a.Mode = os.ModeDir | 0o755
-	} else {
-		a.Mode = 0o644
-	}
-	return a
+	return Attr{Name: path.Base(e.Path), IsDir: e.IsDir, Size: e.Size, Mtime: time.Unix(e.Mtime, 0), Mode: e.Mode()}
 }
 
 func (fs *FS) Stat(p string) (Attr, error) {
@@ -351,7 +346,7 @@ func (fs *FS) Stat(p string) (Attr, error) {
 	if err != nil {
 		return Attr{}, err
 	}
-	if fs.c.Cipher != nil && !e.IsDir && e.Size == 0 {
+	if fs.c.Cipher != nil && e.Mode().IsRegular() && e.Size == 0 {
 		if _, _, err := fs.remoteBlock(p, 0, e.Mtime, 0, true); err != nil {
 			return Attr{}, err
 		}
@@ -583,6 +578,10 @@ func (fs *FS) ReadAt(p string, buf []byte, off int64) (int, error) {
 	if e.IsDir {
 		return 0, syscall.EISDIR
 	}
+	if why := specialEntry(e); why != nil {
+		fs.unsupported(p, "read", why)
+		return 0, why
+	}
 	return fs.readRemote(p, e.Size, e.Mtime, buf, off)
 }
 
@@ -745,6 +744,9 @@ func (fs *FS) getState(p string, create bool) (*fileState, error) {
 		return nil, err
 	} else if e.IsDir {
 		return nil, syscall.EISDIR
+	} else if why := specialEntry(e); why != nil {
+		fs.unsupported(p, "change", why) // before anything is kept that couldn't be committed
+		return nil, why
 	}
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
@@ -977,6 +979,9 @@ func (fs *FS) Remove(p string) error {
 			err = fs.c.Remove(fs.ctx, p, false)
 			if modalapi.IsNotFound(err) {
 				err = nil
+			} else if err != nil {
+				err = fs.explain(p, err)
+				fs.unsupported(p, "delete", err)
 			}
 		}
 		fs.mdb.Delete(p)
@@ -987,9 +992,32 @@ func (fs *FS) Remove(p string) error {
 	return err
 }
 
+// dropEmptyCopy takes away the folder a move made before Modal refused to
+// copy into it, if nothing but its keep file is there.
+func (fs *FS) dropEmptyCopy(dir string) {
+	m, err := fs.listDir(dir, true)
+	if err == nil {
+		for name := range m {
+			if name != KeepName {
+				fs.log.Warn("a refused move left a folder with files in it", "path", dir, "file", name)
+				return
+			}
+		}
+		err = fs.c.Remove(fs.ctx, dir, true)
+	}
+	if err != nil {
+		fs.log.Warn("couldn't remove the folder a refused move made", "path", dir, "err", err)
+	}
+	fs.invalidate(parentOf(dir))
+	fs.invalidateTree(dir)
+}
+
 func (fs *FS) Rename(oldp, newp string) (err error) {
 	oldp, newp = clean(oldp), clean(newp)
-	defer func() { fs.refused(oldp, "moved", err) }()
+	defer func() {
+		fs.refused(oldp, "moved", err)
+		fs.unsupported(oldp, "move", err)
+	}()
 	if err := fs.checkPath(newp); err != nil {
 		return err
 	}
@@ -1056,7 +1084,10 @@ func (fs *FS) Rename(oldp, newp string) (err error) {
 		// VolumeCopyFiles2 is a manifest-level copy (O(#blocks), no data
 		// transfer) and atomically replaces an existing destination file.
 		if err := fs.c.Copy(fs.ctx, []string{oldp}, newp, false); err != nil {
-			return err
+			if why := fs.explain(oldp, err); why != err {
+				return why
+			}
+			return fs.explain(newp, err)
 		}
 		if old != nil {
 			fs.mu.Lock()
@@ -1093,6 +1124,10 @@ func (fs *FS) Rename(oldp, newp string) (err error) {
 		}
 		if len(srcs) > 0 {
 			if err := fs.c.Copy(fs.ctx, srcs, newp, true); err != nil {
+				var why *unsupportedEntry
+				if err = fs.explainTree(oldp, err); errors.As(err, &why) {
+					fs.dropEmptyCopy(newp)
+				}
 				return err
 			}
 		}

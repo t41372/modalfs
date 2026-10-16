@@ -71,6 +71,7 @@ type fileState struct {
 	backoff    time.Duration // retry delay after a failed commit
 	removed    bool          // detached from fs.files (flushed or discarded)
 	deleted    bool
+	blocked    error // the path is one Modal won't take (blockCommit)
 	recovered  bool
 	dirtySince time.Time // when the oldest uncommitted change was made
 
@@ -663,7 +664,7 @@ func (st *fileState) schedule(d time.Duration) {
 }
 
 func (st *fileState) scheduleLocked(d time.Duration) {
-	if st.fs.closed.Load() {
+	if st.fs.closed.Load() || st.blocked != nil {
 		return
 	}
 	if st.timer != nil {
@@ -695,8 +696,12 @@ func (st *fileState) scheduleLocked(d time.Duration) {
 			return
 		}
 		if err := commit(); err != nil {
-			// back off: 10 s, doubling up to 5 min
 			st.mu.Lock()
+			if st.blocked != nil {
+				st.mu.Unlock()
+				return // reported, and kept until a remount
+			}
+			// back off: 10 s, doubling up to 5 min
 			st.backoff = min(max(2*st.backoff, 10*time.Second), 5*time.Minute)
 			retry := st.backoff
 			st.mu.Unlock()
@@ -776,6 +781,11 @@ func (st *fileState) commit(part bool) error {
 		st.mu.Unlock()
 		return nil
 	}
+	if st.blocked != nil {
+		err := st.blocked
+		st.mu.Unlock()
+		return err
+	}
 	sn := &snapshot{gen: st.gen, size: st.size, baseExists: st.baseExists, baseSize: st.baseSize,
 		baseMtime: st.baseMtime, truncFloor: st.truncFloor, dirty: map[int64]bool{}, saved: map[int64]bool{}, floor: st.size}
 	if part {
@@ -828,6 +838,9 @@ func (st *fileState) commit(part bool) error {
 		return fmt.Errorf("check for remote changes: %w", err)
 	}
 	if err == nil {
+		if why := specialEntry(cur); why != nil {
+			return st.blockCommit(why) // a container made it a symlink, say
+		}
 		changed := !sn.baseExists || cur.Size != sn.baseSize || cur.Mtime != sn.baseMtime
 		if changed && fs.opt.OnConflict != "overwrite" {
 			target = st.copyTarget(path)
@@ -878,6 +891,9 @@ func (st *fileState) commit(part bool) error {
 		if err != nil {
 			return fmt.Errorf("check for remote changes: %w", err)
 		}
+		if why := specialEntry(now); why != nil {
+			return st.blockCommit(why)
+		}
 		if !sn.baseExists || now.Size != sn.baseSize || now.Mtime != sn.baseMtime {
 			return errLateConflict
 		}
@@ -916,6 +932,10 @@ func (st *fileState) commit(part bool) error {
 	if err != nil {
 		if st.isDeleted() {
 			return nil // deleted while it uploaded: nothing left to commit
+		}
+		var why *unsupportedEntry
+		if err = fs.explain(target, err); errors.As(err, &why) {
+			return st.blockCommit(why)
 		}
 		return err
 	}

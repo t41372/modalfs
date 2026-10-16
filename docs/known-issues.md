@@ -26,6 +26,10 @@ When changes fill the cache size, writes wait for uploads. modalfs paces them on
 
 On GitHub's macOS runners (7.5 GB of memory), the macOS NFS client lets only about 100 MB of a copy's writes through every 30 s, and in between holds the app's writes, and any stat of the file being copied, without sending modalfs anything: a 400 MB copy took about 2 minutes, in 30 s steps. On a Mac with 64 GB the same copy goes into the client's cache in under a second and never pauses. modalfs answers every request at once throughout, and answering writes as stable at once (so the client could drop them sooner) changed nothing, so the limit looks like the client's own, sized by memory. **Fix:** none in modalfs yet, since the pauses happen before any request reaches it. A volume's Connection set to FUSE (with macFUSE) doesn't go through the NFS client and should avoid it, but that's untested. `TestLargeCopyStaysResponsive` in `internal/e2e` shows it on the runner.
 
+### Streaming reads are slower over FUSE on Linux
+
+Reading a large file that isn't cached runs at about 70% of the link's speed over FUSE on Linux (27-29 MiB/s over a 40 MiB/s link in `TestStreamingReadThroughput`, with or without the race detector), against 84-89% over the macOS NFS client. The test asks for 70% on a developer's machine and 50% on CI, so on a Linux machine it fails. Read-ahead starts after three blocks read in a row; the macOS client reads 16 MiB ahead by itself and Linux only 1 MiB, which may be the difference, but that isn't confirmed. **Fix:** find when the link sits idle (block downloads against FUSE reads, over time), and if it's the slow start, start read-ahead sooner. `internal/vfs/vfs.go`, `internal/fusefront/fuse.go`.
+
 ### Read-ahead isn't cancelled when a reader stops
 
 Read-ahead is bounded (it starts after three blocks read in a row and shares a limited number of slots), but a block already being prefetched finishes downloading even if the reader has gone. **Fix:** a context per reader, cancelled when it's been idle for a few seconds. `internal/vfs/vfs.go`.
@@ -61,10 +65,6 @@ A failed auto-mount retries with backoff for 30 minutes. A Mac that wakes on a n
 ### Logging out can wait up to 30 minutes on Linux
 
 The systemd unit gives the daemon 30 minutes to finish uploading when it's stopped, so a logout with a large upload pending waits for it. Anything cut short stays journaled and is uploaded at the next mount, so a shorter limit would be safe too; it's a trade-off between a slow logout and an upload that finishes later. `internal/daemon/service.go`.
-
-### The end-to-end tests run only on macOS
-
-`internal/e2e` mounts over NFS with the macOS client. The Linux FUSE frontend is covered by unit tests and by building in CI, not by mounting. **Fix:** a FUSE variant of the suite for Linux CI (it needs `/dev/fuse` in the runner).
 
 ### go-nfs is vendored with changes
 

@@ -86,6 +86,8 @@ type file struct {
 	mtime  uint64
 	hashes [][]byte
 	mode   uint32
+	kind   pb.FileEntry_FileType
+	target string
 }
 
 // Start runs a fake on loopback ports, storing blocks in dir.
@@ -284,7 +286,7 @@ func entry(p string, f *file) *pb.FileEntry {
 	if f == nil {
 		return pb.FileEntry_builder{Path: p, Type: pb.FileEntry_DIRECTORY}.Build()
 	}
-	return pb.FileEntry_builder{Path: p, Type: pb.FileEntry_FILE, Size: f.size, Mtime: f.mtime}.Build()
+	return pb.FileEntry_builder{Path: p, Type: f.kind, Size: f.size, Mtime: f.mtime}.Build()
 }
 
 func (s *Server) VolumeListFiles2(r *pb.VolumeListFiles2Request, stream grpc.ServerStreamingServer[pb.VolumeListFiles2Response]) error {
@@ -298,6 +300,10 @@ func (s *Server) VolumeListFiles2(r *pb.VolumeListFiles2Request, stream grpc.Ser
 		return err
 	}
 	p := clean(r.GetPath())
+	if err := v.checkPath(p); err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	var out []*pb.FileEntry
 	if f := v.files[p]; f != nil {
 		out = append(out, entry(p, f)) // listing a file returns the file itself
@@ -350,9 +356,15 @@ func (s *Server) VolumeGetFile2(_ context.Context, r *pb.VolumeGetFile2Request) 
 		return nil, err
 	}
 	p := clean(r.GetPath())
+	if err := v.checkPath(p); err != nil {
+		return nil, err
+	}
 	f := v.files[p]
 	if f == nil {
 		return nil, status.Errorf(codes.NotFound, "No such file: %s", r.GetPath())
+	}
+	if f.kind != pb.FileEntry_FILE {
+		return nil, status.Errorf(codes.InvalidArgument, "operation not supported for file %q of type %s", p, f.kind)
 	}
 	start, n := r.GetStart(), r.GetLen()
 	end := f.size
@@ -387,6 +399,9 @@ func (s *Server) VolumePutFiles2(_ context.Context, r *pb.VolumePutFiles2Request
 	var missing []*pb.VolumePutFiles2Response_MissingBlock
 	var vouched []string
 	for fi, f := range r.GetFiles() {
+		if err := v.checkPath(clean(f.GetPath())); err != nil {
+			return nil, err
+		}
 		for _, component := range strings.Split(clean(f.GetPath()), "/") {
 			if len(component) > 255 {
 				return nil, status.Error(codes.InvalidArgument, "path component exceeds 255 bytes")
@@ -426,7 +441,7 @@ func (s *Server) VolumePutFiles2(_ context.Context, r *pb.VolumePutFiles2Request
 		for _, b := range f.GetBlocks() {
 			hashes = append(hashes, b.GetContentsSha256())
 		}
-		v.files[p] = &file{size: f.GetSize(), mtime: now, hashes: hashes, mode: f.GetMode()}
+		v.files[p] = &file{size: f.GetSize(), mtime: now, hashes: hashes, mode: 0666, kind: pb.FileEntry_FILE}
 	}
 	return pb.VolumePutFiles2Response_builder{}.Build(), nil
 }
@@ -439,6 +454,20 @@ func (s *Server) VolumeCopyFiles2(_ context.Context, r *pb.VolumeCopyFiles2Reque
 		return nil, err
 	}
 	dst := clean(r.GetDstPath())
+	if err := v.checkPath(dst); err != nil {
+		return nil, err
+	}
+	for _, sp := range r.GetSrcPaths() {
+		src := clean(sp)
+		if err := v.checkPath(src); err != nil {
+			return nil, err
+		}
+		for fp, f := range v.files {
+			if strings.HasPrefix(fp, src+"/") && f.kind == pb.FileEntry_SYMLINK {
+				return nil, status.Error(codes.Internal, "recursive copy contains an unsupported entry")
+			}
+		}
+	}
 	// Like `cp`: into dst when it's a directory or there are several sources, else to dst.
 	into := len(r.GetSrcPaths()) > 1 || v.isDir(dst) || strings.HasSuffix(r.GetDstPath(), "/")
 	now := uint64(time.Now().Unix())
@@ -479,6 +508,9 @@ func (s *Server) VolumeRemoveFile2(_ context.Context, r *pb.VolumeRemoveFile2Req
 		return nil, err
 	}
 	p := clean(r.GetPath())
+	if err := v.checkPath(p); err != nil {
+		return nil, err
+	}
 	if v.files[p] != nil {
 		delete(v.files, p)
 		return &emptypb.Empty{}, nil

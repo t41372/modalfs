@@ -1,4 +1,4 @@
-//go:build e2e && darwin
+//go:build e2e
 
 package e2e
 
@@ -404,7 +404,7 @@ func TestEncryptedVolume(t *testing.T) {
 	_ = b.cmd.Wait()
 	b.cmd = nil
 	if mounted(b.mnt) {
-		if err := exec.Command("/sbin/umount", "-f", b.mnt).Run(); err != nil {
+		if err := forceUnmount(b.mnt); err != nil {
 			t.Fatal(err)
 		}
 	}

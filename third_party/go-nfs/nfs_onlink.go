@@ -4,91 +4,57 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"syscall"
 
 	"github.com/go-git/go-billy/v5"
 	"github.com/willscott/go-nfs-client/nfs/xdr"
 )
 
-// Backing billy.FS doesn't support hard links
+// LINK3args is a source file handle followed by the destination diropargs3
+// (RFC 1813 section 3.3.15). It has neither sattr3 nor a symlink target.
 func onLink(ctx context.Context, w *response, userHandle Handler) error {
-	w.errorFmt = wccDataErrorFormatter
-	obj := DirOpArg{}
-	err := xdr.Read(w.req.Body, &obj)
+	w.errorFmt = errFormatterWithBody(make([]byte, 12)) // file attrs + directory WCC
+	source, err := xdr.ReadOpaque(w.req.Body)
 	if err != nil {
 		return &NFSStatusError{NFSStatusInval, err}
 	}
-	attrs, err := ReadSetFileAttributes(w.req.Body)
-	if err != nil {
+	var to DirOpArg
+	if err := xdr.Read(w.req.Body, &to); err != nil {
 		return &NFSStatusError{NFSStatusInval, err}
 	}
-
-	target, err := xdr.ReadOpaque(w.req.Body)
-	if err != nil {
-		return &NFSStatusError{NFSStatusInval, err}
-	}
-
-	fs, path, err := userHandle.FromHandle(obj.Handle)
+	fs, sourcePath, err := userHandle.FromHandle(source)
 	if err != nil {
 		return &NFSStatusError{NFSStatusStale, err}
+	}
+	destFS, destPath, err := userHandle.FromHandle(to.Handle)
+	if err != nil {
+		return &NFSStatusError{NFSStatusStale, err}
+	}
+	if fs != destFS {
+		return &NFSStatusError{NFSStatusXDev, nil}
 	}
 	if !billy.CapabilityCheck(fs, billy.WriteCapability) {
 		return &NFSStatusError{NFSStatusROFS, os.ErrPermission}
 	}
-
-	if len(string(obj.Filename)) > PathNameMax {
+	if len(to.Filename) > PathNameMax {
 		return &NFSStatusError{NFSStatusNameTooLong, os.ErrInvalid}
 	}
-
-	newFilePath := fs.Join(append(path, string(obj.Filename))...)
-	if _, err := fs.Stat(newFilePath); err == nil {
-		return &NFSStatusError{NFSStatusExist, os.ErrExist}
-	}
-	if s, err := fs.Stat(fs.Join(path...)); err != nil {
-		return &NFSStatusError{NFSStatusAccess, err}
-	} else if !s.IsDir() {
-		return &NFSStatusError{NFSStatusNotDir, nil}
-	}
-
-	fp := userHandle.ToHandle(fs, append(path, string(obj.Filename)))
-	changer := userHandle.Change(fs)
-	if changer == nil {
-		return &NFSStatusError{NFSStatusAccess, err}
-	}
-	cos, ok := changer.(UnixChange)
+	linker, ok := fs.(interface{ Link(string, string) error })
 	if !ok {
-		return &NFSStatusError{NFSStatusAccess, err}
+		return &NFSStatusError{NFSStatusNotSupp, syscall.ENOTSUP}
 	}
-
-	err = cos.Link(string(target), newFilePath)
-	if err != nil {
-		return &NFSStatusError{NFSStatusAccess, err}
+	if err := linker.Link(fs.Join(sourcePath...), fs.Join(append(destPath, string(to.Filename))...)); err != nil {
+		return &NFSStatusError{statusFromNameError(err, NFSStatusIO), err}
 	}
-	if err := attrs.Apply(changer, fs, newFilePath); err != nil {
-		return &NFSStatusError{NFSStatusIO, err}
-	}
-
-	writer := bytes.NewBuffer([]byte{})
+	writer := bytes.NewBuffer(nil)
 	if err := xdr.Write(writer, uint32(NFSStatusOk)); err != nil {
-		return &NFSStatusError{NFSStatusServerFault, err}
+		return err
 	}
-
-	// "handle follows"
-	if err := xdr.Write(writer, uint32(1)); err != nil {
-		return &NFSStatusError{NFSStatusServerFault, err}
+	if err := WritePostOpAttrs(writer, tryStat(fs, sourcePath)); err != nil {
+		return err
 	}
-	if err := xdr.Write(writer, fp); err != nil {
-		return &NFSStatusError{NFSStatusServerFault, err}
+	if err := WriteWcc(writer, nil, tryStat(fs, destPath)); err != nil {
+		return err
 	}
-	if err := WritePostOpAttrs(writer, tryStat(fs, append(path, string(obj.Filename)))); err != nil {
-		return &NFSStatusError{NFSStatusServerFault, err}
-	}
-
-	if err := WriteWcc(writer, nil, tryStat(fs, path)); err != nil {
-		return &NFSStatusError{NFSStatusServerFault, err}
-	}
-
-	if err := w.Write(writer.Bytes()); err != nil {
-		return &NFSStatusError{NFSStatusServerFault, err}
-	}
-	return nil
+	return w.Write(writer.Bytes())
 }

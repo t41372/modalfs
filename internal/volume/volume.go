@@ -8,11 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path"
 	"strings"
 
 	"github.com/t41372/modalfs/internal/encryption"
 	"github.com/t41372/modalfs/internal/modalapi"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // MetaDir is the root folder modalfs keeps its own files in; its name stays
@@ -80,7 +83,7 @@ func (v *Volume) decode(e modalapi.Entry) (modalapi.Entry, error) {
 	}
 	var err error
 	e.Path, err = v.Cipher.DecodePath(e.Path)
-	if err == nil && !e.IsDir {
+	if err == nil && e.Mode().IsRegular() {
 		if path.Base(e.Path) == ".modalfs_keep" {
 			e.Size = 0
 		} else {
@@ -311,6 +314,11 @@ func (v *Volume) Copy(ctx context.Context, sources []string, dest string, recurs
 		for _, e := range entries {
 			if e.IsDir {
 				continue
+			}
+			// Copied one by one, so refuse before the first, as Modal does for
+			// a folder it copies whole.
+			if e.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+				return status.Errorf(codes.FailedPrecondition, "%s can't be copied: it's a symbolic link or an unknown entry", e.Path)
 			}
 			target := dest
 			if recursive {

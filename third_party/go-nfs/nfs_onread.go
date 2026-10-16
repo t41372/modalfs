@@ -42,7 +42,7 @@ func onRead(ctx context.Context, w *response, userHandle Handler) error {
 		if os.IsNotExist(err) {
 			return &NFSStatusError{NFSStatusNoEnt, err}
 		}
-		return &NFSStatusError{NFSStatusAccess, err}
+		return &NFSStatusError{statusFromNameError(err, NFSStatusAccess), err}
 	}
 	defer fh.Close()
 
@@ -52,7 +52,7 @@ func onRead(ctx context.Context, w *response, userHandle Handler) error {
 	fullPath := fs.Join(path...)
 	info, err := fs.Stat(fullPath)
 	if err != nil {
-		return &NFSStatusError{NFSStatusAccess, err}
+		return &NFSStatusError{statusFromNameError(err, NFSStatusAccess), err}
 	}
 	if int64(obj.Offset) >= info.Size() {
 		obj.Count = 0
@@ -68,7 +68,7 @@ func onRead(ctx context.Context, w *response, userHandle Handler) error {
 	// todo: multiple reads if size isn't full
 	cnt, err := fh.ReadAt(resp.Data, int64(obj.Offset))
 	if err != nil && !errors.Is(err, io.EOF) {
-		return &NFSStatusError{NFSStatusIO, err}
+		return &NFSStatusError{statusFromNameError(err, NFSStatusIO), err}
 	}
 	resp.Count = uint32(cnt)
 	resp.Data = resp.Data[:resp.Count]

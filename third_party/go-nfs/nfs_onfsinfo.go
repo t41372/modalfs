@@ -68,6 +68,15 @@ func onFSInfo(ctx context.Context, w *response, userHandle Handler) error {
 		res.Properties |= FSInfoPropertyLink
 		res.Properties |= FSInfoPropertySymlink
 	}
+	if links, ok := fs.(interface{ LinkSupport() (bool, bool) }); ok {
+		hard, symbolic := links.LinkSupport()
+		if !hard {
+			res.Properties &^= FSInfoPropertyLink
+		}
+		if !symbolic {
+			res.Properties &^= FSInfoPropertySymlink
+		}
+	}
 	// TODO: if the nfs share spans multiple virtual mounts, may need
 	// to support granular PATHINFO responses.
 	res.Properties |= FSInfoPropertyHomogeneous
