@@ -1331,11 +1331,13 @@ func (st *fileState) sync() (err error) {
 // background, once a file is first edited. A commit needs the hash of every
 // block it doesn't change, and Modal never reveals them, so they're streamed
 // and hashed here (the same work the commit would otherwise do) while the
-// version the edit is based on is surely still there.
+// version the edit is based on is surely still there. A sidecar manifest in
+// the volume, when there is one, saves streaming them.
 func (st *fileState) prehashBase(size, mtime int64) {
 	fs := st.fs
 	n := int64(st.fs.numBlocks(size))
 	m := fs.mdb.Get(st.path, size, mtime)
+	triedSidecar := fs.opt.SidecarMin <= 0 || size < fs.opt.SidecarMin
 	sem := make(chan struct{}, 4)
 	var wg sync.WaitGroup
 	for i := int64(0); i < n; i++ {
@@ -1347,6 +1349,16 @@ func (st *fileState) prehashBase(size, mtime int64) {
 		st.mu.Unlock()
 		if skip || fs.closed.Load() {
 			break
+		}
+		if !triedSidecar {
+			// Only once a block is surely needed.
+			triedSidecar = true
+			if sc := fs.loadSidecar(st.path, size, mtime); sc != nil {
+				m = sc
+				if int(i) < len(m.Hashes) && m.Hashes[i] != nil {
+					continue
+				}
+			}
 		}
 		wg.Add(1)
 		sem <- struct{}{}

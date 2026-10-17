@@ -718,6 +718,72 @@ func TestUploadsWhileWriting(t *testing.T) {
 	}
 }
 
+// A client that has never read a large file edits one block of it. The
+// unchanged blocks' hashes come from the file's sidecar, so the rest of the
+// file isn't downloaded to hash it, and Modal ends up with exactly the old
+// file with that block changed.
+func TestEditWithSidecar(t *testing.T) {
+	data := randomBytes(t, 72*MiB) // 9 blocks, over -sidecar-min
+	var mtime int64
+	e := setup(t, modalfake.Options{}, []string{"-write-back", "2s"}, func(c *modalapi.Client, volID string) {
+		putRemote(t, c, volID, "big.bin", data)
+		mtime = remoteMtime(t, c, volID, "big.bin")
+		sc := map[string]any{"v": 1, "path": "big.bin", "size": len(data), "mtime": mtime, "block_size": modalapi.BlockSize, "sha256": []string{}}
+		for _, h := range modalapi.HashBlocks(data) {
+			sc["sha256"] = append(sc["sha256"].([]string), hex.EncodeToString(h))
+		}
+		raw, _ := json.Marshal(sc)
+		putRemote(t, c, volID, ".modalfs/manifests/big.bin.json", raw)
+	})
+	time.Sleep(1100 * time.Millisecond) // Modal's mtimes are in seconds
+	before := e.net.Served()
+	f, err := os.OpenFile(filepath.Join(e.mnt, "big.bin"), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch := randomBytes(t, MiB)
+	off := 4*modalapi.BlockSize + 100
+	if _, err := f.WriteAt(patch, int64(off)); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsync.File(f); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Minute)
+	for remoteMtime(t, e.client, e.vol.ID, "big.bin") == mtime {
+		if time.Now().After(deadline) {
+			t.Fatal("the edit wasn't committed")
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	// Counted before reading the file back, which downloads it all.
+	if got := e.net.Served() - before; got > 3*modalapi.BlockSize {
+		t.Errorf("editing one block downloaded %d MiB; the sidecar should have saved reading the unchanged blocks", got/MiB)
+	}
+	want := bytes.Clone(data)
+	copy(want[off:], patch)
+	e.waitRemote("big.bin", want, time.Minute)
+}
+
+// remoteMtime is name's modification time on "Modal".
+func remoteMtime(t *testing.T, c *modalapi.Client, volID, name string) int64 {
+	t.Helper()
+	es, err := c.List(context.Background(), volID, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, en := range es {
+		if en.Path == name {
+			return en.Mtime
+		}
+	}
+	t.Fatalf("%s isn't on Modal", name)
+	return 0
+}
+
 // putRemote writes a file straight to "Modal", as a Modal Function would.
 func putRemote(t *testing.T, c *modalapi.Client, volID, name string, data []byte) {
 	t.Helper()

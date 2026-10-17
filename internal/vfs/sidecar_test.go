@@ -47,3 +47,29 @@ func TestSidecarChecked(t *testing.T) {
 		t.Fatal("a matching sidecar wasn't used")
 	}
 }
+
+// Editing a large file this client knows nothing about uses the volume's
+// sidecar for the unchanged blocks' hashes, rather than streaming them all.
+func TestPrehashUsesSidecar(t *testing.T) {
+	f := newFakeFS(t, Options{ReadAhead: -1, SidecarMin: 1})
+	data := randBytes(4 * blockSize)
+	f.put(t, "big", data)
+	a, err := f.Stat("big")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &manifest{Size: a.Size, Mtime: a.Mtime.Unix(), Hashes: modalapi.HashBlocks(data)}
+	if err := f.writeSidecar("big", m); err != nil {
+		t.Fatal(err)
+	}
+	before := waitServed(f)
+	if _, err := f.WriteAt("big", []byte("edit"), blockSize+10); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Flush("big"); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitServed(f) - before; got >= 2*blockSize {
+		t.Fatalf("editing one block downloaded %d bytes; the sidecar should have saved reading the other 3", got)
+	}
+}
