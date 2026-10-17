@@ -46,7 +46,11 @@ type backend struct {
 }
 
 // live reports whether the tests run against real Modal.
-func live() bool { return os.Getenv("MODALFS_E2E_PROFILE") != "" }
+func live() bool { return liveProfile() != "" }
+
+// liveProfile is the Modal CLI profile the tests run against: topsoil-drakes
+// on a developer's Mac, ci in the scheduled workflow.
+func liveProfile() string { return os.Getenv("MODALFS_E2E_PROFILE") }
 
 func startBackend(t *testing.T, root string, opt modalfake.Options) backend {
 	if live() {

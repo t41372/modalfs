@@ -115,13 +115,13 @@ func TestCopyLargerThanTheLimit(t *testing.T) {
 	if most > limit+64*MiB {
 		t.Errorf("modalfs used %d MiB of disk, limit %d MiB", most/MiB, limit/MiB)
 	}
-	if slowest > 45*time.Second {
+	if slowest > maxHeld {
 		t.Errorf("a write waited %v for room", slowest)
 	}
 	if worst > maxStall {
 		t.Errorf("listing the mount took %v while writes waited for room (limit %v)", worst, maxStall)
 	}
-	if worstStat > 45*time.Second {
+	if worstStat > maxHeld {
 		t.Errorf("a stat of the file being copied took %v", worstStat)
 	}
 }

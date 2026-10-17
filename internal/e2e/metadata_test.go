@@ -37,7 +37,7 @@ type metadataFixture struct {
 // metadataContainer is test-only compute, exclusively in a scratch volume.
 func metadataContainer(t *testing.T, b backend, art *artifact, script string) string {
 	t.Helper()
-	cfg, err := modalapi.LoadConfig("topsoil-drakes")
+	cfg, err := modalapi.LoadConfig(liveProfile())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,8 +133,9 @@ print(json.dumps([dict(path=f['path'],mode=oct(os.lstat('/vol/'+f['path']).st_mo
 }
 
 func TestFilesystemMetadata(t *testing.T) {
-	if live() && os.Getenv("MODALFS_E2E_PROFILE") != "topsoil-drakes" {
-		t.Fatal("use only topsoil-drakes")
+	// It starts Sandboxes: only in the workspaces kept for these tests.
+	if p := liveProfile(); live() && p != "topsoil-drakes" && p != "ci" {
+		t.Fatalf("profile %s: use topsoil-drakes or ci, the workspaces kept for testing", p)
 	}
 	for _, encrypted := range []bool{false, true} {
 		name := "plain"
@@ -159,10 +160,10 @@ func TestFilesystemMetadata(t *testing.T) {
 				filename = "metadata-live-" + name + ".json"
 			}
 			art := newArtifact(t, filename)
-			art.step("scratch volume", backend.vol.Name, map[string]any{"id": backend.vol.ID, "live": live(), "profile": "topsoil-drakes for live; isolated fake otherwise"})
+			art.step("scratch volume", backend.vol.Name, map[string]any{"id": backend.vol.ID, "live": live(), "profile": liveProfile() + " for live; isolated fake otherwise"})
 			profile, config := "fake", filepath.Join(root, "modal.toml")
 			if live() {
-				profile, config = "topsoil-drakes", modalapi.ModalConfigPath()
+				profile, config = liveProfile(), modalapi.ModalConfigPath()
 			} else {
 				if err := os.WriteFile(config, []byte(fmt.Sprintf("[fake]\ntoken_id = \"ak-fake\"\ntoken_secret = \"as-fake\"\nserver_url = %q\n", backend.net.(*modalfake.Server).URL)), 0o600); err != nil {
 					t.Fatal(err)

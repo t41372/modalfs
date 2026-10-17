@@ -45,7 +45,7 @@ func TestEncryptedVolume(t *testing.T) {
 	backend := startBackend(t, root, modalfake.Options{Latency: 5 * time.Millisecond, UpBytesPerSec: 12 * MiB, DownBytesPerSec: 12 * MiB})
 	profile, modalConfig := "fake", filepath.Join(root, "modal.toml")
 	if live() {
-		profile, modalConfig = "topsoil-drakes", modalapi.ModalConfigPath()
+		profile, modalConfig = liveProfile(), modalapi.ModalConfigPath()
 	} else {
 		config := fmt.Sprintf("[fake]\ntoken_id = \"ak-fake\"\ntoken_secret = \"as-fake\"\nserver_url = %q\n", strings.TrimPrefix(backend.env[0], "MODAL_SERVER_URL="))
 		if err := os.WriteFile(modalConfig, []byte(config), 0o600); err != nil {

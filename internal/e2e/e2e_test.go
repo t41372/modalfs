@@ -63,6 +63,11 @@ func ciOr[T any](ci, local T) T {
 // much sooner.
 var maxStall = ciOr(15*time.Second, 2*time.Second)
 
+// maxHeld is the longest a large copy's write, or a stat of the file being
+// copied, may wait: on a runner the NFS client holds them back by itself, in
+// 30 s steps, and real Modal's uplink from there is slower than the fake's.
+var maxHeld = ciOr(90*time.Second, 45*time.Second)
+
 var (
 	buildOnce sync.Once
 	binary    string
@@ -296,17 +301,28 @@ func (e *env) remote(name string) ([]byte, error) {
 	return out, nil
 }
 
-// waitRemote waits until Modal has exactly want under name.
+// waitRemote waits until Modal has exactly want under name. It downloads
+// the file to compare only once its size is right: on a slow link a large
+// file's download takes minutes, and one started just before the last
+// commit would bring back the version before it.
 func (e *env) waitRemote(name string, want []byte, timeout time.Duration) {
 	e.t.Helper()
 	deadline := time.Now().Add(timeout)
 	for {
-		got, err := e.remote(name)
-		if err == nil && sum(got) == sum(want) {
-			return
+		what := ""
+		_, size, err := e.client.BlockURLs(context.Background(), e.vol.ID, name, 0, 1)
+		if err == nil {
+			what = fmt.Sprintf("%d bytes", size)
+		}
+		if err == nil && size == int64(len(want)) {
+			var got []byte
+			if got, err = e.remote(name); err == nil && sum(got) == sum(want) {
+				return
+			}
+			what = "the right size but other bytes"
 		}
 		if time.Now().After(deadline) {
-			e.t.Fatalf("%s on Modal: %d bytes (err %v), want %d bytes, after %v", name, len(got), err, len(want), timeout)
+			e.t.Fatalf("%s on Modal: %s (err %v), want %d bytes, after %v", name, what, err, len(want), timeout)
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
@@ -380,7 +396,7 @@ func TestLargeCopyStaysResponsive(t *testing.T) {
 	if worst > maxStall {
 		t.Errorf("listing the mount took %v while a file uploaded (limit %v)", worst, maxStall)
 	}
-	if worstStat > 45*time.Second {
+	if worstStat > maxHeld {
 		t.Errorf("a stat of the file being copied took %v", worstStat)
 	}
 }
