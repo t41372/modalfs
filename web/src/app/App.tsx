@@ -10,6 +10,7 @@ import { Confirmer } from '@/components/confirm'
 import { Spinner } from '@/components/Spinner'
 import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { setPlatform } from '@/i18n'
 import { eventText, homeOf } from '@/lib/format'
 import { easeOut } from '@/lib/motion'
 import { trafficLights } from '@/lib/platform'
@@ -22,6 +23,7 @@ import { VolumePage } from '@/pages/VolumePage'
 import { Welcome } from '@/pages/Welcome'
 import { ErrorBoundary } from './ErrorBoundary'
 import { navigate, type Route, SECTIONS, type Section, useRoute } from './nav'
+import { askClose } from './closeWindow'
 import { quitDone, useQuitPhase } from './quit'
 import { QuitDialog } from './QuitDialog'
 import { checklistOpen, flowActive, startQuit, useQuitFlow } from './quitFlow'
@@ -50,17 +52,19 @@ export function App() {
   const route = useRoute()
   const page = route.section
   const dark = useLook(state?.settings.appearance, state?.settings.language)
+  useEffect(() => setPlatform(state?.platform), [state?.platform])
   const home = homeOf(state?.settings.mount_root)
   const quitPhase = useQuitPhase()
   const checklist = flowActive(useQuitFlow())
   // The quit checklist shows its own progress; the page behind it stays as it was.
   const quitting = quitPhase !== 'idle' || (!!state?.quitting && !checklist)
 
-  // The desktop app asks for the quit checklist (⌘Q, the menu bar menu, the Dock) and for pages
-  // (a click in the menu bar menu).
+  // The desktop app asks for the quit checklist (⌘Q, the menu bar menu, the Dock), before its window
+  // closes where there's no menu bar icon (Linux), and for pages (a click in the menu bar menu).
   useEffect(() => {
     const offs = [
       window.runtime?.EventsOn?.('quit:request', () => void startQuit()),
+      window.runtime?.EventsOn?.('close:request', () => void askClose()),
       window.runtime?.EventsOn?.('nav', (section, id) => {
         if ((SECTIONS as readonly unknown[]).includes(section)) navigate(section as Section, typeof id === 'string' && id ? id : undefined)
       }),

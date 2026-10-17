@@ -16,6 +16,9 @@ declare global {
           SetAppearance?: (a: string) => Promise<void>
           Quitting?: () => Promise<void>
           QuitAck?: () => Promise<void>
+          /** The UI got a close request (no menu bar icon); CloseWindow then closes only the window. */
+          CloseAck?: () => Promise<void>
+          CloseWindow?: () => Promise<void>
           /** Asks where to save a text file and writes it; resolves to the path, or '' when cancelled. */
           SaveText?: (name: string, text: string) => Promise<string>
         }

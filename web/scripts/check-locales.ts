@@ -1,5 +1,6 @@
 // Fails when a translation is missing a key the English strings have, or has one
-// they don't. Plural forms count as one key: Chinese has only `_other`.
+// they don't. Plural forms count as one key: Chinese has only `_other`. The
+// "linux" block may only reword strings that exist outside it.
 
 import en from '../src/i18n/en.json'
 import zhHans from '../src/i18n/zh-Hans.json'
@@ -15,5 +16,6 @@ for (const [name, strings] of Object.entries({ 'zh-Hant': zhHant, 'zh-Hans': zhH
   for (const k of want) if (!have.has(k)) (bad = true), console.error(`${name}: missing ${k}`)
   for (const k of have) if (!want.has(k)) (bad = true), console.error(`${name}: extra ${k}`)
 }
+for (const k of want) if (k.startsWith('linux.') && !want.has(k.slice(6))) (bad = true), console.error(`linux block rewords ${k.slice(6)}, which doesn't exist`)
 if (bad) process.exit(1)
 console.log('locales ok')

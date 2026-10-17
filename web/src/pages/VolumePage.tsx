@@ -23,7 +23,6 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/compon
 import { encryptionHint, UnlockDialog } from '@/dialogs/Encryption'
 import { ago, bytes, date, homeOf, speed, tilde } from '@/lib/format'
 import { live, look, nameOf, toneOf } from '@/lib/mounts'
-import { isMac } from '@/lib/platform'
 import { stateText } from './Home'
 import { mountError } from '@/lib/mountError'
 
@@ -153,7 +152,7 @@ function Volume({ m, t }: { m: Mount; t: TFunction }) {
             <>
               <Button onClick={() => reveal()}>
                 <FolderOpen />
-                {t(isMac ? 'vol.finder' : 'vol.openFolder')}
+                {t('vol.finder')}
               </Button>
               <Button variant="outline" onClick={() => askUnmount(m, t)}>
                 {t('vol.unmountMenu')}
