@@ -21,6 +21,7 @@ import (
 
 	"github.com/t41372/modalfs/internal/config"
 	"github.com/t41372/modalfs/internal/daemon"
+	"github.com/t41372/modalfs/internal/downloads"
 	"golang.org/x/term"
 )
 
@@ -40,6 +41,9 @@ Everyday:
   modalfs info VOLUME [--measure]           size, files waiting to upload, open conflicts;
                                             --measure lists the volume to measure its size
   modalfs conflicts VOLUME [--handled]      conflict copies; --handled marks them all handled
+  modalfs activity [--problems] [--follow]  what the app's Activity page shows: mounts, uploads,
+                                            conflicts, errors and recoveries; --problems shows
+                                            only conflicts and errors
 
 Volumes:
   modalfs volume ls [--account A] [--env E]
@@ -69,7 +73,7 @@ Accounts (each mount is pinned to one; the Modal CLI's active profile is never u
   modalfs account token ACCOUNT             replace an expired token (same workspace)
   modalfs account rename ACCOUNT NEWNAME
   modalfs account env ACCOUNT ENVIRONMENT   the environment new mounts use
-  modalfs account rm ACCOUNT
+  modalfs account rm ACCOUNT [--yes]        forget the token and its saved mounts (asks first)
 
 Background process:
   modalfs daemon                            run the daemon in the foreground
@@ -83,8 +87,8 @@ Background process:
                                             uploaded are kept)
 
 Without the daemon:
-  modalfs run VOLUME MOUNTPOINT [flags]     foreground mount until Ctrl-C (see modalfs run -h)
-  modalfs serve VOLUME [flags]              NFS server only
+  modalfs run [flags] VOLUME MOUNTPOINT     foreground mount until Ctrl-C (see modalfs run -h)
+  modalfs serve [flags] VOLUME              NFS server only
 `
 
 func main() {
@@ -129,6 +133,8 @@ func main() {
 		cmdInfo(args)
 	case "conflicts":
 		cmdConflicts(args)
+	case "activity", "events":
+		cmdActivity(args)
 	case "unlock", "lock":
 		cmdEncryption(cmd, args)
 	case "volume", "volumes", "vol":
@@ -843,6 +849,7 @@ func cmdAccount(args []string) {
 	tokenID := fl.String("token-id", "", "Modal token id (ak-…)")
 	env := fl.String("env", "", "default environment for this account")
 	fromEnv := fl.Bool("secret-from-env", false, "take the secret from MODAL_TOKEN_SECRET at run time instead of storing it")
+	yes := fl.Bool("yes", false, "don't ask for confirmation (rm)")
 	pos := parseFlags(fl, args[1:])
 	c := client()
 	switch sub {
@@ -893,9 +900,39 @@ func cmdAccount(args []string) {
 		}
 	case "rm", "remove":
 		if len(pos) != 1 {
-			fatal(errors.New("usage: modalfs account rm ACCOUNT"))
+			fatal(errors.New("usage: modalfs account rm ACCOUNT [--yes]"))
 		}
-		a := pickAccount(state(c), pos[0])
+		st := state(c)
+		a := pickAccount(st, pos[0])
+		// The daemon refuses these too; saying so before asking saves a pointless "yes".
+		n := 0
+		for _, m := range st.Mounts {
+			if m.AccountID != a.ID {
+				continue
+			}
+			n++
+			if m.State == daemon.StateMounted || m.State == daemon.StateStarting || m.State == daemon.StateStopping {
+				fatal(fmt.Errorf("%s is %s; unmount it first (it belongs to %s)", m.VolumeName, m.State, a.Label))
+			}
+		}
+		for _, d := range st.Downloads {
+			if d.AccountID == a.ID && !downloads.Ended(d.State) {
+				fatal(fmt.Errorf("a remote download of %s is %s; pause or cancel it first", a.Label, d.State))
+			}
+		}
+		if !*yes {
+			what := "the token"
+			if n == 1 {
+				what = "the token and the 1 volume it manages"
+			} else if n > 1 {
+				what = fmt.Sprintf("the token and the %d volumes it manages", n)
+			}
+			fmt.Printf("Disconnect %s? modalfs forgets %s. Nothing on Modal changes.\nType yes to confirm: ", a.Label, what)
+			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+			if strings.TrimSpace(line) != "yes" {
+				fatal(errors.New("aborted"))
+			}
+		}
 		must(c.Do("DELETE", "/api/accounts/"+a.ID, nil, nil))
 		fmt.Printf("removed %s\n", a.Label)
 	case "check":
