@@ -856,7 +856,11 @@ func TestConflictDuringUpload(t *testing.T) {
 // committed, the edit is set aside with a note, and unmounting isn't blocked.
 func TestEditOfReplacedFileIsSetAside(t *testing.T) {
 	original := randomBytes(t, 64*MiB)
-	e := setup(t, modalfake.Options{DownBytesPerSec: MiB}, []string{"-write-back", "2s"}, func(c *modalapi.Client, volID string) {
+	// The commit starts once the replacement is surely in, even on real
+	// Modal, where it takes seconds. One that starts before it reads the
+	// original's unchanged parts while it's still there and saves the edit to
+	// a conflict copy instead, which is also safe but not what this checks.
+	e := setup(t, modalfake.Options{DownBytesPerSec: MiB}, []string{"-write-back", "10s"}, func(c *modalapi.Client, volID string) {
 		putRemote(t, c, volID, "data.bin", original)
 	})
 	// overwrite block 0 whole, so the edit itself doesn't need the old bytes
