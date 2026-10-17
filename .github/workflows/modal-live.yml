@@ -5,10 +5,11 @@ name: Modal live
 # side shows up here before a user finds it.
 #
 # The tests create, fill and delete scratch volumes with the token in the
-# MODAL_TOKEN_ID and MODAL_TOKEN_SECRET secrets of the modal-live environment,
-# which only runs from main can read. A token reaches every volume in its
-# workspace, so use one from a workspace kept for testing, holding nothing you
-# care about.
+# MODAL_TOKEN_ID and MODAL_TOKEN_SECRET secrets of the modal-live environment.
+# Only someone with write access can start a run: on main, or on a pull
+# request's branch to test it before merging (gh workflow run "Modal live"
+# --ref BRANCH). A token reaches every volume in its workspace, so use one
+# from a workspace kept for testing, holding nothing you care about.
 
 on:
   schedule:
