@@ -126,7 +126,7 @@ The API follows the existing account-scoped volume routes. Every route uses the 
 CLI:
 
 - `modalfs volume create NAME --encrypt [--remember=false]`: displays the generated key and requires typing `saved` before creating. `--yes` explicitly acknowledges saving the key for scripts; capture the displayed key securely.
-- `modalfs unlock VOLUME [--remember]`: reads the key from the terminal without echo, or one line from stdin. A checksum error is reported before trying the key on data.
+- `modalfs unlock VOLUME [--remember=false]`: reads the key from the terminal without echo, or one line from stdin, and remembers it on this computer unless `--remember=false`. A checksum error is reported before trying the key on data.
 - `modalfs lock VOLUME`, after unmounting.
 - `modalfs volume key VOLUME` prints a remembered key.
 - `modalfs volume decrypt VOLUME --to FOLDER` reads the key from terminal/stdin and recovers without a mount.

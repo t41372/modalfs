@@ -58,7 +58,7 @@ They need a Modal token. They read it the way the Modal client does (`~/.modal.t
 - Keep each PR to one change, and explain why it's needed.
 - Run `just lint` and `just test`. If you touched `internal/vfs`, `internal/nfsfront`, `internal/fusefront` or `internal/modalapi`, please also run the integration tests against a scratch volume.
 - If you changed behaviour on macOS, say which macOS version you tested on.
-- UI text lives in `internal/webui/static/i18n.js`. Add new strings in both English and Traditional Chinese, or leave the Chinese for a maintainer.
+- UI text lives in `web/src/i18n/{en,zh-Hant,zh-Hans}.json`. Add each new string to all three (see Strings above).
 
 ## Reporting bugs
 
