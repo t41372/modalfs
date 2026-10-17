@@ -2,6 +2,8 @@ module github.com/t41372/modalfs
 
 go 1.26.0
 
+toolchain go1.26.9
+
 require (
 	github.com/go-git/go-billy/v5 v5.9.2
 	github.com/hanwen/go-fuse/v2 v2.12.0
