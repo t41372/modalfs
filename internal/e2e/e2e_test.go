@@ -855,20 +855,32 @@ func TestConflictDuringUpload(t *testing.T) {
 // before the commit can't be saved without mixing two versions. Nothing is
 // committed, the edit is set aside with a note, and unmounting isn't blocked.
 func TestEditOfReplacedFileIsSetAside(t *testing.T) {
+	// The commit starts when the test stops modalfs, surely after the
+	// replacement is in.
+	t.Run("on-exit", func(t *testing.T) { editReplacedFile(t, true) })
+	// The commit starts on its own, as it does for a user. On real Modal,
+	// where the replacement takes seconds, it may start first, read the
+	// original's unchanged parts while they're still there and save the
+	// edit to a conflict copy instead. That's also safe, and accepted there.
+	t.Run("running", func(t *testing.T) { editReplacedFile(t, false) })
+}
+
+func editReplacedFile(t *testing.T, onExit bool) {
+	var args []string
+	if onExit {
+		args = []string{"-write-back", "10m", "-max-pending", "10m"}
+	}
 	original := randomBytes(t, 64*MiB)
-	// Nothing is committed until the test stops modalfs, after the
-	// replacement is in. A commit that starts before it reads the original's
-	// unchanged parts while they're still there and saves the edit to a
-	// conflict copy instead, which is also safe but not what this checks.
-	e := setup(t, modalfake.Options{DownBytesPerSec: MiB}, []string{"-write-back", "10m", "-max-pending", "10m"}, func(c *modalapi.Client, volID string) {
+	e := setup(t, modalfake.Options{DownBytesPerSec: MiB}, args, func(c *modalapi.Client, volID string) {
 		putRemote(t, c, volID, "data.bin", original)
 	})
 	// overwrite block 0 whole, so the edit itself doesn't need the old bytes
+	edit := randomBytes(t, 8*MiB)
 	f, err := os.OpenFile(filepath.Join(e.mnt, "data.bin"), os.O_RDWR, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.WriteAt(randomBytes(t, 8*MiB), 0); err != nil {
+	if _, err := f.WriteAt(edit, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := fsync.File(f); err != nil {
@@ -877,18 +889,28 @@ func TestEditOfReplacedFileIsSetAside(t *testing.T) {
 	f.Close()
 	replacement := randomBytes(t, 3*MiB)
 	putRemote(t, e.client, e.vol.ID, "data.bin", replacement)
-	if err := e.proc.Signal(syscall.SIGINT); err != nil { // commits what's pending
-		t.Fatal(err)
+	if onExit {
+		if err := e.proc.Signal(syscall.SIGINT); err != nil { // commits what's pending
+			t.Fatal(err)
+		}
 	}
 
 	root := filepath.Dir(e.mnt)
-	deadline := time.Now().Add(time.Minute)
-	var notes []string
-	for len(notes) == 0 && time.Now().Before(deadline) {
+	deadline := time.Now().Add(2 * time.Minute)
+	var notes, copies []string
+	for len(notes) == 0 && len(copies) == 0 && time.Now().Before(deadline) {
 		notes, _ = filepath.Glob(filepath.Join(root, "cache", "*", "unsaved", "*", "README.txt"))
+		if !onExit && liveProfile() != "" {
+			copies = e.conflictCopies("data")
+		}
 		time.Sleep(300 * time.Millisecond)
 	}
-	if len(notes) == 0 {
+	switch {
+	case len(notes) > 0:
+	case len(copies) > 0:
+		// ours whole: the edit on the original's unchanged parts
+		e.waitRemote(copies[0], append(edit, original[8*MiB:]...), 2*time.Minute)
+	default:
 		t.Fatal("the edit wasn't set aside")
 	}
 	got, err := e.remote("data.bin")
