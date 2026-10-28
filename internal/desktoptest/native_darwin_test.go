@@ -81,7 +81,7 @@ type windowState struct {
 		Windows          []struct {
 			Visible         bool   `json:"visible"`
 			Opaque          bool   `json:"opaque"`
-			DrawsBackground bool   `json:"drawsBackground"`
+			DrawsBackground *bool  `json:"drawsBackground"`
 			Appearance      string `json:"appearance"`
 			Materials       []struct {
 				FullScreenUI bool `json:"fullScreenUI"`
@@ -243,7 +243,10 @@ func TestNativeDesktop(t *testing.T) {
 			if mode.name == "system" {
 				appearance = s.Native.SystemAppearance
 			}
-			return s.Dark == (appearance == "NSAppearanceNameDarkAqua") && w.Appearance == appearance && !w.Opaque && !w.DrawsBackground && len(w.Materials) > 0 && w.Materials[0].FullScreenUI && w.Materials[0].BehindWindow
+			return s.Dark == (appearance == "NSAppearanceNameDarkAqua") &&
+				w.Appearance == appearance && !w.Opaque &&
+				w.DrawsBackground != nil && !*w.DrawsBackground &&
+				len(w.Materials) > 0 && w.Materials[0].FullScreenUI && w.Materials[0].BehindWindow
 		})
 	}
 	const closeOnlyJS = `await fetch('/wails/runtime',{method:'POST',headers:{'Content-Type':'application/json','x-wails-client-id':window._wails.clientId},body:JSON.stringify({object:0,method:0,args:{'call-id':'close-native-smoke',methodName:'main.App.CloseWindow',args:[]}})});return null;`
