@@ -1,18 +1,11 @@
 // Where the UI runs: inside the desktop app (Wails, the system WebView) or in a
 // browser tab served by the daemon.
 
-type NativeWindow = Window & {
-  webkit?: { messageHandlers?: { external?: { postMessage?: unknown } } }
-  chrome?: { webview?: { postMessage?: unknown } }
-}
-
-const host = window as NativeWindow
 const params = new URLSearchParams(location.search)
 
-// Detect the native message channel before importing Wails. Its runtime has
-// side effects, so the daemon's browser UI must not load it.
-export const inApp = typeof host.webkit?.messageHandlers?.external?.postMessage === 'function'
-  || typeof host.chrome?.webview?.postMessage === 'function'
+// Only the native asset server adds this marker. Importing Wails has side
+// effects, so the daemon's browser UI must never infer it from its browser.
+export const inApp = document.querySelector<HTMLMetaElement>('meta[name="modalfs-desktop"]')?.content === '1'
 const runtime = inApp ? await import('@wailsio/runtime') : undefined
 
 function call<T = void>(method: string, ...args: unknown[]): Promise<T> {

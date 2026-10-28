@@ -431,6 +431,8 @@ Prerequisites: Go 1.27.3+, [Bun](https://bun.sh) (for building the frontend), an
 ```sh
 git clone https://github.com/t41372/modalfs && cd modalfs
 just app             # Build universal macOS app bundle: dist/modalfs.app (Apple Silicon & Intel)
+just check-app       # Verify the production bundle, including native transparency flags
+just test-app-macos  # Exercise native appearance, settings and window lifecycle with an isolated daemon
 just linux-gui       # Build Linux desktop app: dist/modalfs-gui
 just cli             # Cross-compile CLI binaries: dist/modalfs-{darwin,linux}-{arm64,amd64}
 just build           # Build CLI binary for the host machine: dist/modalfs

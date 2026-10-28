@@ -13,14 +13,17 @@ MIN_MACOS=${MIN_MACOS:-13.0}
 export CGO_CFLAGS="-O2 -g -mmacosx-version-min=$MIN_MACOS"
 export CGO_LDFLAGS="-mmacosx-version-min=$MIN_MACOS"
 VERSION=$(sed -n 's/^var Version = "\(.*\)"/\1/p' internal/daemon/daemon.go)
-APP=dist/modalfs.app
+# Native QA can build a separate bundle without replacing a running app.
+APP=${MODALFS_BUILD_DIR:-dist}/modalfs.app
 rm -rf "$APP" dist/.mac && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bin" dist/.mac
 
 ARCHS=${ARCHS:-"arm64 amd64"}
 gui=""; cli=""
 for arch in $ARCHS; do
   echo "building $arch"
-  CGO_ENABLED=1 GOOS=darwin GOARCH=$arch go build -trimpath -tags desktop,production -ldflags "-s -w" -o dist/.mac/gui-$arch ./cmd/modalfs-gui
+  # Wails 3 makes WKWebView transparency opt-in; the material behind it
+  # stays invisible without this tag (Wails 2 enabled it by default).
+  CGO_ENABLED=1 GOOS=darwin GOARCH=$arch go build -trimpath -tags desktop,production,private_mac_apis -ldflags "-s -w" -o dist/.mac/gui-$arch ./cmd/modalfs-gui
   CGO_ENABLED=0 GOOS=darwin GOARCH=$arch go build -trimpath -ldflags "-s -w" -o dist/.mac/cli-$arch ./cmd/modalfs
   gui="$gui dist/.mac/gui-$arch"; cli="$cli dist/.mac/cli-$arch"
 done

@@ -6,9 +6,10 @@
 // Build with `just app` (macOS, needs the Xcode command line tools) or
 // `just linux-gui`. By hand:
 //
-//	go build -tags desktop,production -ldflags "-s -w" -o modalfs-gui ./cmd/modalfs-gui
+//	go build -tags desktop,production,private_mac_apis -ldflags "-s -w" -o modalfs-gui ./cmd/modalfs-gui
 //
-// Linux builds need GTK4 and WebKitGTK 6.0.
+// macOS needs private_mac_apis for its transparent WebView. Linux builds
+// omit that tag and need GTK4 and WebKitGTK 6.0.
 package main
 
 import (
@@ -253,7 +254,13 @@ func main() {
 	}
 	app.ran.Store(daemonErr == nil)
 
-	assets := application.BundledAssetFileServer(webui.FS())
+	nativeFS, err := webui.DesktopFS(webui.FS())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "modalfs-gui:", err)
+		os.Exit(1)
+	}
+	assets := application.BundledAssetFileServer(nativeFS)
+	api := webui.DesktopAPI(proxy)
 	app.desktop = application.New(application.Options{
 		Name:        "modalfs",
 		Description: "Modal Volumes as local folders.\nVersion " + daemon.VersionBuild(),
@@ -262,7 +269,7 @@ func main() {
 		ShouldQuit:  app.beforeQuit,
 		Assets: application.AssetOptions{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasPrefix(r.URL.Path, "/api/") {
-				proxy.ServeHTTP(w, r)
+				api.ServeHTTP(w, r)
 				return
 			}
 			assets.ServeHTTP(w, r)

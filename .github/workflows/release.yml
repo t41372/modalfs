@@ -105,6 +105,7 @@ jobs:
         with:
           tool: just
       - run: just app
+      - run: just check-app
       - name: Package
         env:
           VERSION: ${{ needs.version.outputs.version }}

@@ -76,10 +76,9 @@ jobs:
         with:
           tool: just
       - run: just app
+      - name: Native app regression checks (isolated AppKit and WebKit)
+        run: just test-app-macos
       - name: End-to-end tests (real NFS mounts, fake Modal)
         run: just test-e2e
       - name: Check the bundle
-        run: |
-          lipo -info dist/modalfs.app/Contents/MacOS/modalfs
-          codesign --verify --strict dist/modalfs.app
-          dist/modalfs.app/Contents/Resources/bin/modalfs version
+        run: just check-app

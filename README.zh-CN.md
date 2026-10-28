@@ -431,6 +431,8 @@ $ modalfs download show dl-3f2a --follow
 ```sh
 git clone https://github.com/t41372/modalfs && cd modalfs
 just app             # 构建 macOS 通用应用包：dist/modalfs.app（支持 Apple Silicon 与 Intel）
+just check-app       # 检查正式应用包，包括原生透明效果的构建标志
+just test-app-macos  # 使用隔离的后台服务测试原生外观、设置与窗口生命周期
 just linux-gui       # 构建 Linux 桌面应用：dist/modalfs-gui
 just cli             # 交叉编译 macOS 与 Linux 命令行程序：dist/modalfs-{darwin,linux}-{arm64,amd64}
 just build           # 编译当前机器架构的命令行程序：dist/modalfs

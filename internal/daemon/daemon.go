@@ -546,6 +546,9 @@ func readJSON(r *http.Request, v any) error {
 		return err
 	}
 	if len(body) == 0 {
+		if r.Method == http.MethodPatch {
+			return errors.New("PATCH requests need a JSON body")
+		}
 		return nil
 	}
 	return json.Unmarshal(body, v)
