@@ -426,7 +426,7 @@ $ modalfs download show dl-3f2a --follow
 
 ## 开发
 
-开发环境需安装 Go 1.26+、用于构建前端界面的 [Bun](https://bun.sh) 以及任务运行器 [just](https://github.com/casey/just)。编译 macOS 桌面应用还需安装 Xcode 命令行工具（`xcode-select --install`）；编译 Linux 桌面应用则需安装 `libgtk-3-dev` 和 `libwebkit2gtk-4.1-dev`。直接运行 `just` 可查看所有可用构建任务：
+开发环境需安装 Go 1.27.3+、用于构建前端界面的 [Bun](https://bun.sh) 以及任务运行器 [just](https://github.com/casey/just)。编译 macOS 桌面应用还需安装 Xcode 命令行工具（`xcode-select --install`）；编译 Linux 桌面应用则需安装 `libgtk-3-dev` 和 `libwebkit2gtk-4.1-dev`。直接运行 `just` 可查看所有可用构建任务：
 
 ```sh
 git clone https://github.com/t41372/modalfs && cd modalfs
@@ -443,7 +443,7 @@ just fake -up 20M    # 启动本地的假 Modal 服务端，无需账号即可�
 MODALFS_TEST_VOLUME=scratch just test-integration   # 运行真实环境集成测试（注意：会在指定 volume 内创建和删除文件）
 ```
 
-不支持 macOS 12。用 Go 1.26 时，`MIN_MACOS=12.0 just app` 能做出以 macOS 12 为目标的应用，但没有测试过；Go 1.27 及更高版本完全不能在 macOS 12 上运行。
+不支持 macOS 12。Go 1.27 及更高版本需要 macOS 13 或更新版本。
 
 前端界面基于 React、Tailwind CSS 和构建在 Base UI 之上的 shadcn/ui 开发，视觉设计延续了 [Jezo](https://github.com/t41372/Jezo) 的风格。执行 `just ui` 会将前端资源打包至 `internal/webui/dist`，随后由后台进程和桌面应用通过 Go embed 嵌入二进制文件中。
 

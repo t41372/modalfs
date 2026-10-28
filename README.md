@@ -426,7 +426,7 @@ $ modalfs download show dl-3f2a --follow
 
 ## Development
 
-Prerequisites: Go 1.26+, [Bun](https://bun.sh) (for building the frontend), and [just](https://github.com/casey/just). Building the macOS desktop app requires Xcode Command Line Tools (`xcode-select --install`); building the Linux desktop app requires `libgtk-3-dev` and `libwebkit2gtk-4.1-dev`. Run `just` to list all available recipes:
+Prerequisites: Go 1.27.3+, [Bun](https://bun.sh) (for building the frontend), and [just](https://github.com/casey/just). Building the macOS desktop app requires Xcode Command Line Tools (`xcode-select --install`); building the Linux desktop app requires `libgtk-3-dev` and `libwebkit2gtk-4.1-dev`. Run `just` to list all available recipes:
 
 ```sh
 git clone https://github.com/t41372/modalfs && cd modalfs
@@ -443,7 +443,7 @@ just fake -up 20M    # Launch a local fake Modal server to test modalfs without 
 MODALFS_TEST_VOLUME=scratch just test-integration   # Run live integration tests (CREATES AND DELETES files in the target volume)
 ```
 
-macOS 12 isn't supported. With Go 1.26, `MIN_MACOS=12.0 just app` builds an app that targets it, but it's untested; Go 1.27 and later don't run on macOS 12 at all.
+macOS 12 isn't supported. Go 1.27 and later require macOS 13 or later.
 
 The frontend is built with React, Tailwind CSS, and shadcn/ui (on Base UI), following the visual language of [Jezo](https://github.com/t41372/Jezo). Running `just ui` compiles the frontend into `internal/webui/dist`, which is embedded into both the daemon and desktop binaries.
 

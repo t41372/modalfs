@@ -87,22 +87,13 @@ test-agent:
     go test -race -count=1 -run TestLocalRunner -v ./internal/downloads
     go test -race -count=1 -run TestDownloadWithTheLocalAgent -v ./internal/daemon
 
-# fetch the gopeed build the agent tests use, for this machine (they skip without it)
+# build the Go tools the agent tests use, with the same source and Go as the remote agent
 agent-tools:
     #!/bin/sh
     set -eu
     tools="${XDG_CACHE_HOME:-$HOME/.cache}/modalfs/agent-tools"
-    version=$(sed -n 's/^GOPEED_VERSION = "\(.*\)"/\1/p' internal/downloads/remote/app.py)
-    case "$(uname -s)" in Darwin) os=macos ;; *) os=linux ;; esac
-    case "$(uname -m)" in arm64|aarch64) arch=arm64 ;; *) arch=amd64 ;; esac
-    tmp=$(mktemp -d)
-    curl -fsSL -o "$tmp/g.zip" "https://github.com/GopeedLab/gopeed/releases/download/$version/gopeed-web-$version-$os-$arch.zip"
-    unzip -q "$tmp/g.zip" -d "$tmp"
-    mkdir -p "$tools"
-    mv "$tmp"/gopeed-web-*/gopeed "$tools/gopeed"
-    rm -rf "$tmp"
-    if [ "$os" = macos ]; then xattr -d com.apple.quarantine "$tools/gopeed" 2>/dev/null || true; fi
-    echo "$tools/gopeed ($version)"
+    version=$(sed -n 's/^GO_VERSION = "\(.*\)"/\1/p' internal/downloads/remote/app.py)
+    GO_VERSION="$version" sh internal/downloads/remote/build-go-tools.sh "$tools"
 
 # remote downloads against real Modal: CREATES AND DELETES a scratch volume and a test app in the profile's workspace (costs cents)
 test-downloads-live profile *args:

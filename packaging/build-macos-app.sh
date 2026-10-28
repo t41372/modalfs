@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds dist/modalfs.app (universal arm64 + x86_64) on a Mac.
-# Needs Go 1.26+ and the Xcode Command Line Tools (xcode-select --install).
+# Needs Go 1.27.3+ and the Xcode Command Line Tools (xcode-select --install).
 set -eu
 cd "$(dirname "$0")/.."
 
