@@ -851,17 +851,16 @@ func TestConflictDuringUpload(t *testing.T) {
 	}
 }
 
-// An edit to a file modalfs never read whose original is replaced on Modal
-// before the commit can't be saved without mixing two versions. Nothing is
-// committed, the edit is set aside with a note, and unmounting isn't blocked.
-func TestEditOfReplacedFileIsSetAside(t *testing.T) {
+// Replacing a file on Modal must not lose a local edit or overwrite the
+// replacement. Missing original blocks leave the edit set aside with a note;
+// a commit that already captured the original can save a whole conflict copy.
+func TestEditOfReplacedFileIsPreserved(t *testing.T) {
 	// The commit starts when the test stops modalfs, surely after the
 	// replacement is in.
 	t.Run("on-exit", func(t *testing.T) { editReplacedFile(t, true) })
-	// The commit starts on its own, as it does for a user. On real Modal,
-	// where the replacement takes seconds, it may start first, read the
-	// original's unchanged parts while they're still there and save the
-	// edit to a conflict copy instead. That's also safe, and accepted there.
+	// The background commit can start before the replacement on either
+	// backend, capture the original's unchanged parts and save a conflict
+	// copy instead. Both outcomes must preserve the exact edited bytes.
 	t.Run("running", func(t *testing.T) { editReplacedFile(t, false) })
 }
 
@@ -900,18 +899,22 @@ func editReplacedFile(t *testing.T, onExit bool) {
 	var notes, copies []string
 	for len(notes) == 0 && len(copies) == 0 && time.Now().Before(deadline) {
 		notes, _ = filepath.Glob(filepath.Join(root, "cache", "*", "unsaved", "*", "README.txt"))
-		if !onExit && liveProfile() != "" {
+		if !onExit {
 			copies = e.conflictCopies("data")
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
 	switch {
 	case len(notes) > 0:
+		got, err := os.ReadFile(filepath.Join(filepath.Dir(notes[0]), "0"))
+		if err != nil || !bytes.Equal(got, edit) {
+			t.Fatalf("the set-aside block doesn't contain the edit (err %v)", err)
+		}
 	case len(copies) > 0:
 		// ours whole: the edit on the original's unchanged parts
 		e.waitRemote(copies[0], append(edit, original[8*MiB:]...), 2*time.Minute)
 	default:
-		t.Fatal("the edit wasn't set aside")
+		t.Fatal("the edit was neither set aside nor saved as a conflict copy")
 	}
 	got, err := e.remote("data.bin")
 	if err != nil || sum(got) != sum(replacement) {
