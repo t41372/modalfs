@@ -107,7 +107,7 @@ func (fs *FS) sidecarPath(p string) string {
 }
 
 func (fs *FS) sidecarError(p string, err error) {
-	if fs.c.Cipher == nil {
+	if fs.c.Cipher == nil || fs.ctx.Err() != nil { // closing: nothing failed to authenticate
 		return
 	}
 	detail := "could not read or authenticate the encrypted sidecar; reading authenticated file blocks to rebuild hashes: " + err.Error()

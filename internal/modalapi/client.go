@@ -289,6 +289,17 @@ func IsNotFound(err error) bool {
 	return status.Code(err) == codes.NotFound
 }
 
+// IsUnreachable reports whether err only says Modal couldn't be reached in
+// time: no network (as while a Mac wakes from sleep), a timeout, or trouble
+// on Modal's side. Trying again later may work.
+func IsUnreachable(err error) bool {
+	switch status.Code(err) {
+	case codes.Unavailable, codes.DeadlineExceeded:
+		return true
+	}
+	return errors.Is(err, context.DeadlineExceeded)
+}
+
 type VolumeInfo struct {
 	ID        string             `json:"id"`
 	Name      string             `json:"name"`
@@ -358,8 +369,29 @@ func (c *Client) LookupVolume(ctx context.Context, name string, create bool) (Vo
 type Entry struct {
 	Path  string // volume-relative, no leading slash
 	IsDir bool
+	Type  pb.FileEntry_FileType
 	Size  int64
 	Mtime int64 // unix seconds
+}
+
+// Mode reports the entry's type with synthetic permissions. The public API
+// does not expose permissions, even for regular files.
+func (e Entry) Mode() os.FileMode {
+	if e.IsDir {
+		return os.ModeDir | 0o755
+	}
+	switch e.Type {
+	case pb.FileEntry_FILE:
+		return 0o644
+	case pb.FileEntry_SYMLINK:
+		return os.ModeSymlink | 0o777
+	case pb.FileEntry_FIFO:
+		return os.ModeNamedPipe | 0o644
+	case pb.FileEntry_SOCKET:
+		return os.ModeSocket | 0o755
+	default:
+		return os.ModeIrregular
+	}
 }
 
 func (c *Client) List(ctx context.Context, volID, dir string, recursive bool) ([]Entry, error) {
@@ -385,6 +417,7 @@ func (c *Client) List(ctx context.Context, volID, dir string, recursive bool) ([
 				out = append(out, Entry{
 					Path:  strings.Trim(e.GetPath(), "/"),
 					IsDir: e.GetType() == pb.FileEntry_DIRECTORY,
+					Type:  e.GetType(),
 					Size:  int64(e.GetSize()),
 					Mtime: int64(e.GetMtime()),
 				})
@@ -419,6 +452,7 @@ func (c *Client) Walk(ctx context.Context, volID, dir string, fn func([]Entry)) 
 			batch = append(batch, Entry{
 				Path:  strings.Trim(e.GetPath(), "/"),
 				IsDir: e.GetType() == pb.FileEntry_DIRECTORY,
+				Type:  e.GetType(),
 				Size:  int64(e.GetSize()),
 				Mtime: int64(e.GetMtime()),
 			})
@@ -492,7 +526,9 @@ func (c *Client) Put(ctx context.Context, volID string, files []PutFile) (int, e
 // PutChecked is Put with a check that runs after the missing blocks are
 // uploaded and right before the request that commits the files; if it
 // returns an error, nothing is committed. Uploading can take minutes, so
-// this is where to look once more for a concurrent change.
+// this is where to look once more for a concurrent change. If Modal has
+// every block already, the first request commits and the check doesn't
+// run: the caller's own look must be recent.
 func (c *Client) PutChecked(ctx context.Context, volID string, files []PutFile, beforeCommit func() error) (int, error) {
 	putResp := make([]map[int][]byte, len(files))
 	for i := range putResp {

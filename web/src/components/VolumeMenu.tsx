@@ -13,7 +13,6 @@ import { UnlockDialog } from '@/dialogs/Encryption'
 import { DeleteVolumeDialog } from '@/dialogs/Volume'
 import { bytes } from '@/lib/format'
 import { live, nameOf } from '@/lib/mounts'
-import { isMac } from '@/lib/platform'
 
 /**
  * What can be done with a volume, as menu items for its ⋯ menu and its
@@ -54,7 +53,7 @@ export function useVolumeMenu(m: Mount, { full = false }: { full?: boolean } = {
             <>
               <DropdownMenuItem onClick={reveal}>
                 <FolderOpen />
-                {t(isMac ? 'vol.finder' : 'vol.openFolder')}
+                {t('vol.finder')}
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => askUnmount(m, t)}>
                 <Eject />

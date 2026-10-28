@@ -156,6 +156,7 @@ func newTestManager(t *testing.T, d *Daemon, dir string, quit chan struct{}, r d
 	m.poll, m.stopAfter = 20*time.Millisecond, 2*time.Second
 	m.checkVolume = func(context.Context, string, string, string) error { return nil }
 	m.runnerFor = func(string, string) (downloads.Runner, error) { return r, nil }
+	m.environmentFor = func(_ context.Context, _, env string) (string, error) { return env, nil }
 	m.volumeFor = func(_ context.Context, _, _, name string) (modalapi.VolumeInfo, error) {
 		return modalapi.VolumeInfo{ID: "vo-1", Name: name}, nil
 	}
@@ -228,6 +229,19 @@ func (x *dlTest) events(code string) []Event {
 		}
 	}
 	return out
+}
+
+// waitEvents waits until n events with this code were sent: a download's
+// state is saved before its event goes out.
+func (x *dlTest) waitEvents(code string, n int) []Event {
+	x.t.Helper()
+	var ev []Event
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if ev = x.events(code); len(ev) >= n {
+			break
+		}
+	}
+	return ev
 }
 
 func TestDownloadsAreOffUntilTurnedOn(t *testing.T) {
@@ -387,7 +401,10 @@ func TestDownloadLifecycle(t *testing.T) {
 	if code, body := x.do("POST", "/api/downloads/"+v.ID+"/resume", nil, nil); code != 200 {
 		t.Fatalf("resume: %d %s", code, body)
 	}
-	x.waitState(v.ID, "starting")
+	// The second call; the view may already show it running, from the
+	// container's live status.
+	for deadline := time.Now().Add(5 * time.Second); len(x.job(v.ID).Calls) < 2 && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+	}
 	j = x.job(v.ID)
 	if len(j.Calls) != 2 {
 		t.Fatalf("calls after resume: %v", j.Calls)
@@ -497,6 +514,18 @@ func TestDownloadCancel(t *testing.T) {
 	x.waitState(v.ID, downloads.StateCancelled)
 	if partial(v.ID) {
 		t.Fatal("cancel kept the partial file")
+	}
+	// A running one with keep: stopped the same way, and nothing is deleted.
+	k := x.add("https://example.com/c.bin")
+	x.waitState(k.ID, "starting")
+	x.r.record(t, k.ID, "work/a.bin", "partial")
+	x.r.record(t, k.ID, "status.json", map[string]any{"state": "running", "done": 7, "t": 1})
+	if code, body := x.do("POST", "/api/downloads/"+k.ID+"/cancel", map[string]any{"keep": true}, nil); code != 200 {
+		t.Fatalf("cancel: %d %s", code, body)
+	}
+	x.waitState(k.ID, downloads.StateCancelled)
+	if !partial(k.ID) {
+		t.Fatal("cancel with keep deleted a running download's partial file")
 	}
 	// A paused one with keep: nothing is deleted.
 	w := x.add("https://example.com/b.bin")
@@ -679,7 +708,7 @@ func TestDownloadRefusedByModal(t *testing.T) {
 	x.r.startErr = errors.New("RemoteError: Image build for im-AmHP9P7tCZr2GkFtM90o5A terminated due to external shut-down. Please try again.")
 	v := x.add("https://example.com/a.bin")
 	f := x.waitState(v.ID, "failed")
-	if f.ErrorKind != downloads.WhyUnexplained || len(x.events("dl_failed_unexplained")) != 1 {
+	if f.ErrorKind != downloads.WhyUnexplained || len(x.waitEvents("dl_failed_unexplained", 1)) != 1 {
 		t.Fatalf("refused without a reason: %+v, events %+v", f, x.d.Events(0))
 	}
 
@@ -688,7 +717,7 @@ func TestDownloadRefusedByModal(t *testing.T) {
 		t.Fatalf("resume: %d %s", code, body)
 	}
 	f = x.waitState(v.ID, "failed")
-	if f.ErrorKind != downloads.WhyBilling || len(x.events("dl_failed_billing")) != 1 {
+	if f.ErrorKind != downloads.WhyBilling || len(x.waitEvents("dl_failed_billing", 1)) != 1 {
 		t.Fatalf("refused for money: %+v", f)
 	}
 
@@ -823,5 +852,110 @@ func TestDownloadWARP(t *testing.T) {
 	x.r.mu.Unlock()
 	if sent.WARP {
 		t.Fatal("the new run still asks for WARP")
+	}
+}
+
+// slowResults takes a moment to say how a call ended, as Modal does: two
+// resumes then overlap.
+type slowResults struct{ *fakeRunner }
+
+func (r slowResults) Result(ctx context.Context, id string) (map[string]any, bool, error) {
+	time.Sleep(100 * time.Millisecond)
+	return r.fakeRunner.Result(ctx, id)
+}
+
+// Resumes asked at once (the app and the command line, say) start one
+// call: two would download the same file into the same place, both billed.
+func TestConcurrentResumesStartOneCall(t *testing.T) {
+	x := newDLTest(t, true)
+	j, err := downloads.NewJob("acct-1", "main", "vo-1", "data", "", "https://example.com/file.bin", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.State, j.Calls = "paused", []string{"previous"}
+	x.r.end("previous", map[string]any{"state": "paused"})
+	if err := x.d.dl.store.Put(j); err != nil {
+		t.Fatal(err)
+	}
+	x.d.dl.runnerFor = func(string, string) (downloads.Runner, error) { return slowResults{x.r}, nil }
+	results := make(chan error, 8)
+	for range cap(results) {
+		go func() { results <- x.d.dl.Resume(context.Background(), j.ID, nil) }()
+	}
+	accepted := 0
+	for range cap(results) {
+		if <-results == nil {
+			accepted++
+		}
+	}
+	if accepted != 1 {
+		t.Fatalf("%d resumes accepted at once, want 1", accepted)
+	}
+	x.waitState(j.ID, "starting")
+	x.r.mu.Lock()
+	defer x.r.mu.Unlock()
+	if x.r.n != 1 {
+		t.Fatalf("%d calls started, want 1", x.r.n)
+	}
+}
+
+// A pause that comes as the call hands over to its successor (the 24 h
+// limit) pauses the successor: it mustn't go on running.
+func TestPauseAtHandoverPausesTheSuccessor(t *testing.T) {
+	x := newDLTest(t, true)
+	v := x.add("https://example.com/a.bin")
+	x.waitState(v.ID, "starting")
+	j := x.job(v.ID)
+	x.r.mu.Lock()
+	x.r.calls["successor"] = &fakeCall{job: j}
+	x.r.mu.Unlock()
+	// the old call ends before the pause has seen it end, or follow has
+	// learned of the successor
+	x.r.end(j.Calls[0], map[string]any{"state": "continued", "next_call": "successor"})
+	if err := x.d.dl.Pause(v.ID); err != nil {
+		t.Fatal(err)
+	}
+	x.waitState(v.ID, "paused")
+	x.r.mu.Lock()
+	defer x.r.mu.Unlock()
+	if !x.r.calls["successor"].ended {
+		t.Fatal("the pause left the successor running")
+	}
+}
+
+// Revealing a file of a volume that isn't mounted says so, rather than
+// open the empty folder it would be mounted at.
+func TestRevealNeedsTheMount(t *testing.T) {
+	x := newDLTest(t, false)
+	folder := t.TempDir()
+	if err := x.d.store.Update(func(f *config.File) error {
+		f.Mounts = append(f.Mounts, config.Mount{ID: "mnt-1", AccountID: "acct-1", VolumeName: "data", Mountpoint: folder})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	code, body := x.do("POST", "/api/mounts/mnt-1/reveal", map[string]any{"path": "a.txt"}, nil)
+	if code == 200 || !strings.Contains(body, "isn't mounted") {
+		t.Fatalf("reveal of an unmounted volume: %d %s", code, body)
+	}
+}
+
+// A conflict policy modalfs doesn't have is refused, from any client.
+func TestUnknownConflictPolicyIsRefused(t *testing.T) {
+	x := newDLTest(t, false)
+	if code, body := x.do("POST", "/api/mounts", map[string]any{"account_id": "acct-1", "volume_name": "data", "on_conflict": "merge"}, nil); code == 200 || !strings.Contains(body, "unknown on_conflict") {
+		t.Fatalf("added a mount with an unknown conflict policy: %d %s", code, body)
+	}
+	if err := x.d.store.Update(func(f *config.File) error {
+		f.Mounts = append(f.Mounts, config.Mount{ID: "mnt-1", AccountID: "acct-1", VolumeName: "data", Mountpoint: t.TempDir()})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := x.do("PATCH", "/api/mounts/mnt-1", map[string]any{"on_conflict": "merge"}, nil); code == 200 {
+		t.Fatalf("set an unknown conflict policy: %s", body)
+	}
+	if m, _ := x.d.store.Mount("mnt-1"); m.OnConflict != "" {
+		t.Fatalf("the mount's policy is now %q", m.OnConflict)
 	}
 }

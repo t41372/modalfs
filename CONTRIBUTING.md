@@ -40,7 +40,7 @@ just dev                # hot reload against your running daemon (start one with
 
 ## End-to-end tests
 
-`just test-e2e` (macOS) mounts modalfs for real, over NFS, against a fake Modal (`internal/modalfake`) with a slow network, and checks from outside that the mount stays responsive and that what reaches "Modal" is exactly what was written. It needs no account. `just test-e2e-live <profile>` runs the same tests against real Modal with a profile from `~/.modal.toml`; each test creates a scratch volume in that workspace and deletes it afterwards. If you change how files are read, written or committed, add a test there. `just fake` runs the fake on its own, to try modalfs by hand.
+`just test-e2e` mounts modalfs for real (over NFS on macOS, over FUSE on Linux, which needs `fuse3`) against a fake Modal (`internal/modalfake`) with a slow network, and checks from outside that the mount stays responsive and that what reaches "Modal" is exactly what was written. It needs no account. `just test-e2e-live <profile>` runs the same tests against real Modal with a profile from `~/.modal.toml`; each test creates a scratch volume in that workspace and deletes it afterwards. If you change how files are read, written or committed, add a test there. `just fake` runs the fake on its own, to try modalfs by hand.
 
 ## Integration tests
 
@@ -58,7 +58,7 @@ They need a Modal token. They read it the way the Modal client does (`~/.modal.t
 - Keep each PR to one change, and explain why it's needed.
 - Run `just lint` and `just test`. If you touched `internal/vfs`, `internal/nfsfront`, `internal/fusefront` or `internal/modalapi`, please also run the integration tests against a scratch volume.
 - If you changed behaviour on macOS, say which macOS version you tested on.
-- UI text lives in `internal/webui/static/i18n.js`. Add new strings in both English and Traditional Chinese, or leave the Chinese for a maintainer.
+- UI text lives in `web/src/i18n/{en,zh-Hant,zh-Hans}.json`. Add each new string to all three (see Strings above).
 
 ## Reporting bugs
 

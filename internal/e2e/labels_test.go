@@ -1,4 +1,4 @@
-//go:build e2e && darwin
+//go:build e2e
 
 package e2e
 
@@ -229,7 +229,7 @@ func (p *daemonProc) stop() {
 func (p *daemonProc) quit() {
 	p.stop()
 	if mounted(p.mnt) {
-		_ = exec.Command("/sbin/umount", "-f", p.mnt).Run()
+		_ = forceUnmount(p.mnt)
 	}
 }
 

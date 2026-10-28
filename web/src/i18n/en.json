@@ -41,7 +41,6 @@
     "mount": "Mount",
     "tryAgain": "Try again",
     "finder": "Show in Finder",
-    "openFolder": "Open folder",
     "unmountMenu": "Unmount…",
     "unmount": "Unmount",
     "unmountAfter": "Upload, then unmount",
@@ -623,6 +622,14 @@
     "stopBackground": "Unmounted; uploading the rest in the background.",
     "preparing": "getting the upload ready…"
   },
+  "closeWindow": {
+    "q": "Close the window?",
+    "p_one": "Your volume stays mounted and keeps uploading in the background, and nothing on screen shows modalfs is still running. To unmount it and stop modalfs, quit instead.",
+    "p_other": "Your {{count}} volumes stay mounted and keep uploading in the background, and nothing on screen shows modalfs is still running. To unmount them and stop modalfs, quit instead.",
+    "close": "Close window",
+    "keep": "Keep open",
+    "quit": "Quit modalfs"
+  },
   "quit": {
     "title": "Quitting modalfs…",
     "sub": "Each volume is unmounted once its changes are on Modal.",
@@ -745,8 +752,7 @@
     "savedFile": "Key saved",
     "file": "modalfs key for the volume {{volume}}\n\n{{key}}\n\nThis key, and nothing else, decrypts the files in this volume.\nWithout it they can't be recovered, by anyone.\n",
     "remember": "Remember on this computer",
-    "rememberMac": "Kept in your Mac's keychain, so the volume mounts by itself.",
-    "rememberOther": "Kept in this computer's secret store (or a private file), so the volume mounts by itself.",
+    "rememberOn": "Kept in your Mac's keychain, so the volume mounts by itself.",
     "rememberOff": "Kept only until modalfs quits; after that you paste it again.",
     "savedConfirm": "I've saved the key. Without it, nobody can recover my files.",
     "createEncrypted": "Create encrypted volume",
@@ -785,5 +791,46 @@
     "dlGroup": "Encrypted · remote downloads can't save here",
     "row": "Encryption",
     "rowD": "Encrypted here before it leaves for Modal. With the key it opens on any computer."
+  },
+  "linux": {
+    "home": {
+      "uploadingHint_one": "{{count}} file is waiting to upload. Keep the computer awake until it's done.",
+      "uploadingHint_other": "{{count}} files are waiting to upload. Keep the computer awake until they're done.",
+      "emptyP": "Add a volume from your Modal account, and modalfs puts it in a folder on this computer."
+    },
+    "vol": {
+      "nowP": "The folder goes away at once, even if apps have files open in it. What isn't on Modal yet stays on this computer and keeps uploading in the background; if modalfs quits first, it's uploaded the next time this volume is mounted.",
+      "forcePending": "What isn't on Modal yet stays on this computer and keeps uploading in the background.",
+      "litterHint": ".DS_Store and ._ files stay on this computer and are never uploaded.",
+      "finder": "Open folder",
+      "compare": "Open folder",
+      "unmountClean": "Everything is on Modal. The folder goes away; nothing is deleted."
+    },
+    "dl": {
+      "sub": "A Modal Function downloads straight into a volume; your computer can sleep meanwhile.",
+      "offP": "Each download runs in a small container in your Modal account, billed to it. The computer can sleep or be off meanwhile."
+    },
+    "connect": {
+      "found": "Found on this computer",
+      "safe": "The token stays on this computer, in the system keyring if there is one."
+    },
+    "quitList": {
+      "quitNowHint": "Unmounts everything at once and stops uploading. What isn't on Modal yet stays saved on this computer and uploads the next time each volume is mounted; nothing is lost."
+    },
+    "mountErr": {
+      "offline": "Couldn't reach Modal. Check this computer's internet connection; modalfs tries again by itself."
+    },
+    "acct": {
+      "storeKeychain": "token in the system keyring"
+    },
+    "welcome": {
+      "title": "Use Modal Volumes like local folders"
+    },
+    "form": {
+      "tokenHint": "Create a token at modal.com → Settings → API Tokens. The secret stays on this computer, in the system keyring if there is one."
+    },
+    "enc": {
+      "rememberOn": "Kept in this computer's secret store (or a private file), so the volume mounts by itself."
+    }
   }
 }

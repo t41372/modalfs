@@ -1,15 +1,13 @@
-//go:build e2e && darwin
+//go:build e2e
 
 package e2e
 
 import (
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -117,13 +115,13 @@ func TestCopyLargerThanTheLimit(t *testing.T) {
 	if most > limit+64*MiB {
 		t.Errorf("modalfs used %d MiB of disk, limit %d MiB", most/MiB, limit/MiB)
 	}
-	if slowest > 45*time.Second {
+	if slowest > maxHeld {
 		t.Errorf("a write waited %v for room", slowest)
 	}
 	if worst > maxStall {
 		t.Errorf("listing the mount took %v while writes waited for room (limit %v)", worst, maxStall)
 	}
-	if worstStat > 45*time.Second {
+	if worstStat > maxHeld {
 		t.Errorf("a stat of the file being copied took %v", worstStat)
 	}
 }
@@ -139,15 +137,7 @@ func TestCrashAfterBlocksWereLetGo(t *testing.T) {
 	if n := diskUse(e.cache); n >= int64(len(data)) {
 		t.Fatalf("modalfs holds %d MiB for a %d MiB file: nothing was let go", n/MiB, len(data)/MiB)
 	}
-	if err := e.proc.Signal(syscall.SIGKILL); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(500 * time.Millisecond)
-	if mounted(e.mnt) {
-		if err := exec.Command("/sbin/umount", "-f", e.mnt).Run(); err != nil {
-			t.Fatal(err)
-		}
-	}
+	e.crash()
 	e.launch()
 	e.waitRemote("crash.bin", data, 3*time.Minute)
 }

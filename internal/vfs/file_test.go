@@ -111,11 +111,11 @@ func TestRoomForPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, _, _ := c.room(blockSize); !ok {
+	if ok, _, _, _ := c.room(blockSize); !ok {
 		t.Fatal("no room in an empty cache")
 	}
 	c.addPending(limit - readRoom(limit))
-	ok, freed, stuck := c.room(blockSize)
+	ok, freed, stuck, _ := c.room(blockSize)
 	if ok || stuck {
 		t.Fatalf("full: ok=%v stuck=%v, want a wait", ok, stuck)
 	}
@@ -125,25 +125,69 @@ func TestRoomForPending(t *testing.T) {
 	default:
 		t.Fatal("uploading a block didn't wake the waiting writes")
 	}
-	if ok, _, _ := c.room(blockSize); !ok {
+	if ok, _, _, _ := c.room(blockSize); !ok {
 		t.Fatal("no room after a block was uploaded")
 	}
 	c.addPending(-(limit - readRoom(limit) - blockSize))
-	if ok, _, stuck := c.room(limit); ok || !stuck {
+	if ok, _, stuck, _ := c.room(limit); ok || !stuck {
 		t.Fatalf("a write bigger than the limit with nothing pending: ok=%v stuck=%v, want stuck", ok, stuck)
 	}
 }
 
-// A closed mount stops counting its pending changes: they're the next
-// mount's to count, and left counted they'd make other mounts wait forever.
-func TestClosedMountStopsCounting(t *testing.T) {
-	fs := testFS(t, t.TempDir())
-	fs.closed.Store(true)
-	st := newFileState(fs, "a", "1", false, modalapi.Entry{})
+// Changes a volume that isn't mounted left on disk count toward the limit.
+// When they fill it, no upload can free room: writes are refused at once,
+// saying why, rather than wait for good.
+func TestLeftChangesFillTheLimit(t *testing.T) {
+	const limit = 64 * blockSize
+	c, err := newBlockCache(t.TempDir(), limit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.addPending(limit - readRoom(limit))
+	c.leave("vo-1", limit-readRoom(limit))
+	if ok, _, stuck, left := c.room(blockSize); ok || !stuck || !left {
+		t.Fatalf("full of what an unmounted volume left: ok=%v stuck=%v left=%v, want refused, for that reason", ok, stuck, left)
+	}
+}
+
+// A truncate that cuts through a block zeroes its tail in place: the next
+// sync must make that durable, or a power loss could bring the cut bytes
+// back.
+func TestTruncateZeroingIsSynced(t *testing.T) {
+	st := newFileState(testFS(t, t.TempDir()), "a", "1", false, modalapi.Entry{})
+	if _, err := st.writeAt(bytes.Repeat([]byte{7}, 1000), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.truncate(10); err != nil {
+		t.Fatal(err)
+	}
+	if !st.unsynced[0] {
+		t.Fatal("the block truncate zeroed isn't synced by the next sync")
+	}
+}
+
+// A sync that fails leaves what it couldn't sync for the next one, which
+// mustn't report success without it.
+func TestFailedSyncIsRetried(t *testing.T) {
+	st := newFileState(testFS(t, t.TempDir()), "a", "1", false, modalapi.Entry{})
 	if _, err := st.writeAt([]byte("x"), 0); err != nil {
 		t.Fatal(err)
 	}
-	if got := fs.cache.Pending(); got != 0 {
-		t.Fatalf("pending = %d on a closed mount, want 0", got)
+	if err := os.Chmod(st.blockFile(0), 0); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := st.sync(); err == nil {
+			t.Fatalf("sync %d succeeded with its block unreadable", i+1)
+		}
+	}
+	if err := os.Chmod(st.blockFile(0), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.sync(); err != nil {
+		t.Fatal(err)
 	}
 }

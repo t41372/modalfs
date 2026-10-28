@@ -3,7 +3,9 @@ package nfs
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
+	"syscall"
 
 	"github.com/willscott/go-nfs-client/nfs/xdr"
 )
@@ -21,6 +23,9 @@ func onReadLink(ctx context.Context, w *response, userHandle Handler) error {
 
 	out, err := fs.Readlink(fs.Join(path...))
 	if err != nil {
+		if errors.Is(err, syscall.ENOTSUP) {
+			return &NFSStatusError{NFSStatusNotSupp, err}
+		}
 		if info, err := fs.Stat(fs.Join(path...)); err == nil {
 			if info.Mode()&os.ModeSymlink == 0 {
 				return &NFSStatusError{NFSStatusInval, err}

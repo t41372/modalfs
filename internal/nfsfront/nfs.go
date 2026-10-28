@@ -21,7 +21,9 @@ import (
 // Serve runs the NFS server on l until it fails.
 func Serve(l net.Listener, fs *vfs.FS, readOnly bool) error {
 	b := &billyFS{fs: fs, ro: readOnly, uid: uint32(os.Getuid()), gid: uint32(os.Getgid())}
-	return nfs.Serve(l, newHandler(b))
+	h := newHandler(b)
+	h.log = fs.Logger()
+	return nfs.Serve(l, h)
 }
 
 type billyFS struct {
@@ -156,8 +158,10 @@ func (b *billyFS) MkdirAll(name string, _ os.FileMode) error {
 	return b.fs.Mkdir(p)
 }
 
-func (b *billyFS) Symlink(_, _ string) error         { return errors.New("symlinks not supported") }
-func (b *billyFS) Readlink(_ string) (string, error) { return "", errors.New("symlinks not supported") }
+func (b *billyFS) Symlink(target, name string) error    { return b.fs.Symlink(target, norm(name)) }
+func (b *billyFS) Readlink(name string) (string, error) { return b.fs.Readlink(norm(name)) }
+func (b *billyFS) Link(source, name string) error       { return b.fs.Link(norm(source), norm(name)) }
+func (b *billyFS) LinkSupport() (hard, symbolic bool)   { return false, false }
 func (b *billyFS) Chroot(_ string) (billy.Filesystem, error) {
 	return nil, errors.New("chroot not supported")
 }

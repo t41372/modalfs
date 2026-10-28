@@ -6,6 +6,7 @@
 package vfs
 
 import (
+	"bytes"
 	"container/list"
 	"context"
 	"errors"
@@ -104,11 +105,12 @@ type FS struct {
 	ctr   counters
 	reads readTracker // sequential reads, for read-ahead (own lock)
 
-	sf     singleflight.Group
-	ctx    context.Context
-	cancel context.CancelFunc
-	closed atomic.Bool // no more commit timers
-	nextID int64
+	sf            singleflight.Group
+	ctx           context.Context
+	cancel        context.CancelFunc
+	closed        atomic.Bool // no more commit timers
+	readlinkNoted atomic.Bool // Activity said once that links can't be read
+	nextID        int64
 
 	waiting atomic.Int32 // writes waiting for room (see waitRoom)
 
@@ -185,6 +187,7 @@ func New(c *modalapi.Client, vol modalapi.VolumeInfo, opt Options) (*FS, error) 
 		return nil, err
 	}
 	if !opt.ReadOnly {
+		bc.takeOver(vol.ID) // recovery counts the changes it finds itself
 		fs.recover(filepath.Join(base, "dirty"))
 		go fs.aheadLoop()
 	}
@@ -214,6 +217,9 @@ func hidden(dir, name string) bool {
 // DirCacheTTL or fresh is set. Callers share a listing in flight only if no
 // invalidation happened since it started, so a fresh listing always
 // reflects every change made before the call.
+// Logger is the mount's log.
+func (fs *FS) Logger() *slog.Logger { return fs.log }
+
 func (fs *FS) listDir(dir string, fresh bool) (map[string]modalapi.Entry, error) {
 	fs.mu.Lock()
 	l := fs.dirs[dir]
@@ -316,13 +322,7 @@ func (fs *FS) remoteStat(p string, fresh bool) (modalapi.Entry, error) {
 }
 
 func entryAttr(e modalapi.Entry) Attr {
-	a := Attr{Name: path.Base(e.Path), IsDir: e.IsDir, Size: e.Size, Mtime: time.Unix(e.Mtime, 0)}
-	if e.IsDir {
-		a.Mode = os.ModeDir | 0o755
-	} else {
-		a.Mode = 0o644
-	}
-	return a
+	return Attr{Name: path.Base(e.Path), IsDir: e.IsDir, Size: e.Size, Mtime: time.Unix(e.Mtime, 0), Mode: e.Mode()}
 }
 
 func (fs *FS) Stat(p string) (Attr, error) {
@@ -346,7 +346,7 @@ func (fs *FS) Stat(p string) (Attr, error) {
 	if err != nil {
 		return Attr{}, err
 	}
-	if fs.c.Cipher != nil && !e.IsDir && e.Size == 0 {
+	if fs.c.Cipher != nil && e.Mode().IsRegular() && e.Size == 0 {
 		if _, _, err := fs.remoteBlock(p, 0, e.Mtime, 0, true); err != nil {
 			return Attr{}, err
 		}
@@ -415,6 +415,17 @@ func (fs *FS) blockLen(size int64, idx int64) int {
 	return int(end - idx*fs.chunkSize())
 }
 
+// refused tells the user why a folder wasn't moved or deleted, if it holds
+// something that doesn't decrypt, and returns err.
+func (fs *FS) refused(p, what string, err error) error {
+	if errors.Is(err, volume.ErrUnreadable) {
+		detail := fmt.Sprintf("%s wasn't %s: %v. modalfs doesn't leave behind or delete what it can't read; move or delete that entry with the Modal CLI, then try again", p, what, err)
+		fs.log.Error(detail)
+		fs.event("error", p, detail)
+	}
+	return err
+}
+
 // reportStray tells the user, once per name, about an entry of an encrypted
 // volume that doesn't decrypt with its key. The mount leaves it out rather
 // than refuse to list the folder it's in.
@@ -480,6 +491,11 @@ func (fs *FS) remoteBlockURL(p string, size, mtime int64, idx int64, cache bool,
 			return nil, err
 		}
 		h := fs.c.HashBlock(data)
+		if known := fs.mdb.Hash(p, size, mtime, idx); known != nil && !bytes.Equal(known, h) {
+			// the same size but other content: replaced since
+			fs.invalidate(parentOf(p))
+			return nil, fmt.Errorf("%s changed remotely (block %d differs): %w", p, idx, syscall.ESTALE)
+		}
 		fs.mdb.SetHash(p, size, mtime, int(idx), h)
 		if cache {
 			fs.cache.Put(h, data)
@@ -561,6 +577,10 @@ func (fs *FS) ReadAt(p string, buf []byte, off int64) (int, error) {
 	}
 	if e.IsDir {
 		return 0, syscall.EISDIR
+	}
+	if why := specialEntry(e); why != nil {
+		fs.unsupported(p, "read", why)
+		return 0, why
 	}
 	return fs.readRemote(p, e.Size, e.Mtime, buf, off)
 }
@@ -724,6 +744,9 @@ func (fs *FS) getState(p string, create bool) (*fileState, error) {
 		return nil, err
 	} else if e.IsDir {
 		return nil, syscall.EISDIR
+	} else if why := specialEntry(e); why != nil {
+		fs.unsupported(p, "change", why) // before anything is kept that couldn't be committed
+		return nil, why
 	}
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
@@ -732,6 +755,9 @@ func (fs *FS) getState(p string, create bool) (*fileState, error) {
 	}
 	fs.nextID++
 	st = newFileState(fs, p, fmt.Sprintf("%d-%d", time.Now().UnixNano(), fs.nextID), exists, e)
+	if m := fs.mdb.Get(p, e.Size, e.Mtime); exists && m != nil {
+		st.sure = m.Hashes // known before the edit began: the base's own
+	}
 	fs.files[p] = st
 	return st, nil
 }
@@ -877,7 +903,8 @@ func (fs *FS) Close() error {
 		if st.timer != nil {
 			st.timer.Stop()
 		}
-		st.accountLocked() // closed: drops this file from the count
+		fs.cache.leave(fs.volID, st.held) // still on disk: counted until the volume is mounted again
+		st.held, st.leftover = 0, true
 		st.mu.Unlock()
 	}
 	fs.cancel()
@@ -920,8 +947,8 @@ func (fs *FS) Remove(p string) error {
 		return err
 	}
 	if a.IsDir {
-		m, err := fs.listDir(p, true)
-		if err != nil {
+		var m map[string]modalapi.Entry
+		if m, err = fs.listDir(p, true); err != nil {
 			return err
 		}
 		for name := range m {
@@ -937,7 +964,7 @@ func (fs *FS) Remove(p string) error {
 			}
 		}
 		fs.mu.Unlock()
-		err = fs.c.Remove(fs.ctx, p, true)
+		err = fs.refused(p, "deleted", fs.c.Remove(fs.ctx, p, true))
 		fs.ephDropTree(p)
 	} else {
 		fs.mu.Lock()
@@ -952,6 +979,9 @@ func (fs *FS) Remove(p string) error {
 			err = fs.c.Remove(fs.ctx, p, false)
 			if modalapi.IsNotFound(err) {
 				err = nil
+			} else if err != nil {
+				err = fs.explain(p, err)
+				fs.unsupported(p, "delete", err)
 			}
 		}
 		fs.mdb.Delete(p)
@@ -962,8 +992,32 @@ func (fs *FS) Remove(p string) error {
 	return err
 }
 
-func (fs *FS) Rename(oldp, newp string) error {
+// dropEmptyCopy takes away the folder a move made before Modal refused to
+// copy into it, if nothing but its keep file is there.
+func (fs *FS) dropEmptyCopy(dir string) {
+	m, err := fs.listDir(dir, true)
+	if err == nil {
+		for name := range m {
+			if name != KeepName {
+				fs.log.Warn("a refused move left a folder with files in it", "path", dir, "file", name)
+				return
+			}
+		}
+		err = fs.c.Remove(fs.ctx, dir, true)
+	}
+	if err != nil {
+		fs.log.Warn("couldn't remove the folder a refused move made", "path", dir, "err", err)
+	}
+	fs.invalidate(parentOf(dir))
+	fs.invalidateTree(dir)
+}
+
+func (fs *FS) Rename(oldp, newp string) (err error) {
 	oldp, newp = clean(oldp), clean(newp)
+	defer func() {
+		fs.refused(oldp, "moved", err)
+		fs.unsupported(oldp, "move", err)
+	}()
 	if err := fs.checkPath(newp); err != nil {
 		return err
 	}
@@ -1014,23 +1068,34 @@ func (fs *FS) Rename(oldp, newp string) error {
 			if err := fs.Remove(newp); err != nil { // must be empty
 				return err
 			}
-		} else {
-			// discard any pending local state of the destination
-			fs.mu.Lock()
-			if st := fs.files[newp]; st != nil {
-				delete(fs.files, newp)
-				fs.mu.Unlock()
-				st.discard()
-			} else {
-				fs.mu.Unlock()
-			}
 		}
 	}
 	if !a.IsDir {
+		// The file this replaces takes its pending changes with it, once the
+		// copy has replaced it. No commit of them may run until then: one
+		// landing after the copy would bring them back, or delete the copy.
+		fs.mu.Lock()
+		old := fs.files[newp]
+		fs.mu.Unlock()
+		if old != nil {
+			old.commitMu.Lock()
+			defer old.commitMu.Unlock()
+		}
 		// VolumeCopyFiles2 is a manifest-level copy (O(#blocks), no data
 		// transfer) and atomically replaces an existing destination file.
 		if err := fs.c.Copy(fs.ctx, []string{oldp}, newp, false); err != nil {
-			return err
+			if why := fs.explain(oldp, err); why != err {
+				return why
+			}
+			return fs.explain(newp, err)
+		}
+		if old != nil {
+			fs.mu.Lock()
+			if fs.files[newp] == old {
+				delete(fs.files, newp)
+			}
+			fs.mu.Unlock()
+			old.discard()
 		}
 		if err := fs.c.Remove(fs.ctx, oldp, false); err != nil && !modalapi.IsNotFound(err) {
 			return err
@@ -1042,8 +1107,9 @@ func (fs *FS) Rename(oldp, newp string) error {
 		}()
 	} else {
 		// Directory copy semantics are `cp -r src... dstdir/`; so create the
-		// destination dir and copy the children into it.
-		children, err := fs.listDir(oldp, true)
+		// destination dir and copy the children into it. All of them: one
+		// that doesn't decrypt stops the move before anything changes.
+		children, err := fs.c.ListAll(fs.ctx, oldp, false)
 		if err != nil {
 			return err
 		}
@@ -1051,13 +1117,17 @@ func (fs *FS) Rename(oldp, newp string) error {
 			return err
 		}
 		var srcs []string
-		for name := range children {
-			if name != KeepName {
+		for _, e := range children {
+			if name := path.Base(e.Path); name != KeepName {
 				srcs = append(srcs, path.Join(oldp, name))
 			}
 		}
 		if len(srcs) > 0 {
 			if err := fs.c.Copy(fs.ctx, srcs, newp, true); err != nil {
+				var why *unsupportedEntry
+				if err = fs.explainTree(oldp, err); errors.As(err, &why) {
+					fs.dropEmptyCopy(newp)
+				}
 				return err
 			}
 		}

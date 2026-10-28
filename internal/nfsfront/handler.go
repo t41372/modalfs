@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"io/fs"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
@@ -34,6 +35,7 @@ type handler struct {
 	fs  billy.Filesystem
 	key [32]byte
 	uid uint32
+	log *slog.Logger
 
 	mu    sync.RWMutex
 	paths map[[16]byte][]string
@@ -54,6 +56,13 @@ func newHandler(f billy.Filesystem) *handler {
 }
 
 // Authorize implements the fork's per-request check (third_party/go-nfs/modalfs.go).
+// Slow logs a request that kept the mount waiting (nfs.SlowLogger).
+func (h *handler) Slow(msg string, args ...any) {
+	if h.log != nil {
+		h.log.Warn(msg, args...)
+	}
+}
+
 func (h *handler) Authorize(hdr rpc.Header) bool {
 	if hdr.Proc == 0 {
 		return true // NULL: a ping, carries no request

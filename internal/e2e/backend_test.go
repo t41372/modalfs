@@ -1,4 +1,4 @@
-//go:build e2e && darwin
+//go:build e2e
 
 package e2e
 
@@ -46,7 +46,11 @@ type backend struct {
 }
 
 // live reports whether the tests run against real Modal.
-func live() bool { return os.Getenv("MODALFS_E2E_PROFILE") != "" }
+func live() bool { return liveProfile() != "" }
+
+// liveProfile is the Modal CLI profile the tests run against: topsoil-drakes
+// on a developer's Mac, ci in the scheduled workflow.
+func liveProfile() string { return os.Getenv("MODALFS_E2E_PROFILE") }
 
 func startBackend(t *testing.T, root string, opt modalfake.Options) backend {
 	if live() {
@@ -85,7 +89,7 @@ func startLive(t *testing.T, profile string, opt modalfake.Options) backend {
 	}
 	t.Cleanup(func() { _ = client.Close() })
 	ctx := context.Background()
-	short := strings.ToLower(strings.TrimPrefix(t.Name(), "Test"))
+	short := strings.ToLower(strings.ReplaceAll(strings.TrimPrefix(t.Name(), "Test"), "/", "-"))
 	name := fmt.Sprintf("modalfs-e2e-%s-%d", short, time.Now().Unix())
 	vol, err := client.LookupVolume(ctx, name, true)
 	if err != nil {

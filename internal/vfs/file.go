@@ -1,6 +1,7 @@
 package vfs
 
 import (
+	"bytes"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -70,8 +71,17 @@ type fileState struct {
 	backoff    time.Duration // retry delay after a failed commit
 	removed    bool          // detached from fs.files (flushed or discarded)
 	deleted    bool
+	blocked    error // the path is one Modal won't take (blockCommit)
 	recovered  bool
 	dirtySince time.Time // when the oldest uncommitted change was made
+
+	// sure holds the base's block hashes known to be its own: known before
+	// this edit began, or committed by it. Modal gives a block's URL with
+	// the file's size but no version, so a block learned since could belong
+	// to a replacement of the same size; unsure marks the dirty blocks
+	// built from such a block. (nil entries: not sure)
+	sure   [][]byte
+	unsure map[int64]bool
 
 	// hashes caches each dirty block's SHA-256 from when it was last hashed;
 	// a change to the block drops it. A file committed several times while
@@ -82,6 +92,10 @@ type fileState struct {
 	// survives a power loss (see FS.Sync).
 	unsynced        map[int64]bool
 	journalUnsynced bool
+	dirSynced       bool // its folder's entry in the dirty folder is durable
+	// syncMu runs one sync at a time: a sync answers only once everything
+	// written before it is durable, including what a sync in flight took.
+	syncMu sync.Mutex
 
 	// commitMu serializes commits of this file. Reads and writes never take
 	// it, so they carry on while a commit uploads.
@@ -110,8 +124,10 @@ type fileState struct {
 	copySize, copyMtime int64
 
 	// held is the disk this file's pending changes take, as counted in the
-	// shared cache's pending bytes (see accountLocked).
-	held int64
+	// shared cache's pending bytes (see accountLocked). leftover: the mount
+	// closed, and they're counted as its volume's now.
+	held     int64
+	leftover bool
 
 	// last journal written (crash recovery)
 	jSize, jFloor int64
@@ -180,11 +196,11 @@ func copyFile(src, dst string) error {
 
 // accountLocked brings the shared count of pending bytes up to date with
 // the block files this file keeps: its dirty blocks and the copies set
-// aside for the commit in flight. Every change to them ends with it. Once
-// the mount closes, what's left is the next mount's to count.
+// aside for the commit in flight. Every change to them ends with it. What a
+// closed mount leaves is counted as its volume's (see Close).
 func (st *fileState) accountLocked() {
 	var n int64
-	if !st.removed && !st.fs.closed.Load() {
+	if !st.removed && !st.leftover {
 		n = int64(len(st.dirty))
 		if st.snap != nil {
 			n += int64(len(st.snap.saved))
@@ -233,7 +249,8 @@ func (st *fileState) ensureDirtyFromLocked(idx int64, fullCover bool, base []byt
 	if err != nil {
 		return err
 	}
-	if !fullCover && st.cleanIsRemote(idx) {
+	fromBase := !fullCover && st.cleanIsRemote(idx)
+	if fromBase {
 		data := base
 		if data == nil {
 			data, _, err = st.fs.remoteBlock(st.path, st.baseSize, st.baseMtime, idx, true)
@@ -262,10 +279,42 @@ func (st *fileState) ensureDirtyFromLocked(idx int64, fullCover bool, base []byt
 		return err
 	}
 	st.dirty[idx] = true
+	delete(st.unsure, idx)
+	if fromBase && !st.sureLocked(idx, st.fs.mdb.Hash(st.path, st.baseSize, st.baseMtime, idx)) {
+		if st.unsure == nil {
+			st.unsure = map[int64]bool{}
+		}
+		st.unsure[idx] = true
+	}
 	delete(st.hashes, idx)
 	st.unsynced[idx] = true
 	st.changedBlockLocked(idx)
 	return nil
+}
+
+func (st *fileState) sureLocked(idx int64, h []byte) bool {
+	return h != nil && idx < int64(len(st.sure)) && bytes.Equal(st.sure[idx], h)
+}
+
+// mayMix reports whether the snapshot may hold blocks of a same-size
+// replacement of its base, learned since the edit began.
+func (st *fileState) mayMix(sn *snapshot, hashes [][]byte) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for i := range hashes {
+		idx := int64(i)
+		switch {
+		case sn.dirty[idx]:
+			if st.unsure[idx] {
+				return true
+			}
+		case sn.cleanIsRemote(idx, st.fs.chunkSize()):
+			if !st.sureLocked(idx, hashes[i]) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // dropIfUnchangedLocked detaches a state that holds no completed change (an
@@ -492,6 +541,9 @@ func (st *fileState) writeAt(data []byte, off int64) (n int, err error) {
 		_, err = f.WriteAt(data[n:n+int(want)], inBlk)
 		f.Close()
 		modified = true
+		if full {
+			delete(st.unsure, idx) // every byte of the base it held is ours now
+		}
 		st.unsynced[idx] = true
 		st.changedBlockLocked(idx)
 		if err != nil {
@@ -543,6 +595,14 @@ func (st *fileState) truncate(newSize int64) (err error) {
 			return err
 		}
 	} else if newSize < st.size {
+		cut := newSize%st.fs.chunkSize() != 0
+		if cut {
+			// the block it cuts through first, from Modal maybe: if that
+			// fails, nothing has changed yet
+			if err := st.ensureDirtyLocked(newSize/st.fs.chunkSize(), false); err != nil {
+				return err
+			}
+		}
 		for idx := range st.dirty {
 			if idx*st.fs.chunkSize() >= newSize {
 				if err := st.preserveLocked(idx, true); err != nil {
@@ -550,17 +610,15 @@ func (st *fileState) truncate(newSize int64) (err error) {
 				}
 				_ = os.Remove(st.blockFile(idx))
 				delete(st.dirty, idx)
+				delete(st.unsure, idx)
 				st.forgetBlockLocked(idx)
 			}
 		}
 		if st.snap != nil {
 			st.snap.floor = min(st.snap.floor, newSize)
 		}
-		if newSize%st.fs.chunkSize() != 0 {
+		if cut {
 			idx := newSize / st.fs.chunkSize()
-			if err := st.ensureDirtyLocked(idx, false); err != nil {
-				return err
-			}
 			if err := st.preserveLocked(idx, false); err != nil {
 				return err
 			}
@@ -574,6 +632,7 @@ func (st *fileState) truncate(newSize int64) (err error) {
 			if cerr := f.Close(); err == nil {
 				err = cerr
 			}
+			st.unsynced[idx] = true
 			st.changedBlockLocked(idx)
 			if err != nil {
 				return err
@@ -587,10 +646,13 @@ func (st *fileState) truncate(newSize int64) (err error) {
 	return nil
 }
 
+// touch records a new, empty file. Its journal is what keeps it through a
+// crash: it has no blocks yet.
 func (st *fileState) touch() {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.changedLocked()
+	st.writeJournalLocked(true)
 }
 
 func (st *fileState) schedule(d time.Duration) {
@@ -602,7 +664,7 @@ func (st *fileState) schedule(d time.Duration) {
 }
 
 func (st *fileState) scheduleLocked(d time.Duration) {
-	if st.fs.closed.Load() {
+	if st.fs.closed.Load() || st.blocked != nil {
 		return
 	}
 	if st.timer != nil {
@@ -634,8 +696,12 @@ func (st *fileState) scheduleLocked(d time.Duration) {
 			return
 		}
 		if err := commit(); err != nil {
-			// back off: 10 s, doubling up to 5 min
 			st.mu.Lock()
+			if st.blocked != nil {
+				st.mu.Unlock()
+				return // reported, and kept until a remount
+			}
+			// back off: 10 s, doubling up to 5 min
 			st.backoff = min(max(2*st.backoff, 10*time.Second), 5*time.Minute)
 			retry := st.backoff
 			st.mu.Unlock()
@@ -661,22 +727,22 @@ func (st *fileState) discard() bool {
 	return st.baseExists || st.flushedGen != 0 || st.snap != nil
 }
 
-func conflictName(p string) string {
-	ext := path.Ext(p)
-	return fmt.Sprintf("%s.conflict-%s%s", strings.TrimSuffix(p, ext), time.Now().Format("20060102-150405"), ext)
-}
+// maxName is the longest file name Modal takes, in bytes.
+const maxName = 255
 
+// conflictName names a conflict copy of p, shortening the name to fit if
+// it has to.
 func (fs *FS) conflictName(p string) string {
-	if fs.c.Cipher == nil {
-		return conflictName(p)
+	suffix, limit := ".conflict-"+time.Now().Format("20060102-150405"), maxName
+	if fs.c.Cipher != nil {
+		suffix, limit = suffix+"-"+rand.Text(), encryption.MaxNameBytes
 	}
-	suffix := ".conflict-" + time.Now().Format("20060102-150405") + "-" + rand.Text()
 	ext := path.Ext(p)
-	if len(ext) > encryption.MaxNameBytes-len(suffix)-1 {
+	if len(ext) > limit-len(suffix)-1 {
 		ext = ""
 	}
 	stem := strings.TrimSuffix(path.Base(p), ext)
-	budget := encryption.MaxNameBytes - len(suffix) - len(ext)
+	budget := limit - len(suffix) - len(ext)
 	stem = stem[:min(len(stem), budget)]
 	for !utf8.ValidString(stem) && len(stem) > 0 {
 		stem = stem[:len(stem)-1]
@@ -714,6 +780,11 @@ func (st *fileState) commit(part bool) error {
 	if st.removed || st.gen == st.flushedGen {
 		st.mu.Unlock()
 		return nil
+	}
+	if st.blocked != nil {
+		err := st.blocked
+		st.mu.Unlock()
+		return err
 	}
 	sn := &snapshot{gen: st.gen, size: st.size, baseExists: st.baseExists, baseSize: st.baseSize,
 		baseMtime: st.baseMtime, truncFloor: st.truncFloor, dirty: map[int64]bool{}, saved: map[int64]bool{}, floor: st.size}
@@ -762,25 +833,44 @@ func (st *fileState) commit(part bool) error {
 	// based our edits on it? (Modal has no CAS, so this is best-effort.)
 	// If we can't tell, don't commit: the retry will check again.
 	cur, err := fs.remoteStat(path, true)
+	looked := time.Now()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("check for remote changes: %w", err)
 	}
 	if err == nil {
+		if why := specialEntry(cur); why != nil {
+			return st.blockCommit(why) // a container made it a symlink, say
+		}
 		changed := !sn.baseExists || cur.Size != sn.baseSize || cur.Mtime != sn.baseMtime
 		if changed && fs.opt.OnConflict != "overwrite" {
 			target = st.copyTarget(path)
 		}
 	}
 
-	hashes, err := st.snapshotHashes(sn, cur, err == nil)
+	found := err == nil
+	hashes, err := st.snapshotHashes(sn, cur, found)
+	// Replaced by a version of the same size: the blocks learned since the
+	// edit began may be the replacement's, which a conflict copy would mix
+	// with ours. Set the changes aside instead.
+	sameSize := func(e modalapi.Entry) bool {
+		return sn.baseExists && e.Size == sn.baseSize && e.Mtime != sn.baseMtime && st.mayMix(sn, hashes)
+	}
+	if err == nil && found && sameSize(cur) {
+		err = errBaseLost
+	}
+	setAside := func(why error) error {
+		if err := st.park(sn, why); err != nil {
+			return err // tried again, with the error shown
+		}
+		committed = true // nothing left to retry; park kept the data
+		return nil
+	}
 	if err == nil && target != path && target != st.conflictCopy {
 		fs.log.Warn("remote file changed while editing; saving local version as conflict copy", "path", path, "copy", target)
 		fs.event("conflict", path, target)
 	}
 	if errors.Is(err, errBaseLost) {
-		st.park(sn, err)
-		committed = true // nothing left to retry; park kept the data
-		return nil
+		return setAside(err)
 	}
 	if err != nil {
 		if st.isDeleted() {
@@ -801,6 +891,9 @@ func (st *fileState) commit(part bool) error {
 		if err != nil {
 			return fmt.Errorf("check for remote changes: %w", err)
 		}
+		if why := specialEntry(now); why != nil {
+			return st.blockCommit(why)
+		}
 		if !sn.baseExists || now.Size != sn.baseSize || now.Mtime != sn.baseMtime {
 			return errLateConflict
 		}
@@ -812,20 +905,37 @@ func (st *fileState) commit(part bool) error {
 			Block: func(i int) ([]byte, error) { return st.readSnapshotBlock(sn, int64(i)) },
 		}}, check)
 	}
-	uploaded, err := put(target, recheck)
+	// The first request commits at once if Modal has every block already
+	// (see PutChecked): if working out the blocks took a while (reading the
+	// unchanged ones), look again before it too. A look under a second old
+	// is as good as a new one, since there's no compare-and-swap anyway.
+	var uploaded int
+	if time.Since(looked) > time.Second {
+		err = recheck()
+	}
+	if err == nil {
+		uploaded, err = put(target, recheck)
+	}
 	if errors.Is(err, errLateConflict) {
+		if now, serr := fs.remoteStat(path, false); serr == nil && sameSize(now) {
+			return setAside(errBaseLost)
+		}
 		target = st.copyTarget(path)
 		if target != st.conflictCopy {
-			fs.log.Warn("remote file changed while uploading; saving local version as conflict copy", "path", path, "copy", target)
+			fs.log.Warn("remote file changed while committing; saving local version as conflict copy", "path", path, "copy", target)
 			fs.event("conflict", path, target)
 		}
 		var more int
-		more, err = put(target, nil) // the blocks are all there now
+		more, err = put(target, nil) // only this file's commits write its copy
 		uploaded += more
 	}
 	if err != nil {
 		if st.isDeleted() {
 			return nil // deleted while it uploaded: nothing left to commit
+		}
+		var why *unsupportedEntry
+		if err = fs.explain(target, err); errors.As(err, &why) {
+			return st.blockCommit(why)
 		}
 		return err
 	}
@@ -1088,6 +1198,7 @@ func (st *fileState) finishCommitLocked(sn *snapshot, target string, mtime int64
 		// The committed version is the new base. Snapshot blocks the live
 		// file didn't touch are identical to it, so they may stay dirty.
 		st.baseExists, st.baseSize, st.baseMtime = true, sn.size, mtime
+		st.sure, st.unsure = append([][]byte(nil), hashes...), nil
 		st.truncFloor = min(sn.size, sn.floor)
 		st.releaseCommittedLocked(sn, hashes)
 	}
@@ -1151,26 +1262,52 @@ func (st *fileState) syncJournalLocked() error {
 // sync makes the file's written data durable: the blocks written since the
 // last sync, the journal, and the directory holding them. The files are
 // synced without the lock; data written after the snapshot of the list goes
-// with the next sync.
-func (st *fileState) sync() error {
+// with the next sync, and what a failed sync took goes back on the list.
+func (st *fileState) sync() (err error) {
+	st.syncMu.Lock()
+	defer st.syncMu.Unlock()
 	st.mu.Lock()
 	if st.removed {
 		st.mu.Unlock()
 		return nil
 	}
+	// The journal saves a growing file's size at most once a second, and
+	// recovery can't tell trailing zeros from padding: save the size now
+	// (and the journal itself, if writing it failed).
+	if st.jAt.IsZero() || st.jSize != st.size || st.jFloor != st.truncFloor {
+		if err := st.writeJournalLocked(true); err != nil {
+			st.mu.Unlock()
+			return fmt.Errorf("sync %s: %w", st.path, err)
+		}
+	}
 	var blocks []string
 	for idx := range st.unsynced {
 		blocks = append(blocks, st.blockFile(idx))
 	}
+	taken := st.unsynced
 	st.unsynced = map[int64]bool{}
 	journal := st.journalUnsynced
 	st.journalUnsynced = false
 	dir := st.dir
+	dirs := []string{dir}
+	if !st.dirSynced {
+		dirs = append(dirs, filepath.Dir(dir)) // the folder's own entry
+	}
 	st.mu.Unlock()
+	defer func() {
+		if err != nil {
+			st.mu.Lock()
+			for idx := range taken {
+				st.unsynced[idx] = true
+			}
+			st.journalUnsynced = st.journalUnsynced || journal
+			st.mu.Unlock()
+		}
+	}()
 	if journal {
 		blocks = append(blocks, filepath.Join(dir, journalName))
 	}
-	for _, p := range append(blocks, dir) {
+	for _, p := range append(blocks, dirs...) {
 		f, err := os.Open(p)
 		if errors.Is(err, os.ErrNotExist) {
 			continue // committed or truncated away meanwhile
@@ -1184,6 +1321,9 @@ func (st *fileState) sync() error {
 			return fmt.Errorf("sync %s: %w", st.path, err)
 		}
 	}
+	st.mu.Lock()
+	st.dirSynced = true
+	st.mu.Unlock()
 	return nil
 }
 
@@ -1191,11 +1331,13 @@ func (st *fileState) sync() error {
 // background, once a file is first edited. A commit needs the hash of every
 // block it doesn't change, and Modal never reveals them, so they're streamed
 // and hashed here (the same work the commit would otherwise do) while the
-// version the edit is based on is surely still there.
+// version the edit is based on is surely still there. A sidecar manifest in
+// the volume, when there is one, saves streaming them.
 func (st *fileState) prehashBase(size, mtime int64) {
 	fs := st.fs
 	n := int64(st.fs.numBlocks(size))
 	m := fs.mdb.Get(st.path, size, mtime)
+	triedSidecar := fs.opt.SidecarMin <= 0 || size < fs.opt.SidecarMin
 	sem := make(chan struct{}, 4)
 	var wg sync.WaitGroup
 	for i := int64(0); i < n; i++ {
@@ -1207,6 +1349,16 @@ func (st *fileState) prehashBase(size, mtime int64) {
 		st.mu.Unlock()
 		if skip || fs.closed.Load() {
 			break
+		}
+		if !triedSidecar {
+			// Only once a block is surely needed.
+			triedSidecar = true
+			if sc := fs.loadSidecar(st.path, size, mtime); sc != nil {
+				m = sc
+				if int(i) < len(m.Hashes) && m.Hashes[i] != nil {
+					continue
+				}
+			}
 		}
 		wg.Add(1)
 		sem <- struct{}{}
@@ -1222,7 +1374,7 @@ func (st *fileState) prehashBase(size, mtime int64) {
 // park sets aside changes that can't be committed (errBaseLost): they're
 // moved out of the way, with a note saying what they are, and reported.
 // Retrying would fail forever and keep the volume from unmounting.
-func (st *fileState) park(sn *snapshot, why error) {
+func (st *fileState) park(sn *snapshot, why error) error {
 	fs := st.fs
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -1230,8 +1382,7 @@ func (st *fileState) park(sn *snapshot, why error) {
 	dest := filepath.Join(fs.opt.CacheDir, fs.volID, "unsaved", time.Now().Format("20060102-150405")+"-"+strings.ReplaceAll(path.Base(st.path), "/", "_"))
 	_ = os.MkdirAll(filepath.Dir(dest), 0o700)
 	if err := os.Rename(st.dir, dest); err != nil {
-		fs.log.Error("could not set aside unsaved changes", "path", st.path, "err", err)
-		return
+		return fmt.Errorf("%v, and the changes couldn't be set aside: %w", why, err)
 	}
 	var blocks []string
 	for i := range st.dirty {
@@ -1264,4 +1415,5 @@ meta.json describes the file. The file was %d bytes long.
 	fs.mu.Unlock()
 	fs.log.Error("unsaved changes set aside", "path", st.path, "kept_in", dest, "why", why)
 	fs.event("error", st.path, fmt.Sprintf("couldn't save: %v; your changes are kept in %s", why, dest))
+	return nil
 }

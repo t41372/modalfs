@@ -46,7 +46,9 @@ type App struct {
 	ctx      context.Context
 	client   *daemon.Client
 	quitting atomic.Bool // the window may close for good now
-	acked    atomic.Bool // the UI answered the last quit request
+	closing  atomic.Bool // without a menu bar icon: the window may close, the daemon stays
+	asking   atomic.Bool // a quit or close request is waiting for the UI
+	acked    atomic.Bool // the UI answered it
 	ran      atomic.Bool // a daemon was running for this window at some point
 	trayOnce sync.Once
 }
@@ -65,6 +67,15 @@ func (a *App) Quitting() { a.quitting.Store(true) }
 
 // QuitAck tells the app the UI is showing the quit checklist it asked for.
 func (a *App) QuitAck() { a.acked.Store(true) }
+
+// CloseAck tells the app the UI got the close request (no menu bar icon).
+func (a *App) CloseAck() { a.acked.Store(true) }
+
+// CloseWindow closes the window without quitting: the daemon keeps the mounts.
+func (a *App) CloseWindow() {
+	a.closing.Store(true)
+	go wruntime.Quit(a.ctx)
+}
 
 // SaveText asks where to save a text file, such as an encrypted volume's key
 // (the WebView can't download), and writes it readable only by its owner. It
@@ -90,18 +101,58 @@ func (a *App) requestQuit() {
 		return
 	}
 	nativeShowWindow()
-	a.acked.Store(false)
-	wruntime.EventsEmit(a.ctx, "quit:request")
-	time.Sleep(4 * time.Second)
-	if !a.acked.Load() && !a.quitting.Load() {
+	a.ask("quit:request", func() {
 		a.quitting.Store(true)
 		wruntime.Quit(a.ctx)
+	})
+}
+
+// requestClose asks the UI before the window closes, so it can say that the
+// volumes stay mounted and offer to quit instead. A window that doesn't
+// answer (its page failed to load) just closes.
+func (a *App) requestClose() {
+	wruntime.WindowUnminimise(a.ctx)
+	wruntime.WindowShow(a.ctx)
+	a.ask("close:request", a.CloseWindow)
+}
+
+// ask sends the UI a request and waits for its answer (QuitAck, CloseAck);
+// without one in 4 s, fallback runs. A request while one is waiting is
+// dropped, since the UI is about to answer it: resetting the answer would
+// make the first one time out under the dialog it opened.
+func (a *App) ask(event string, fallback func()) {
+	if !a.asking.CompareAndSwap(false, true) {
+		return
+	}
+	defer a.asking.Store(false)
+	a.acked.Store(false)
+	wruntime.EventsEmit(a.ctx, event)
+	for range 40 {
+		if a.acked.Load() {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !a.acked.Load() && !a.quitting.Load() {
+		fallback()
 	}
 }
 
-// beforeClose runs when Wails is about to quit. Unless the quit checklist
-// finished (or it's a logout), it shows the checklist instead.
+// beforeClose runs when Wails is about to quit. On macOS that's ⌘Q or the
+// Dock (the close button only hides the window), so unless the quit
+// checklist finished (or it's a logout), it shows the checklist instead.
+// Without a menu bar icon (Linux) it's the close button: only the window
+// goes, and the daemon, a process of its own, keeps the mounts. Nothing on
+// screen says so afterwards, so the UI may say it first (requestClose).
+// Quit in the window still runs the checklist, which sets quitting first.
 func (a *App) beforeClose(context.Context) (prevent bool) {
+	if !hasTray && !a.quitting.Load() {
+		if a.closing.Load() || a.ctx == nil {
+			return false
+		}
+		go a.requestClose()
+		return true
+	}
 	if a.quitting.Load() {
 		// Wails stops the run loop from a goroutine here; an event makes it notice.
 		go func() {

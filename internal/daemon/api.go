@@ -19,6 +19,7 @@ import (
 	"github.com/t41372/modalfs/internal/downloads"
 	"github.com/t41372/modalfs/internal/encryption"
 	"github.com/t41372/modalfs/internal/modalapi"
+	"github.com/t41372/modalfs/internal/vfs"
 	"github.com/t41372/modalfs/internal/volume"
 	"github.com/t41372/modalfs/internal/webui"
 )
@@ -500,6 +501,9 @@ func (d *Daemon) routes() http.Handler {
 						m.Mode, _ = v.(string)
 					case "on_conflict":
 						m.OnConflict, _ = v.(string)
+						if err := checkOnConflict(m.OnConflict); err != nil {
+							return err
+						}
 					case "mountpoint":
 						s, _ := v.(string)
 						if s != "" {
@@ -598,12 +602,20 @@ func (d *Daemon) routes() http.Handler {
 			writeErr(w, errors.New("mount not found"))
 			return
 		}
-		mp := expandHome(m.Mountpoint)
-		if fi, err := os.Stat(mp); err != nil || !fi.IsDir() {
-			writeErr(w, fmt.Errorf("%s is not a folder yet; mount it first", mp))
+		// What's mounted is asked of the mount itself: this process serves
+		// it, and file I/O on it from here can deadlock (see AGENTS.md).
+		var fsys *vfs.FS
+		var mp string
+		d.mu.Lock()
+		if rm := d.running[m.ID]; rm != nil && rm.state == StateMounted {
+			fsys, mp = rm.fs, rm.mountpoint
+		}
+		d.mu.Unlock()
+		if fsys == nil {
+			writeErr(w, fmt.Errorf("%s isn't mounted; mount it first", m.VolumeName))
 			return
 		}
-		if err := revealIn(mp, in.Path); err != nil {
+		if err := revealIn(fsys, mp, in.Path); err != nil {
 			writeErr(w, err)
 			return
 		}
@@ -631,6 +643,10 @@ func (d *Daemon) routes() http.Handler {
 		}
 		if in.DownloadStallMinutes < 0 {
 			writeErr(w, errors.New("the stall limit must be at least 1 minute"))
+			return
+		}
+		if t := in.Transport; t != "" && t != "auto" && t != "http1" {
+			writeErr(w, fmt.Errorf("unknown transport %q (use auto or http1)", t))
 			return
 		}
 		if r := in.ChartRange; r != "" && r != "minute" && r != "tenMinutes" && r != "hour" {
@@ -939,14 +955,21 @@ func (d *Daemon) AddMount(m config.Mount) (config.Mount, error) {
 	if !volNameRe.MatchString(m.VolumeName) {
 		return m, errors.New("choose a volume")
 	}
+	if err := checkOnConflict(m.OnConflict); err != nil {
+		return m, err
+	}
 	if m.Mode == "" {
 		m.Mode = "auto"
 	}
 	m.ID = config.NewID("mnt")
+	if m.Environment == "" {
+		m.Environment = a.Environment // or, for the workspace's default, pinned when it mounts
+	}
 	var dup config.Mount
 	err := d.store.Update(func(f *config.File) error {
 		for _, x := range f.Mounts {
-			if x.AccountID == m.AccountID && x.VolumeName == m.VolumeName && x.Environment == m.Environment {
+			// a mount not pinned yet may be for any environment
+			if x.AccountID == m.AccountID && x.VolumeName == m.VolumeName && (x.Environment == m.Environment || x.Environment == "" || m.Environment == "") {
 				dup = x
 				return errors.New("this volume already has a saved mount")
 			}
@@ -982,6 +1005,15 @@ func (d *Daemon) AddMount(m config.Mount) (config.Mount, error) {
 // would hide or nest inside another saved mount (other than self) or
 // modalfs's own files. "" stays "", meaning the default. With root it checks
 // Settings' mount root instead, which may hold mounts but not sit inside one.
+// checkOnConflict refuses a conflict policy modalfs doesn't have ("" is
+// the default, keep-both).
+func checkOnConflict(p string) error {
+	if p != "" && p != "keep-both" && p != "overwrite" {
+		return fmt.Errorf("unknown on_conflict %q (use keep-both or overwrite)", p)
+	}
+	return nil
+}
+
 func checkMountpoint(p string, f *config.File, self string, root bool) (string, error) {
 	if p == "" {
 		return "", nil

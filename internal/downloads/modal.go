@@ -198,13 +198,21 @@ func (m *Modal) Result(ctx context.Context, callID string) (map[string]any, bool
 		return nil, false, err
 	}
 	zero := time.Duration(0)
-	out, err := fc.Get(ctx, &modal.FunctionCallGetParams{Timeout: &zero})
+	return callResult(fc.Get(ctx, &modal.FunctionCallGetParams{Timeout: &zero}))
+}
+
+// callResult reads what polling a call returned (see Result). Only the
+// call's own outcome says it ended: a poll that failed (offline, say)
+// doesn't, and the Function may still be running.
+func callResult(out any, err error) (map[string]any, bool, error) {
 	var timeout modal.FunctionTimeoutError
 	if errors.As(err, &timeout) && strings.HasPrefix(timeout.Exception, "Timeout exceeded") {
 		return nil, false, nil // still running
 	}
 	if err != nil {
-		return nil, true, err
+		var remote modal.RemoteError
+		var failure modal.InternalFailure
+		return nil, errors.As(err, &timeout) || errors.As(err, &remote) || errors.As(err, &failure), err
 	}
 	summary, ok := stringKeys(out).(map[string]any)
 	if !ok {

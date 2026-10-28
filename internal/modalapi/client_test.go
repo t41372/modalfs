@@ -3,10 +3,15 @@ package modalapi
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // A body cut short of its Content-Length must be an error, not zero padding.
@@ -37,5 +42,23 @@ func TestDownloadPads(t *testing.T) {
 	b, err := c.Download(context.Background(), srv.URL, 8)
 	if err != nil || !bytes.Equal(b, []byte("abc\x00\x00\x00\x00\x00")) {
 		t.Fatalf("got %q, %v", b, err)
+	}
+}
+
+// Out of reach: no network or a timeout, wrapped or not. Not an answer from
+// Modal, nor an error of modalfs's own.
+func TestIsUnreachable(t *testing.T) {
+	for err, want := range map[error]bool{
+		status.Error(codes.Unavailable, "name resolver error: produced zero addresses"):         true,
+		fmt.Errorf("block 0: %w", status.Error(codes.Unavailable, "context deadline exceeded")): true,
+		status.Error(codes.DeadlineExceeded, "waiting for connections to become ready"):         true,
+		fmt.Errorf("reading: %w", context.DeadlineExceeded):                                     true,
+		status.Error(codes.FailedPrecondition, "block GET 403: expired"):                        false,
+		status.Error(codes.NotFound, "no such file"):                                            false,
+		errors.New("encryption authentication failed: damaged or unsupported block header"):     false,
+	} {
+		if IsUnreachable(err) != want {
+			t.Errorf("IsUnreachable(%v) = %v", err, !want)
+		}
 	}
 }

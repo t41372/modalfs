@@ -31,14 +31,15 @@ import (
 type dlManager struct {
 	d     *Daemon
 	store *downloads.Store
-	// runnerFor and volumeFor reach Modal; tests replace them.
-	runnerFor   func(accountID, env string) (downloads.Runner, error)
-	volumeFor   func(ctx context.Context, accountID, env, name string) (modalapi.VolumeInfo, error)
-	checkVolume func(context.Context, string, string, string) error
-	billingFor  func(ctx context.Context, accountID, env string) (Billing, error)
-	poll        time.Duration // how often a running download's records are read
-	stopAfter   time.Duration // how long a pause may take before the call is cancelled
-	quit        <-chan struct{}
+	// runnerFor, environmentFor and volumeFor reach Modal; tests replace them.
+	runnerFor      func(accountID, env string) (downloads.Runner, error)
+	environmentFor func(ctx context.Context, accountID, env string) (string, error)
+	volumeFor      func(ctx context.Context, accountID, env, name string) (modalapi.VolumeInfo, error)
+	checkVolume    func(context.Context, string, string, string) error
+	billingFor     func(ctx context.Context, accountID, env string) (Billing, error)
+	poll           time.Duration // how often a running download's records are read
+	stopAfter      time.Duration // how long a pause may take before the call is cancelled
+	quit           <-chan struct{}
 
 	mu        sync.Mutex
 	runners   map[clientKey]*downloads.Modal
@@ -61,6 +62,7 @@ func newDLManager(d *Daemon, dir string, quit <-chan struct{}) (*dlManager, erro
 		status: map[string]downloads.Status{}, history: map[string]*downloads.History{}, live: map[string]*liveFeed{}}
 	m.checkVolume = d.refuseEncryptedDownload
 	m.runnerFor = m.modalRunner
+	m.environmentFor = d.environment
 	m.billingFor = m.readBilling
 	m.volumeFor = func(ctx context.Context, accountID, env, name string) (modalapi.VolumeInfo, error) {
 		c, _, err := d.clientFor(accountID, env)
@@ -186,9 +188,9 @@ func (m *dlManager) Add(ctx context.Context, in addRequest) ([]downloads.Job, er
 	if len(in.URLs) == 0 {
 		return nil, errors.New("give at least one link")
 	}
-	env := in.Environment
-	if env == "" {
-		env = a.Environment
+	env, err := m.environmentFor(ctx, a.ID, in.Environment) // the job is pinned to it, like a mount
+	if err != nil {
+		return nil, err
 	}
 	if in.Size == "" {
 		in.Size = s.DownloadSize
@@ -400,6 +402,9 @@ func (m *dlManager) ended(ctx context.Context, r downloads.Runner, j downloads.J
 	}
 	if (callErr == nil && sum["state"] == "continued" || callErr != nil && st != nil && st.State == "continued") && next != "" {
 		_, _ = m.store.Update(j.ID, func(j *downloads.Job) { j.Calls = append(j.Calls, next) })
+		if j.Stopping != "" {
+			go m.stopCall(j.ID) // asked to stop as it handed over: stop the successor
+		}
 		name := displayName(j, nil)
 		m.d.emitC("info", "dl_continued", "", j.VolumeName, name+" reached the Function's time limit and continues in a new one", name)
 		return false
@@ -434,7 +439,11 @@ func (m *dlManager) ended(ctx context.Context, r downloads.Runner, j downloads.J
 		}
 	}
 	if j.Stopping == "cancel" && state != "done" {
-		if err := m.discard(ctx, r, j); err != nil {
+		var err error
+		if !j.Keep {
+			err = m.discard(ctx, r, j)
+		}
+		if err != nil {
 			state, msg = "paused", "cancelled, but its partial files couldn't be deleted: "+err.Error()
 		} else {
 			state, msg = downloads.StateCancelled, ""
@@ -586,7 +595,7 @@ func (m *dlManager) stopCall(id string) {
 		m.mu.Unlock()
 	}()
 	deadline := time.Now().Add(m.stopAfter)
-	asked := false
+	asked := "" // the call asked to pause
 	for time.Now().Before(deadline) {
 		j, err := m.job(id)
 		if err != nil || j.Stopping == "" || downloads.Ended(j.State) {
@@ -602,7 +611,7 @@ func (m *dlManager) stopCall(id string) {
 			cancel()
 			return // follow records it
 		}
-		if !asked {
+		if asked != call {
 			st, ok := m.cachedStatus(id)
 			if fresh, err := downloads.ReadStatus(ctx, r.Volume(j), j); err == nil && fresh.T > j.Before {
 				st, ok = fresh, true
@@ -610,7 +619,7 @@ func (m *dlManager) stopCall(id string) {
 			}
 			if ok && st.LiveURL != "" && st.Running() {
 				if err := downloads.Pause(ctx, st, j); err == nil {
-					asked = true
+					asked = call
 				} else {
 					m.d.log.Info("download: pause through the live channel failed", "id", id, "err", err)
 				}
@@ -685,13 +694,21 @@ func (m *dlManager) Resume(ctx context.Context, id string, warp *bool) error {
 	if warp != nil && *warp && downloads.IsBitTorrent(j.URL) {
 		return errNoWARPForTorrents(j.URL)
 	}
-	if _, err := m.store.Update(id, func(j *downloads.Job) {
-		j.State, j.Error, j.ErrorKind = downloads.StatePreparing, "", ""
-		if warp != nil {
-			j.WARP = *warp
+	// Another resume may have come in meanwhile: only one starts a call.
+	from, won := j.State, false
+	j, err = m.store.Update(id, func(j *downloads.Job) {
+		if won = j.State == from; won {
+			j.State, j.Error, j.ErrorKind = downloads.StatePreparing, "", ""
+			if warp != nil {
+				j.WARP = *warp
+			}
 		}
-	}); err != nil {
+	})
+	if err != nil {
 		return err
+	}
+	if !won {
+		return fmt.Errorf("download %s is %s already", id, j.State)
 	}
 	go m.launch(id)
 	return nil

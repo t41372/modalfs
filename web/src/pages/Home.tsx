@@ -19,7 +19,6 @@ import { AddVolumeDialog } from '@/dialogs/AddVolume'
 import { EncryptedMark, UnlockDialog } from '@/dialogs/Encryption'
 import { ago, bytes, homeOf, speed, tilde } from '@/lib/format'
 import { look, type Look, nameOf, summary, toneOf } from '@/lib/mounts'
-import { isMac } from '@/lib/platform'
 import { mountError, uploadProblem } from '@/lib/mountError'
 
 /** The volumes modalfs manages: each one's state at a glance, and the one thing to do next. */
@@ -193,9 +192,9 @@ function VolumeRow({ m, biggest, showAccount }: { m: Mount; biggest: number; sho
     ) : l === 'starting' || l === 'stopping' ? (
       <Spinner className="mx-2 size-3.5 text-muted-foreground" />
     ) : (
-      <Button size="sm" variant="outline" onClick={reveal} aria-label={t(isMac ? 'vol.finder' : 'vol.openFolder')}>
+      <Button size="sm" variant="outline" onClick={reveal} aria-label={t('vol.finder')}>
         <FolderOpen />
-        <span className="max-sm:hidden">{t(isMac ? 'vol.finder' : 'vol.openFolder')}</span>
+        <span className="max-sm:hidden">{t('vol.finder')}</span>
       </Button>
     )
 
@@ -210,7 +209,7 @@ function VolumeRow({ m, biggest, showAccount }: { m: Mount; biggest: number; sho
               {m.encrypted && <EncryptedMark m={m} className="ml-1.5 align-[-1px]" />}
               {m.label && <span className="ml-2 font-mono text-[12px] font-normal tracking-normal text-muted-foreground">{m.volume_name}</span>}
             </span>
-            <span className="mt-0.5 flex min-w-0 items-center gap-2 text-[12.5px] text-muted-foreground">
+            <span className="mt-0.5 flex min-w-0 items-center gap-2 overflow-hidden text-[12.5px] text-muted-foreground">
               {showAccount && (
                 <Hint text={m.environment ? t('home.accountEnv', { env: m.environment }) : undefined}>
                   <span className="inline-flex max-w-[40%] shrink-0 items-center gap-2 text-foreground/75">

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -76,7 +77,7 @@ func TestCheckService(t *testing.T) {
 	}
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("MODALFS_HOME", t.TempDir())
-	systemctl = func(...string) {}
+	stubSystemctl(t, nil)
 	d := testDaemon(t)
 	p := servicePath()
 	if !strings.HasPrefix(p, os.Getenv("HOME")) {
@@ -167,5 +168,40 @@ func TestStableExeKeepsSymlink(t *testing.T) {
 	}
 	if strings.Contains(got, "..") {
 		t.Fatalf("not clean: %s", got)
+	}
+}
+
+// stubSystemctl makes systemctl answer err, for the test.
+func stubSystemctl(t *testing.T, err error) {
+	real := systemctl
+	systemctl = func(...string) error { return err }
+	t.Cleanup(func() { systemctl = real })
+}
+
+// Without a user systemd (WSL, a container), turning start at login on
+// fails and says why, and leaves it off; turning it off removes it anyway.
+func TestStartAtLoginWithoutSystemd(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("systemd is Linux's")
+	}
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("MODALFS_HOME", t.TempDir())
+	stubSystemctl(t, errors.New("Failed to connect to bus"))
+	if err := installService(currentSpec("/bin/sh")); err == nil || !strings.Contains(err.Error(), "Failed to connect to bus") {
+		t.Fatalf("turning it on: %v", err)
+	}
+	if serviceStatus().Installed {
+		t.Fatal("start at login shows as on, though it couldn't be enabled")
+	}
+	stubSystemctl(t, nil)
+	if err := installService(currentSpec("/bin/sh")); err != nil {
+		t.Fatal(err)
+	}
+	stubSystemctl(t, errors.New("Failed to connect to bus"))
+	if err := UninstallService(); err == nil {
+		t.Fatal("turning it off hid systemctl's failure")
+	}
+	if serviceStatus().Installed {
+		t.Fatal("start at login is still there after turning it off")
 	}
 }

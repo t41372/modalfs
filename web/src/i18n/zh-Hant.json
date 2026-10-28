@@ -38,7 +38,6 @@
     "mount": "掛載",
     "tryAgain": "再試一次",
     "finder": "在 Finder 中打開",
-    "openFolder": "打開資料夾",
     "unmountMenu": "卸載…",
     "unmount": "卸載",
     "unmountAfter": "上傳完再卸載",
@@ -595,12 +594,19 @@
     "stopBackground": "已卸載，剩下的在背景上傳。",
     "preparing": "正在準備上傳…"
   },
+  "closeWindow": {
+    "q": "要關閉視窗嗎？",
+    "p_other": "{{count}} 個 Volume 會保持掛載，繼續在背景上傳，而且畫面上不會再看到 modalfs 還在執行。要卸載並停止 modalfs，請改用「結束 modalfs」。",
+    "close": "關閉視窗",
+    "keep": "保持開啟",
+    "quit": "結束 modalfs"
+  },
   "quit": {
     "title": "正在結束 modalfs…",
     "sub": "每個 Volume 會在修改都上傳到 Modal 後卸載。",
     "waiting": "等待卸載…",
     "nowTitle": "不想等？",
-    "nowP": "「立即結束」會馬上卸載全部 Volume 並停止上傳。還沒上傳到 Modal 的修改會保存在這台 Mac 上，下次掛載各個 Volume 時再上傳。",
+    "nowP": "「立即結束」會馬上卸載全部 Volume 並停止上傳。還沒上傳到 Modal 的修改會保存在這台電腦上，下次掛載各個 Volume 時再上傳。",
     "now": "立即結束",
     "doneTitle": "modalfs 已結束",
     "doneP": "Volume 都已卸載。重新打開 modalfs 就能再掛載。"
@@ -714,8 +720,7 @@
     "savedFile": "金鑰已存檔",
     "file": "modalfs 金鑰，Volume：{{volume}}\n\n{{key}}\n\n只有這把金鑰能解開這個 Volume 裡的檔案。\n沒有它，任何人都無法找回這些檔案。\n",
     "remember": "記住在這台電腦上",
-    "rememberMac": "存在 Mac 的鑰匙圈裡，Volume 會自動掛載。",
-    "rememberOther": "存在這台電腦的密鑰儲存區（或一個私人檔案）裡，Volume 會自動掛載。",
+    "rememberOn": "存在 Mac 的鑰匙圈裡，Volume 會自動掛載。",
     "rememberOff": "只保留到 modalfs 結束；之後要再貼一次金鑰。",
     "savedConfirm": "我已經存好金鑰。沒有它，沒有人能找回我的檔案。",
     "createEncrypted": "建立加密 Volume",
@@ -754,5 +759,45 @@
     "dlGroup": "已加密 · 遠程下載不能存進這裡",
     "row": "加密",
     "rowD": "在這台電腦上加密後才上傳。有金鑰，在任何電腦都能打開。"
+  },
+  "linux": {
+    "home": {
+      "uploadingHint_other": "{{count}} 個檔案等待上傳。上傳完成前請別讓電腦睡眠。",
+      "emptyP": "從你的 Modal 帳號加入一個 Volume，modalfs 會把它變成這台電腦上的資料夾。"
+    },
+    "vol": {
+      "nowP": "資料夾會馬上移除，即使有 App 正開著裡面的檔案。還沒上傳到 Modal 的內容會留在這台電腦上，繼續在背景上傳；如果 modalfs 先結束了，下次掛載這個 Volume 時再上傳。",
+      "forcePending": "還沒上傳到 Modal 的內容會留在這台電腦上，繼續在背景上傳。",
+      "litterHint": ".DS_Store 和 ._ 開頭的檔案只留在這台電腦，永遠不會上傳。",
+      "finder": "打開資料夾",
+      "compare": "打開所在資料夾",
+      "unmountClean": "所有內容都已在 Modal 上。資料夾會消失，不會刪除任何檔案。"
+    },
+    "dl": {
+      "sub": "由 Modal Function 直接下載到 Volume，下載時電腦可以休眠。",
+      "offP": "每個下載會在你的 Modal 帳號裡跑一個小容器，費用由該帳號支付。下載時電腦可以休眠或關機。"
+    },
+    "connect": {
+      "found": "在這台電腦上找到的",
+      "safe": "token 只存在這台電腦上，有系統金鑰圈就存在金鑰圈裡。"
+    },
+    "quitList": {
+      "quitNowHint": "馬上卸載全部 Volume 並停止上傳。還沒上傳到 Modal 的修改會保存在這台電腦上，下次掛載各個 Volume 時再上傳，不會遺失。"
+    },
+    "mountErr": {
+      "offline": "連不上 Modal。請檢查這台電腦的網路，modalfs 會自己再試。"
+    },
+    "acct": {
+      "storeKeychain": "token 存在系統金鑰圈"
+    },
+    "welcome": {
+      "title": "把 Modal Volume 當成本機資料夾用"
+    },
+    "form": {
+      "tokenHint": "到 modal.com 的 Settings → API Tokens 建立。secret 只存在這台電腦上，有系統金鑰圈就存在金鑰圈裡。"
+    },
+    "enc": {
+      "rememberOn": "存在這台電腦的密鑰儲存區（或一個私人檔案）裡，Volume 會自動掛載。"
+    }
   }
 }

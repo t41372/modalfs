@@ -1,4 +1,4 @@
-//go:build e2e && darwin
+//go:build e2e
 
 package e2e
 
@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -171,9 +170,8 @@ func TestStreamingReadThroughput(t *testing.T) {
 		}
 		defer f.Close()
 		if nocache {
-			// bypass the NFS client's own cache, so every read reaches modalfs
-			if _, _, errno := syscall.Syscall(syscall.SYS_FCNTL, f.Fd(), syscall.F_NOCACHE, 1); errno != 0 {
-				t.Fatal(errno)
+			if err := uncached(f); err != nil {
+				t.Fatal(err)
 			}
 		}
 		t0 := time.Now()
@@ -202,8 +200,8 @@ func TestStreamingReadThroughput(t *testing.T) {
 		t.Fatal("cached read returned the wrong content")
 	}
 	t.Logf("cold %.1f MiB/s over a %d MiB/s link (%d MiB downloaded); cached %.1f MiB/s", cold, link/MiB, served/MiB, warm)
-	if cold < 0.7*float64(link)/MiB {
-		t.Errorf("streaming read ran at %.1f MiB/s, under 70%% of the %d MiB/s link", cold, link/MiB)
+	if least := ciOr(0.5, 0.7); cold < least*float64(link)/MiB {
+		t.Errorf("streaming read ran at %.1f MiB/s, under %.0f%% of the %d MiB/s link", cold, least*100, link/MiB)
 	}
 	if served > int64(len(data))+2*modalapi.BlockSize {
 		t.Errorf("downloaded %d MiB to read a %d MiB file", served/MiB, len(data)/MiB)

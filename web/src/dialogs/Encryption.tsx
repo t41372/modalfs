@@ -20,7 +20,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { nameOf } from '@/lib/mounts'
-import { isMac, saveText } from '@/lib/platform'
+import { saveText } from '@/lib/platform'
 
 /** What turning encryption on means, one short line each. */
 export function EncryptFacts() {
@@ -131,7 +131,7 @@ export function RememberBox({ value, onChange }: { value: boolean; onChange: (v:
         <label htmlFor={id} className="text-[13px]">
           {t('enc.remember')}
         </label>
-        <span className="text-[12px] text-muted-foreground">{t(value ? (isMac ? 'enc.rememberMac' : 'enc.rememberOther') : 'enc.rememberOff')}</span>
+        <span className="text-[12px] text-muted-foreground">{t(value ? 'enc.rememberOn' : 'enc.rememberOff')}</span>
       </div>
     </div>
   )

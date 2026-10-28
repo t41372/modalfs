@@ -513,17 +513,17 @@ func (d *Daemon) insightRoutes(mux *http.ServeMux) {
 	})
 }
 
-// revealIn shows a file inside a mounted folder in Finder (or opens its
+// revealIn shows a file of a mount, mounted at mp, in Finder (or opens its
 // folder elsewhere). rel is relative to the mount; it can't leave it.
-func revealIn(mp, rel string) error {
+func revealIn(fsys *vfs.FS, mp, rel string) error {
 	clean := path.Clean("/" + rel)
 	if clean == "/" {
 		return openPath(mp)
 	}
-	p := filepath.Join(mp, filepath.FromSlash(clean))
-	if _, err := os.Stat(p); err != nil {
+	if _, err := fsys.Stat(clean[1:]); err != nil {
 		return fmt.Errorf("%s isn't there any more", clean[1:])
 	}
+	p := filepath.Join(mp, filepath.FromSlash(clean))
 	if runtime.GOOS == "darwin" {
 		cmd := exec.Command("open", "-R", p)
 		if err := cmd.Start(); err != nil {

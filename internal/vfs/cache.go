@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"sync"
 )
 
@@ -16,9 +17,10 @@ import (
 // cached for one file is reused for every file (or version) sharing it.
 //
 // Its limit is all the disk modalfs uses, for every mount sharing it: the
-// cached blocks and the changes not on Modal yet (pending). Pending changes
-// come first: cached blocks are evicted to make room for them, and writes
-// wait for uploads once pending takes all but a share kept for reading.
+// cached blocks and the changes not on Modal yet (pending), those a volume
+// that isn't mounted left on disk too. Pending changes come first: cached
+// blocks are evicted to make room for them, and writes wait for uploads
+// once pending takes all but a share kept for reading.
 type blockCache struct {
 	dir     string
 	max     int64
@@ -27,8 +29,9 @@ type blockCache struct {
 	lru     *list.List // front = most recent; values are hex keys
 	entries map[string]*cacheEnt
 
-	pending int64         // bytes of changes not on Modal yet, kept on disk by every mount
-	freed   chan struct{} // closed, and replaced, when pending shrinks
+	pending int64            // bytes of changes not on Modal yet, kept on disk by every mount
+	left    map[string]int64 // of pending: what a volume not mounted left, by volume ID
+	freed   chan struct{}    // closed, and replaced, when pending shrinks
 
 	prefetching int64 // read-ahead downloads in flight, for every mount
 }
@@ -52,9 +55,22 @@ type cacheEnt struct {
 }
 
 func newBlockCache(dir string, max int64) (*blockCache, error) {
-	c := &blockCache{dir: dir, max: max, lru: list.New(), entries: map[string]*cacheEnt{}, freed: make(chan struct{})}
+	c := &blockCache{dir: dir, max: max, lru: list.New(), entries: map[string]*cacheEnt{}, left: map[string]int64{}, freed: make(chan struct{})}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
+	}
+	// Changes left by an earlier run, in <volume>/dirty/<file>/<block>
+	// next to the blocks: counted until their volume is mounted.
+	files, _ := filepath.Glob(filepath.Join(filepath.Dir(dir), "*", "dirty", "*", "*"))
+	for _, p := range files {
+		if _, err := strconv.ParseInt(filepath.Base(p), 10, 64); err != nil {
+			continue // not a block
+		}
+		if info, err := os.Stat(p); err == nil {
+			vol := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(p))))
+			c.left[vol] += info.Size()
+			c.pending += info.Size()
+		}
 	}
 	type fi struct {
 		key  string
@@ -295,15 +311,45 @@ func (c *blockCache) addPending(delta int64) {
 	}
 }
 
+// leave keeps n bytes of a closing mount's changes counted, as left by its
+// volume, until the volume is mounted again.
+func (c *blockCache) leave(vol string, n int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.left[vol] += n
+}
+
+// takeOver stops counting what vol left: its mount counts the changes it
+// recovers itself.
+func (c *blockCache) takeOver(vol string) {
+	c.addPending(-c.Left(vol))
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.left, vol)
+}
+
+// Left returns the bytes of changes vol left on disk while not mounted.
+func (c *blockCache) Left(vol string) int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.left[vol]
+}
+
 // room reports whether need more bytes of pending changes fit. If not,
-// freed is closed when some are uploaded, and stuck says nothing pending is
-// left to upload, so waiting can't help.
-func (c *blockCache) room(need int64) (ok bool, freed <-chan struct{}, stuck bool) {
+// freed is closed when some are uploaded, stuck says nothing a mount could
+// upload is pending, so waiting can't help, and left says changes of
+// volumes that aren't mounted fill the limit.
+func (c *blockCache) room(need int64) (ok bool, freed <-chan struct{}, stuck, left bool) {
 	free := diskFree(c.dir)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	ok = (c.max <= 0 || c.pending+need <= c.max-readRoom(c.max)) && (free < 0 || free-need >= minFree)
-	return ok, c.freed, c.pending == 0
+	var kept int64
+	for _, n := range c.left {
+		kept += n
+	}
+	fits := c.max <= 0 || c.pending+need <= c.max-readRoom(c.max)
+	ok = fits && (free < 0 || free-need >= minFree)
+	return ok, c.freed, c.pending == kept, !fits && kept > 0
 }
 
 // pendingMax is how much pending changes may take, or 0 for no limit.

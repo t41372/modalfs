@@ -231,7 +231,7 @@ func (d *Daemon) runStart(id string, ph *runMount, quiet bool) error {
 func (d *Daemon) doStart(m config.Mount, ph *runMount) (_ *runMount, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	c, acct, err := d.newClient(m.AccountID, m.Environment)
+	c, acct, vol, err := d.pinMount(ctx, &m)
 	if err != nil {
 		return nil, err
 	}
@@ -240,10 +240,6 @@ func (d *Daemon) doStart(m config.Mount, ph *runMount) (_ *runMount, err error) 
 			closeClient(c)
 		}
 	}()
-	vol, err := d.resolveVolume(ctx, c, m)
-	if err != nil {
-		return nil, err
-	}
 	if !vol.V2() {
 		return nil, fmt.Errorf("volume %s is %s; modalfs supports Volume v2 only", vol.Name, strings.TrimPrefix(vol.Version.String(), "VOLUME_FS_VERSION_"))
 	}
@@ -338,6 +334,41 @@ func (d *Daemon) doStart(m config.Mount, ph *runMount) (_ *runMount, err error) 
 	return r, nil
 }
 
+// pinMount connects to a mount's volume. The first time, it pins the mount
+// to the volume and environment it finds: a new volume under its name, or
+// another default environment, mustn't move it. A pin that can't be saved
+// fails the start, or the next one would look the name up again.
+func (d *Daemon) pinMount(ctx context.Context, m *config.Mount) (*modalapi.Client, config.Account, modalapi.VolumeInfo, error) {
+	env, err := d.environment(ctx, m.AccountID, m.Environment)
+	if err != nil {
+		return nil, config.Account{}, modalapi.VolumeInfo{}, err
+	}
+	c, acct, err := d.newClient(m.AccountID, env)
+	if err != nil {
+		return nil, acct, modalapi.VolumeInfo{}, err
+	}
+	vol, err := d.resolveVolume(ctx, c, *m)
+	if err == nil && (m.VolumeID == "" || m.Environment != env) {
+		err = d.store.Update(func(f *config.File) error {
+			for i := range f.Mounts {
+				if f.Mounts[i].ID == m.ID {
+					f.Mounts[i].VolumeID, f.Mounts[i].Environment = vol.ID, env
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			err = fmt.Errorf("couldn't save which volume this mount is: %w", err)
+		}
+		m.VolumeID, m.Environment = vol.ID, env
+	}
+	if err != nil {
+		closeClient(c)
+		return nil, acct, vol, err
+	}
+	return c, acct, vol, nil
+}
+
 // hasJournals reports whether a volume has uncommitted changes from an
 // earlier session in its dirty folder (see vfs/recover.go).
 func hasJournals(cacheDir, volID string) bool {
@@ -350,10 +381,7 @@ func hasJournals(cacheDir, volID string) bool {
 func (d *Daemon) resolveVolume(ctx context.Context, c *modalapi.Client, m config.Mount) (modalapi.VolumeInfo, error) {
 	vol, err := c.LookupVolume(ctx, m.VolumeName, false)
 	if err == nil && (m.VolumeID == "" || vol.ID == m.VolumeID) {
-		if m.VolumeID == "" {
-			d.updateMount(m.ID, func(x *config.Mount) { x.VolumeID = vol.ID })
-		}
-		return vol, nil
+		return vol, nil // doStart pins it
 	}
 	if err != nil && (!modalapi.IsNotFound(err) || m.VolumeID == "") {
 		return vol, friendly(err)
@@ -377,8 +405,10 @@ func (d *Daemon) resolveVolume(ctx context.Context, c *modalapi.Client, m config
 	return vol, fmt.Errorf("volume %q (%s) no longer exists", m.VolumeName, m.VolumeID)
 }
 
+// updateMount records a change Modal made (a rename followed, say); the
+// mount works without it, so a failure is only logged.
 func (d *Daemon) updateMount(id string, fn func(*config.Mount)) {
-	_ = d.store.Update(func(f *config.File) error {
+	err := d.store.Update(func(f *config.File) error {
 		for i := range f.Mounts {
 			if f.Mounts[i].ID == id {
 				fn(&f.Mounts[i])
@@ -386,6 +416,9 @@ func (d *Daemon) updateMount(id string, fn func(*config.Mount)) {
 		}
 		return nil
 	})
+	if err != nil {
+		d.log.Warn("couldn't save a change to a mount", "mount", id, "err", err)
+	}
 }
 
 // stopOpts says how a mount is stopped.

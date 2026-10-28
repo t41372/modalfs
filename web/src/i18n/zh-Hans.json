@@ -38,7 +38,6 @@
     "mount": "挂载",
     "tryAgain": "重试",
     "finder": "在访达中打开",
-    "openFolder": "打开文件夹",
     "unmountMenu": "卸载…",
     "unmount": "卸载",
     "unmountAfter": "上传完再卸载",
@@ -595,6 +594,13 @@
     "stopBackground": "已卸载，剩下的在后台上传。",
     "preparing": "正在准备上传…"
   },
+  "closeWindow": {
+    "q": "要关闭窗口吗？",
+    "p_other": "{{count}} 个 Volume 会保持挂载，继续在后台上传，而且屏幕上不会再看到 modalfs 还在运行。要卸载并停止 modalfs，请改用“退出 modalfs”。",
+    "close": "关闭窗口",
+    "keep": "保持打开",
+    "quit": "退出 modalfs"
+  },
   "quit": {
     "title": "正在退出 modalfs…",
     "sub": "每个 Volume 会在修改都上传到 Modal 后卸载。",
@@ -714,8 +720,7 @@
     "savedFile": "密钥已保存",
     "file": "modalfs 密钥，volume：{{volume}}\n\n{{key}}\n\n只有这把密钥能解开这个 volume 里的文件。\n没有它，任何人都无法找回这些文件。\n",
     "remember": "记住在这台电脑上",
-    "rememberMac": "存在 Mac 的钥匙串里，volume 会自动挂载。",
-    "rememberOther": "存在这台电脑的密钥存储（或一个私有文件）里，volume 会自动挂载。",
+    "rememberOn": "存在 Mac 的钥匙串里，volume 会自动挂载。",
     "rememberOff": "只保留到 modalfs 退出；之后要再粘贴一次密钥。",
     "savedConfirm": "我已经存好密钥。没有它，没有人能找回我的文件。",
     "createEncrypted": "创建加密 volume",
@@ -754,5 +759,45 @@
     "dlGroup": "已加密 · 远程下载不能存进这里",
     "row": "加密",
     "rowD": "在这台电脑上加密后才上传。有密钥，在任何电脑都能打开。"
+  },
+  "linux": {
+    "home": {
+      "uploadingHint_other": "{{count}} 个文件等待上传。上传完成前请别让电脑睡眠。",
+      "emptyP": "从你的 Modal 账号添加一个 Volume，modalfs 会把它变成这台电脑上的文件夹。"
+    },
+    "vol": {
+      "nowP": "文件夹会马上移除，即使有应用正打开着里面的文件。还没上传到 Modal 的内容会留在这台电脑上，继续在后台上传；如果 modalfs 先退出了，下次挂载这个 Volume 时再上传。",
+      "forcePending": "还没上传到 Modal 的内容会留在这台电脑上，继续在后台上传。",
+      "litterHint": ".DS_Store 和 ._ 开头的文件只留在这台电脑，永远不会上传。",
+      "finder": "打开文件夹",
+      "compare": "打开所在文件夹",
+      "unmountClean": "所有内容都已在 Modal 上。文件夹会消失，不会删除任何文件。"
+    },
+    "dl": {
+      "sub": "由 Modal Function 直接下载到 Volume，下载时电脑可以休眠。",
+      "offP": "每个下载会在你的 Modal 账号里运行一个小容器，费用由该账号支付。下载时电脑可以休眠或关机。"
+    },
+    "connect": {
+      "found": "在这台电脑上找到的",
+      "safe": "token 只存在这台电脑上，有系统密钥环就存在密钥环里。"
+    },
+    "quitList": {
+      "quitNowHint": "马上卸载全部 Volume 并停止上传。还没上传到 Modal 的修改会保存在这台电脑上，下次挂载各个 Volume 时再上传，不会丢失。"
+    },
+    "mountErr": {
+      "offline": "连不上 Modal。请检查这台电脑的网络，modalfs 会自己再试。"
+    },
+    "acct": {
+      "storeKeychain": "token 存在系统密钥环"
+    },
+    "welcome": {
+      "title": "把 Modal Volume 当成本地文件夹用"
+    },
+    "form": {
+      "tokenHint": "在 modal.com 的 Settings → API Tokens 创建。secret 只存在这台电脑上，有系统密钥环就存在密钥环里。"
+    },
+    "enc": {
+      "rememberOn": "存在这台电脑的密钥存储（或一个私有文件）里，volume 会自动挂载。"
+    }
   }
 }

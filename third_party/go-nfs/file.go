@@ -246,20 +246,17 @@ func (s *SetFileAttributes) Apply(changer billy.Change, fs billy.Filesystem, fil
 		}
 	}
 	if s.SetSize != nil {
-		if curr.Mode()&os.ModeSymlink != 0 {
-			return &NFSStatusError{NFSStatusNotSupp, os.ErrInvalid}
-		}
 		fp, err := fs.OpenFile(file, os.O_WRONLY|os.O_EXCL, 0)
 		if errors.Is(err, os.ErrPermission) {
 			return &NFSStatusError{NFSStatusAccess, err}
 		} else if err != nil {
-			return err
+			return &NFSStatusError{statusFromNameError(err, NFSStatusIO), err}
 		}
 		if *s.SetSize > math.MaxInt64 {
 			return &NFSStatusError{NFSStatusInval, os.ErrInvalid}
 		}
 		if err := fp.Truncate(int64(*s.SetSize)); err != nil {
-			return err
+			return &NFSStatusError{statusFromNameError(err, NFSStatusIO), err}
 		}
 		if err := fp.Close(); err != nil {
 			return err

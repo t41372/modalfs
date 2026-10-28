@@ -54,10 +54,11 @@ type labelStore struct {
 	path    string
 	byVol   map[string]labelEntry
 	reading map[string]bool
+	shown   map[string]string // the read error last shown for each volume
 }
 
 func newLabelStore(dir string) *labelStore {
-	s := &labelStore{path: filepath.Join(dir, "labels.json"), byVol: map[string]labelEntry{}, reading: map[string]bool{}}
+	s := &labelStore{path: filepath.Join(dir, "labels.json"), byVol: map[string]labelEntry{}, reading: map[string]bool{}, shown: map[string]string{}}
 	if b, err := os.ReadFile(s.path); err == nil {
 		_ = json.Unmarshal(b, &s.byVol)
 	}
@@ -83,6 +84,25 @@ func (s *labelStore) set(volID, label string) {
 	defer s.mu.Unlock()
 	s.byVol[volID] = labelEntry{Label: label, Checked: time.Now().UnixMilli()}
 	s.saveLocked()
+}
+
+// failed records a failed read of a volume's label: the label read before
+// is kept, and isn't asked for again before the next refresh. It reports
+// whether to show the error. Only an encrypted volume's is shown, since a
+// label there that can't be read may have been damaged or tampered with;
+// not when Modal was out of reach (offline, or the Mac waking from sleep),
+// which says nothing about the label; and once until a read succeeds.
+func (s *labelStore) failed(volID string, err error, encrypted bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.byVol[volID]
+	e.Checked = time.Now().UnixMilli()
+	s.byVol[volID] = e
+	if !encrypted || modalapi.IsUnreachable(err) || s.shown[volID] == err.Error() {
+		return false
+	}
+	s.shown[volID] = err.Error()
+	return true
 }
 
 func (s *labelStore) saveLocked() {
@@ -183,6 +203,7 @@ func (d *Daemon) readLabelInto(m config.Mount) {
 			s.mu.Lock()
 			changed := s.byVol[m.VolumeID].Label != label
 			s.byVol[m.VolumeID] = labelEntry{Label: label, Checked: time.Now().UnixMilli()}
+			delete(s.shown, m.VolumeID)
 			if changed {
 				s.saveLocked()
 			}
@@ -190,16 +211,11 @@ func (d *Daemon) readLabelInto(m config.Mount) {
 			return
 		}
 	}
-	// Keep what we had, and don't ask again before the next refresh.
 	d.log.Debug("couldn't read a volume's label", "volume", m.VolumeName, "err", err)
-	if encrypted, _, _ := d.encryptionFlags(m.VolumeID); encrypted {
+	encrypted, _, _ := d.encryptionFlags(m.VolumeID)
+	if s.failed(m.VolumeID, err, encrypted) {
 		d.emitC("error", "label_read_failed", m.ID, m.VolumeName, "could not read encrypted label: "+err.Error(), err.Error())
 	}
-	s.mu.Lock()
-	e := s.byVol[m.VolumeID]
-	e.Checked = time.Now().UnixMilli()
-	s.byVol[m.VolumeID] = e
-	s.mu.Unlock()
 }
 
 // cleanLabel trims a label and checks it fits on a line.

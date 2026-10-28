@@ -50,18 +50,40 @@ func fill(a vfs.Attr, out *fuse.Attr) {
 	out.Uid = uint32(os.Getuid())
 	out.Gid = uint32(os.Getgid())
 	out.Nlink = 1
-	if a.IsDir {
-		out.Mode = syscall.S_IFDIR | 0o755
-	} else {
-		out.Mode = syscall.S_IFREG | 0o644
+	out.Mode = fileMode(a)
+}
+
+func fileMode(a vfs.Attr) uint32 {
+	mode := uint32(a.Mode.Perm())
+	switch {
+	case a.Mode&os.ModeDir != 0:
+		return mode | syscall.S_IFDIR
+	case a.Mode&os.ModeSymlink != 0:
+		return mode | syscall.S_IFLNK
+	case a.Mode&os.ModeSocket != 0:
+		return mode | syscall.S_IFSOCK
+	case a.Mode&os.ModeNamedPipe != 0:
+		return mode | syscall.S_IFIFO
+	default:
+		return mode | syscall.S_IFREG // and a type modalfs doesn't know: its operations fail
 	}
 }
 
+func (n *node) Readlink(ctx context.Context) ([]byte, syscall.Errno) {
+	target, err := n.v.Readlink(n.p())
+	return []byte(target), errno(err)
+}
+
+func (n *node) Symlink(ctx context.Context, target, name string, out *fuse.EntryOut) (*gofs.Inode, syscall.Errno) {
+	return nil, errno(n.v.Symlink(target, path.Join(n.p(), name)))
+}
+
+func (n *node) Link(ctx context.Context, target gofs.InodeEmbedder, name string, out *fuse.EntryOut) (*gofs.Inode, syscall.Errno) {
+	return nil, errno(n.v.Link(target.EmbeddedInode().Path(nil), path.Join(n.p(), name)))
+}
+
 func (n *node) newChild(ctx context.Context, a vfs.Attr) *gofs.Inode {
-	mode := uint32(syscall.S_IFREG)
-	if a.IsDir {
-		mode = syscall.S_IFDIR
-	}
+	mode := fileMode(a) & syscall.S_IFMT
 	return n.NewInode(ctx, &node{v: n.v}, gofs.StableAttr{Mode: mode})
 }
 
@@ -95,10 +117,7 @@ func (n *node) Readdir(ctx context.Context) (gofs.DirStream, syscall.Errno) {
 	}
 	es := make([]fuse.DirEntry, 0, len(as))
 	for _, a := range as {
-		m := uint32(syscall.S_IFREG)
-		if a.IsDir {
-			m = syscall.S_IFDIR
-		}
+		m := fileMode(a) & syscall.S_IFMT
 		es = append(es, fuse.DirEntry{Name: a.Name, Mode: m})
 	}
 	return gofs.NewListDirStream(es), 0

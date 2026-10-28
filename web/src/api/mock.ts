@@ -285,7 +285,7 @@ const environments: Record<string, Environment[]> = {
 const lang = params.get('lang')
 const state: State = {
   version: '0.1.0',
-  platform: 'darwin/arm64',
+  platform: params.get('platform') ?? 'darwin/arm64', // ?platform=linux/amd64 for the Linux wording
   accounts,
   mounts,
   settings: {

@@ -1,16 +1,16 @@
-//go:build e2e && darwin
+//go:build e2e
 
-// End-to-end tests: a real macOS NFS mount of modalfs, backed by the fake
-// Modal in internal/modalfake with a slow network, or by real Modal (see
-// backend_test.go). They check what a user would see: the mount stays
-// responsive while large files upload, and what lands on "Modal" is exactly
-// what was written.
+// End-to-end tests: a real mount of modalfs (NFS on macOS, FUSE on Linux),
+// backed by the fake Modal in internal/modalfake with a slow network, or by
+// real Modal (see backend_test.go). They check what a user would see: the
+// mount stays responsive while large files upload, and what lands on
+// "Modal" is exactly what was written.
 //
 //	go test -tags e2e ./internal/e2e    (or: just test-e2e)
 //
 // modalfs runs as its own process (`modalfs run`, built with the race
-// detector), as it does for users: a process must never do file I/O on an
-// NFS mount that it serves itself, or the kernel and the Go runtime can wait
+// detector), as it does for users: a process must never do file I/O on a
+// mount that it serves itself, or the kernel and the Go runtime can wait
 // on each other forever. The fake (and the proxy, on live runs) still serve
 // the mount from this process, so syncs here use fsync.File, never
 // os.File.Sync (see internal/fsync). The tests check results through Modal's
@@ -44,10 +44,29 @@ import (
 
 const MiB = 1 << 20
 
+// onCI is a GitHub-hosted runner. There the race-enabled tests, modalfs and
+// the fake Modal share 3 CPUs and 7.5 GB, and with that little memory the
+// macOS NFS client lets a long copy's writes through only in 30 s steps
+// (docs/known-issues.md), so timing limits are looser. The exact limits hold
+// on a developer's Mac, where these tests are meant to be run too.
+var onCI = os.Getenv("CI") != ""
+
+func ciOr[T any](ci, local T) T {
+	if onCI {
+		return ci
+	}
+	return local
+}
+
 // maxStall is the longest a listing or stat may take while the mount is busy.
 // The macOS client gives up on the server after about a minute; users notice
 // much sooner.
-const maxStall = 2 * time.Second
+var maxStall = ciOr(15*time.Second, 2*time.Second)
+
+// maxHeld is the longest a large copy's write, or a stat of the file being
+// copied, may wait: on a runner the NFS client holds them back by itself, in
+// 30 s steps, and real Modal's uplink from there is slower than the fake's.
+var maxHeld = ciOr(90*time.Second, 45*time.Second)
 
 var (
 	buildOnce sync.Once
@@ -90,6 +109,7 @@ type env struct {
 	mnt    string
 	cache  string      // modalfs's cache directory: blocks, and changes not uploaded yet
 	proc   *os.Process // modalfs run
+	logs   *syncBuffer // what it logged
 
 	argv, cmdEnv []string // how to start modalfs run again (see launch)
 }
@@ -116,6 +136,7 @@ func setup(t *testing.T, opt modalfake.Options, args []string, before ...func(*m
 	flags := append([]string{"run", "-cache-dir", cache, "-cache-size", "2G"}, b.flags...)
 	e := &env{t: t, net: b.net, client: b.client, vol: b.vol, mnt: mnt, cache: cache,
 		argv: append([]string{bin}, append(append(flags, args...), b.vol.Name, mnt)...), cmdEnv: append(os.Environ(), b.env...)}
+	e.cmdEnv = append(e.cmdEnv, "MODALFS_HOME="+filepath.Join(root, "home"), "MODALFS_NO_KEYCHAIN=1")
 	e.launch()
 	return e
 }
@@ -130,6 +151,7 @@ func (e *env) launch() {
 	cmd.Env = e.cmdEnv
 	var logs syncBuffer
 	cmd.Stdout, cmd.Stderr = &logs, &logs
+	e.logs = &logs
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +163,7 @@ func (e *env) launch() {
 		select {
 		case <-done:
 		case <-time.After(3 * time.Minute):
-			_ = exec.Command("/sbin/umount", "-f", mnt).Run()
+			_ = forceUnmount(mnt)
 			_ = cmd.Process.Kill()
 			<-done
 			t.Error("modalfs run didn't exit within 3 minutes of SIGINT")
@@ -173,7 +195,7 @@ func (e *env) launch() {
 // mount off, which fails the stuck call. (It can't help if this process
 // itself is frozen; see TestSyncWaitingOnServerDoesNotFreezeTests.)
 func watchForStall(t *testing.T, cmd *exec.Cmd, logs *syncBuffer, mnt string) {
-	after := 8 * time.Minute
+	after := ciOr(20*time.Minute, 8*time.Minute)
 	if v := os.Getenv("MODALFS_E2E_STALL"); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {
@@ -189,15 +211,25 @@ func watchForStall(t *testing.T, cmd *exec.Cmd, logs *syncBuffer, mnt string) {
 		if err := os.WriteFile(dump, []byte(logs.String()), 0o644); err != nil {
 			dump = err.Error()
 		}
-		_ = exec.Command("/sbin/umount", "-f", mnt).Run()
+		_ = forceUnmount(mnt)
 		fmt.Fprintf(os.Stderr, "%s: still running after %v; modalfs's goroutines are in %s\n", t.Name(), after, dump)
 	})
 	t.Cleanup(func() { timer.Stop() })
 }
 
-func mounted(mnt string) bool {
-	out, _ := exec.Command("/sbin/mount").Output()
-	return bytes.Contains(out, []byte(" "+mnt+" ")) || bytes.Contains(out, []byte("/private"+mnt+" "))
+// crash kills modalfs run (SIGKILL: nothing pending is committed) and
+// forces its mount off, for a test to launch it again.
+func (e *env) crash() {
+	e.t.Helper()
+	if err := e.proc.Signal(syscall.SIGKILL); err != nil {
+		e.t.Fatal(err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if mounted(e.mnt) {
+		if err := forceUnmount(e.mnt); err != nil {
+			e.t.Fatal(err)
+		}
+	}
 }
 
 type syncBuffer struct {
@@ -269,17 +301,28 @@ func (e *env) remote(name string) ([]byte, error) {
 	return out, nil
 }
 
-// waitRemote waits until Modal has exactly want under name.
+// waitRemote waits until Modal has exactly want under name. It downloads
+// the file to compare only once its size is right: on a slow link a large
+// file's download takes minutes, and one started just before the last
+// commit would bring back the version before it.
 func (e *env) waitRemote(name string, want []byte, timeout time.Duration) {
 	e.t.Helper()
 	deadline := time.Now().Add(timeout)
 	for {
-		got, err := e.remote(name)
-		if err == nil && sum(got) == sum(want) {
-			return
+		what := ""
+		_, size, err := e.client.BlockURLs(context.Background(), e.vol.ID, name, 0, 1)
+		if err == nil {
+			what = fmt.Sprintf("%d bytes", size)
+		}
+		if err == nil && size == int64(len(want)) {
+			var got []byte
+			if got, err = e.remote(name); err == nil && sum(got) == sum(want) {
+				return
+			}
+			what = "the right size but other bytes"
 		}
 		if time.Now().After(deadline) {
-			e.t.Fatalf("%s on Modal: %d bytes (err %v), want %d bytes, after %v", name, len(got), err, len(want), timeout)
+			e.t.Fatalf("%s on Modal: %s (err %v), want %d bytes, after %v", name, what, err, len(want), timeout)
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
@@ -332,17 +375,54 @@ func (e *env) probe(stat string) func() time.Duration {
 // Copying a large file into the mount over a slow uplink: listings and
 // stats keep answering while it uploads, and the upload is exact. This is
 // the case that used to freeze the whole mount until macOS gave up on it.
+//
+// modalfs must answer every listing and stat at once. The app can still wait
+// longer for a stat of the file being copied: the NFS client sends the
+// file's writes before it asks for its size, and on a machine with little
+// memory (a CI runner) it holds a long copy's writes back by itself for up
+// to 30 s at a time, without sending modalfs anything.
 func TestLargeCopyStaysResponsive(t *testing.T) {
 	e := setup(t, modalfake.Options{UpBytesPerSec: 20 * MiB, Latency: 20 * time.Millisecond}, nil)
 	data := randomBytes(t, 400*MiB)
-	stop := e.probe("big.bin")
+	listing := e.probe("")
+	stat := e.probe("big.bin")
 	e.writeFile("big.bin", data)
 	e.waitRemote("big.bin", data, 3*time.Minute)
-	worst := stop()
-	t.Logf("slowest listing/stat while uploading: %v", worst)
-	if worst > maxStall {
-		t.Errorf("the mount stalled for %v while a file uploaded (limit %v)", worst, maxStall)
+	worst, worstStat := listing(), stat()
+	t.Logf("slowest listing while uploading: %v; slowest listing and stat of the file: %v", worst, worstStat)
+	if held := e.heldUp(); len(held) > 0 {
+		t.Errorf("modalfs kept the client waiting while a file uploaded:\n%s", strings.Join(held, "\n"))
 	}
+	if worst > maxStall {
+		t.Errorf("listing the mount took %v while a file uploaded (limit %v)", worst, maxStall)
+	}
+	if worstStat > maxHeld {
+		t.Errorf("a stat of the file being copied took %v", worstStat)
+	}
+}
+
+// heldUp is what modalfs logged about keeping the NFS client waiting longer
+// than maxStall: a request other than a read or write that took that long,
+// or reading requests stopped because every write slot was busy (see
+// nfs.SlowLogger).
+func (e *env) heldUp() []string {
+	var out []string
+	for _, line := range strings.Split(e.logs.String(), "\n") {
+		slow := strings.Contains(line, `msg="slow NFS request"`) && !strings.Contains(line, "proc=Read ")
+		if !slow && !strings.Contains(line, "NFS stopped reading") {
+			continue
+		}
+		for _, f := range strings.Fields(line) {
+			_, v, ok := strings.Cut(f, "took=")
+			if !ok {
+				_, v, ok = strings.Cut(f, "for=")
+			}
+			if d, err := time.ParseDuration(v); ok && err == nil && d > maxStall {
+				out = append(out, line)
+			}
+		}
+	}
+	return out
 }
 
 // Writing to a file while its commit uploads: the commit sends one
@@ -402,6 +482,67 @@ func TestDeleteDuringCommit(t *testing.T) {
 	}
 }
 
+// Renaming a file onto one that's uploading waits for that upload, then
+// replaces it: nothing of the upload lands afterwards.
+func TestRenameOntoFileDuringCommit(t *testing.T) {
+	src := randomBytes(t, 1000)
+	put := func(c *modalapi.Client, volID string) {
+		_, err := c.Put(context.Background(), volID, []modalapi.PutFile{{
+			Path: "new.bin", Size: int64(len(src)), Hashes: modalapi.HashBlocks(src),
+			Block: func(int) ([]byte, error) { return src, nil },
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := setup(t, modalfake.Options{UpBytesPerSec: 4 * MiB}, nil, put)
+	e.writeFile("old.bin", randomBytes(t, 24*MiB)) // too few blocks to upload ahead: its commit uploads them
+	e.waitUploading(30 * time.Second)
+	if err := os.Rename(filepath.Join(e.mnt, "new.bin"), filepath.Join(e.mnt, "old.bin")); err != nil {
+		t.Fatal(err)
+	}
+	e.waitRemote("old.bin", src, time.Minute)
+	if _, err := e.remote("new.bin"); err == nil {
+		t.Fatal("the renamed file is still there under its old name")
+	}
+	time.Sleep(3 * time.Second)
+	if got, err := e.remote("old.bin"); err != nil || sum(got) != sum(src) {
+		t.Fatalf("after the rename, old.bin changed again: %d bytes (%v)", len(got), err)
+	}
+}
+
+// A sync makes what was written durable, the file's length too. Zeros
+// appended right after a change must survive a crash, though modalfs saves
+// a growing file's length at most once a second and can't tell trailing
+// zeros from a block's padding. So must a new empty file, which has no
+// blocks at all: NFS creates a file for good when it answers.
+func TestCrashKeepsSyncedZeros(t *testing.T) {
+	e := setup(t, modalfake.Options{}, []string{"-write-back", "10m", "-max-pending", "-1s"})
+	empty, err := os.Create(filepath.Join(e.mnt, "empty.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty.Close()
+	f, err := os.Create(filepath.Join(e.mnt, "zeros.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append([]byte{1}, make([]byte, 100)...)
+	for _, part := range [][]byte{want[:1], want[1:]} {
+		if _, err := f.Write(part); err != nil {
+			t.Fatal(err)
+		}
+		if err := fsync.File(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.Close()
+	e.crash()
+	e.launch()
+	e.waitRemote("zeros.bin", want, time.Minute)
+	e.waitRemote("empty.bin", nil, time.Minute)
+}
+
 // Reading a large remote file over a slow downlink streams it: the first
 // bytes come quickly, the content is exact, and the mount stays responsive.
 func TestStreamingRead(t *testing.T) {
@@ -440,7 +581,7 @@ func TestStreamingRead(t *testing.T) {
 	if sum(append(first, rest...)) != sum(data) {
 		t.Fatal("read the wrong content")
 	}
-	if ttfb > 3*time.Second {
+	if ttfb > ciOr(10*time.Second, 3*time.Second) {
 		t.Errorf("first bytes took %v", ttfb)
 	}
 	if worst > maxStall {
@@ -593,6 +734,72 @@ func TestUploadsWhileWriting(t *testing.T) {
 	}
 }
 
+// A client that has never read a large file edits one block of it. The
+// unchanged blocks' hashes come from the file's sidecar, so the rest of the
+// file isn't downloaded to hash it, and Modal ends up with exactly the old
+// file with that block changed.
+func TestEditWithSidecar(t *testing.T) {
+	data := randomBytes(t, 72*MiB) // 9 blocks, over -sidecar-min
+	var mtime int64
+	e := setup(t, modalfake.Options{}, []string{"-write-back", "2s"}, func(c *modalapi.Client, volID string) {
+		putRemote(t, c, volID, "big.bin", data)
+		mtime = remoteMtime(t, c, volID, "big.bin")
+		sc := map[string]any{"v": 1, "path": "big.bin", "size": len(data), "mtime": mtime, "block_size": modalapi.BlockSize, "sha256": []string{}}
+		for _, h := range modalapi.HashBlocks(data) {
+			sc["sha256"] = append(sc["sha256"].([]string), hex.EncodeToString(h))
+		}
+		raw, _ := json.Marshal(sc)
+		putRemote(t, c, volID, ".modalfs/manifests/big.bin.json", raw)
+	})
+	time.Sleep(1100 * time.Millisecond) // Modal's mtimes are in seconds
+	before := e.net.Served()
+	f, err := os.OpenFile(filepath.Join(e.mnt, "big.bin"), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch := randomBytes(t, MiB)
+	off := 4*modalapi.BlockSize + 100
+	if _, err := f.WriteAt(patch, int64(off)); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsync.File(f); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Minute)
+	for remoteMtime(t, e.client, e.vol.ID, "big.bin") == mtime {
+		if time.Now().After(deadline) {
+			t.Fatal("the edit wasn't committed")
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	// Counted before reading the file back, which downloads it all.
+	if got := e.net.Served() - before; got > 3*modalapi.BlockSize {
+		t.Errorf("editing one block downloaded %d MiB; the sidecar should have saved reading the unchanged blocks", got/MiB)
+	}
+	want := bytes.Clone(data)
+	copy(want[off:], patch)
+	e.waitRemote("big.bin", want, time.Minute)
+}
+
+// remoteMtime is name's modification time on "Modal".
+func remoteMtime(t *testing.T, c *modalapi.Client, volID, name string) int64 {
+	t.Helper()
+	es, err := c.List(context.Background(), volID, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, en := range es {
+		if en.Path == name {
+			return en.Mtime
+		}
+	}
+	t.Fatalf("%s isn't on Modal", name)
+	return 0
+}
+
 // putRemote writes a file straight to "Modal", as a Modal Function would.
 func putRemote(t *testing.T, c *modalapi.Client, volID, name string, data []byte) {
 	t.Helper()
@@ -648,16 +855,32 @@ func TestConflictDuringUpload(t *testing.T) {
 // before the commit can't be saved without mixing two versions. Nothing is
 // committed, the edit is set aside with a note, and unmounting isn't blocked.
 func TestEditOfReplacedFileIsSetAside(t *testing.T) {
+	// The commit starts when the test stops modalfs, surely after the
+	// replacement is in.
+	t.Run("on-exit", func(t *testing.T) { editReplacedFile(t, true) })
+	// The commit starts on its own, as it does for a user. On real Modal,
+	// where the replacement takes seconds, it may start first, read the
+	// original's unchanged parts while they're still there and save the
+	// edit to a conflict copy instead. That's also safe, and accepted there.
+	t.Run("running", func(t *testing.T) { editReplacedFile(t, false) })
+}
+
+func editReplacedFile(t *testing.T, onExit bool) {
+	var args []string
+	if onExit {
+		args = []string{"-write-back", "10m", "-max-pending", "10m"}
+	}
 	original := randomBytes(t, 64*MiB)
-	e := setup(t, modalfake.Options{DownBytesPerSec: MiB}, []string{"-write-back", "2s"}, func(c *modalapi.Client, volID string) {
+	e := setup(t, modalfake.Options{DownBytesPerSec: MiB}, args, func(c *modalapi.Client, volID string) {
 		putRemote(t, c, volID, "data.bin", original)
 	})
 	// overwrite block 0 whole, so the edit itself doesn't need the old bytes
+	edit := randomBytes(t, 8*MiB)
 	f, err := os.OpenFile(filepath.Join(e.mnt, "data.bin"), os.O_RDWR, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.WriteAt(randomBytes(t, 8*MiB), 0); err != nil {
+	if _, err := f.WriteAt(edit, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := fsync.File(f); err != nil {
@@ -666,15 +889,28 @@ func TestEditOfReplacedFileIsSetAside(t *testing.T) {
 	f.Close()
 	replacement := randomBytes(t, 3*MiB)
 	putRemote(t, e.client, e.vol.ID, "data.bin", replacement)
+	if onExit {
+		if err := e.proc.Signal(syscall.SIGINT); err != nil { // commits what's pending
+			t.Fatal(err)
+		}
+	}
 
 	root := filepath.Dir(e.mnt)
-	deadline := time.Now().Add(time.Minute)
-	var notes []string
-	for len(notes) == 0 && time.Now().Before(deadline) {
+	deadline := time.Now().Add(2 * time.Minute)
+	var notes, copies []string
+	for len(notes) == 0 && len(copies) == 0 && time.Now().Before(deadline) {
 		notes, _ = filepath.Glob(filepath.Join(root, "cache", "*", "unsaved", "*", "README.txt"))
+		if !onExit && liveProfile() != "" {
+			copies = e.conflictCopies("data")
+		}
 		time.Sleep(300 * time.Millisecond)
 	}
-	if len(notes) == 0 {
+	switch {
+	case len(notes) > 0:
+	case len(copies) > 0:
+		// ours whole: the edit on the original's unchanged parts
+		e.waitRemote(copies[0], append(edit, original[8*MiB:]...), 2*time.Minute)
+	default:
 		t.Fatal("the edit wasn't set aside")
 	}
 	got, err := e.remote("data.bin")

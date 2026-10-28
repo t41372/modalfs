@@ -20,3 +20,11 @@ type Authorizer interface {
 type Syncer interface {
 	SyncPath(path string) error
 }
+
+// SlowLogger, if the Handler implements it, hears about requests that kept
+// the client waiting: one other than a write that took longer than two
+// seconds to answer, or reading that stopped because every write slot was
+// taken.
+type SlowLogger interface {
+	Slow(msg string, args ...any)
+}
