@@ -43,9 +43,9 @@ cli: ui
 app: ui
     ./packaging/build-macos-app.sh
 
-# build the Linux desktop app (needs libgtk-3-dev and libwebkit2gtk-4.1-dev)
+# build the Linux desktop app (needs libgtk-4-dev and libwebkitgtk-6.0-dev)
 linux-gui: ui
-    CGO_ENABLED=1 go build -trimpath -tags desktop,production,webkit2_41 -ldflags "{{ldflags}}" -o dist/modalfs-gui ./cmd/modalfs-gui
+    CGO_ENABLED=1 go build -trimpath -tags desktop,production -ldflags "{{ldflags}}" -o dist/modalfs-gui ./cmd/modalfs-gui
 
 # format all Go code
 fmt:

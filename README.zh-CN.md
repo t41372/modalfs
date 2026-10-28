@@ -77,7 +77,7 @@
 
 ### Linux
 
-前往 [Releases](https://github.com/t41372/modalfs/releases) 下载 `modalfs-gui-<版本>-linux-amd64.tar.gz` 并解压。桌面端在 Ubuntu 24.04 上构建，需要至少同样新的发行版，并依赖 WebKitGTK 4.1（`libwebkit2gtk-4.1-0`）和 FUSE 3（`fuse3` 软件包及 `/dev/fuse`）。如果是较旧的发行版、ARM64 Linux、无桌面服务器，或未安装 WebKitGTK 的环境，请直接安装[命令行版本](#命令行)：`modalfs ui` 会在本机的 `127.0.0.1` 上提供完全相同的管理界面（无桌面服务器上请通过 SSH 隧道转发该端口访问；`modalfs ui --print` 会显示链接）。
+前往 [Releases](https://github.com/t41372/modalfs/releases) 下载 `modalfs-gui-<版本>-linux-amd64.tar.gz` 并解压。桌面端在 Ubuntu 24.04 上构建，需要至少同样新的发行版，并依赖 GTK4 和 WebKitGTK 6.0（`libgtk-4-1` 和 `libwebkitgtk-6.0-4`）和 FUSE 3（`fuse3` 软件包及 `/dev/fuse`）。如果是较旧的发行版、ARM64 Linux、无桌面服务器，或未安装 WebKitGTK 的环境，请直接安装[命令行版本](#命令行)：`modalfs ui` 会在本机的 `127.0.0.1` 上提供完全相同的管理界面（无桌面服务器上请通过 SSH 隧道转发该端口访问；`modalfs ui --print` 会显示链接）。
 
 ## 开始使用
 
@@ -426,7 +426,7 @@ $ modalfs download show dl-3f2a --follow
 
 ## 开发
 
-开发环境需安装 Go 1.27.3+、用于构建前端界面的 [Bun](https://bun.sh) 以及任务运行器 [just](https://github.com/casey/just)。编译 macOS 桌面应用还需安装 Xcode 命令行工具（`xcode-select --install`）；编译 Linux 桌面应用则需安装 `libgtk-3-dev` 和 `libwebkit2gtk-4.1-dev`。直接运行 `just` 可查看所有可用构建任务：
+开发环境需安装 Go 1.27.3+、用于构建前端界面的 [Bun](https://bun.sh) 以及任务运行器 [just](https://github.com/casey/just)。编译 macOS 桌面应用还需安装 Xcode 命令行工具（`xcode-select --install`）；编译 Linux 桌面应用则需安装 `libgtk-4-dev` 和 `libwebkitgtk-6.0-dev`。直接运行 `just` 可查看所有可用构建任务：
 
 ```sh
 git clone https://github.com/t41372/modalfs && cd modalfs

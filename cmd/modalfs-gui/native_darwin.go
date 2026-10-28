@@ -62,7 +62,9 @@ func nativeSetTray(model []byte) {
 
 func nativeShowWindow() { C.nativeShowWindow() }
 
-func nativeWake() { C.nativeWake() }
+func nativeHideWindow() { C.nativeHideWindow() }
+
+func nativeIsSystemQuit() bool { return C.nativeIsSystemQuit() != 0 }
 
 func nativePreferredLanguage() string {
 	s := C.nativePreferredLanguage()
@@ -77,6 +79,3 @@ func goNativeAction(action, id *C.char) {
 
 //export goQuitRequested
 func goQuitRequested() { go theApp.requestQuit() }
-
-//export goSystemQuit
-func goSystemQuit() { theApp.quitting.Store(true) }

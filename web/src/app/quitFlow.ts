@@ -8,7 +8,7 @@ import { useSyncExternalStore } from 'react'
 import { api } from '@/api/client'
 import type { Mount, State } from '@/api/types'
 import { RUNNING } from '@/lib/downloads'
-import { inApp } from '@/lib/platform'
+import { desktop } from '@/lib/platform'
 import { live, nameOf } from '@/lib/mounts'
 import { quit as quitWithoutList } from './quit'
 
@@ -70,8 +70,8 @@ export const useQuitFlow = () =>
   )
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-const ack = () => window.go?.main?.App?.QuitAck?.().catch(() => {})
-const allowQuit = () => window.go?.main?.App?.Quitting?.().catch(() => {})
+const ack = () => desktop?.quitAck().catch(() => {})
+const allowQuit = () => desktop?.quitting().catch(() => {})
 
 async function mount(id: string): Promise<Mount | undefined> {
   const st = await api<State>('GET', '/state')
@@ -99,7 +99,7 @@ export async function startQuit() {
   } catch {
     // No daemon to stop: the window is all there is.
     void allowQuit()
-    window.runtime?.Quit?.()
+    desktop?.quit()
     return
   }
   const on = st.mounts.filter(live)
@@ -191,9 +191,9 @@ async function finish(now = false) {
   }
   if (token !== run) return
   update({ stage: 'quit' })
-  if (inApp) {
+  if (desktop) {
     await sleep(700)
-    window.runtime?.Quit?.()
+    desktop?.quit()
   }
 }
 

@@ -3,7 +3,7 @@
 
 import { useSyncExternalStore } from 'react'
 import { api } from '@/api/client'
-import { inApp } from '@/lib/platform'
+import { desktop } from '@/lib/platform'
 
 export type QuitPhase = 'idle' | 'quitting' | 'quit'
 
@@ -25,7 +25,7 @@ export async function quit(now = false) {
   if (phase === 'idle') {
     set('quitting')
     // First, so the desktop app won't start a new daemon when a poll finds this one gone.
-    await window.go?.main?.App?.Quitting?.().catch(() => {})
+    await desktop?.quitting().catch(() => {})
   }
   await api('POST', now ? '/shutdown?now=1' : '/shutdown').catch(() => {})
 }
@@ -35,5 +35,5 @@ export function quitDone() {
   if (phase !== 'quitting') return
   set('quit')
   // The app asks for the quit checklist unless told the quitting is done.
-  if (inApp) void (window.go?.main?.App?.Quitting?.() ?? Promise.resolve()).finally(() => window.runtime?.Quit?.())
+  if (desktop) void (desktop?.quitting() ?? Promise.resolve()).finally(() => desktop?.quit())
 }

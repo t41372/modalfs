@@ -1,35 +1,37 @@
 // Where the UI runs: inside the desktop app (Wails, the system WebView) or in a
 // browser tab served by the daemon.
 
-declare global {
-  interface Window {
-    /** Wails' runtime, present in the desktop app. */
-    runtime?: {
-      Quit?: () => void
-      BrowserOpenURL?: (url: string) => void
-      EventsOn?: (name: string, cb: (...data: unknown[]) => void) => () => void
-    }
-    /** Go methods the desktop app binds (cmd/modalfs-gui). */
-    go?: {
-      main?: {
-        App?: {
-          SetAppearance?: (a: string) => Promise<void>
-          Quitting?: () => Promise<void>
-          QuitAck?: () => Promise<void>
-          /** The UI got a close request (no menu bar icon); CloseWindow then closes only the window. */
-          CloseAck?: () => Promise<void>
-          CloseWindow?: () => Promise<void>
-          /** Asks where to save a text file and writes it; resolves to the path, or '' when cancelled. */
-          SaveText?: (name: string, text: string) => Promise<string>
-        }
-      }
-    }
-  }
+type NativeWindow = Window & {
+  webkit?: { messageHandlers?: { external?: { postMessage?: unknown } } }
+  chrome?: { webview?: { postMessage?: unknown } }
 }
 
+const host = window as NativeWindow
 const params = new URLSearchParams(location.search)
 
-export const inApp = typeof window.runtime !== 'undefined' || typeof window.go !== 'undefined'
+// Detect the native message channel before importing Wails. Its runtime has
+// side effects, so the daemon's browser UI must not load it.
+export const inApp = typeof host.webkit?.messageHandlers?.external?.postMessage === 'function'
+  || typeof host.chrome?.webview?.postMessage === 'function'
+const runtime = inApp ? await import('@wailsio/runtime') : undefined
+
+function call<T = void>(method: string, ...args: unknown[]): Promise<T> {
+  return runtime!.Call.ByName(`main.App.${method}`, ...args)
+}
+
+/** The desktop bridge is absent in the daemon's browser UI. */
+export const desktop = runtime ? {
+  quitting: () => call('Quitting'),
+  quitAck: () => call('QuitAck'),
+  closeAck: () => call('CloseAck'),
+  closeWindow: () => call('CloseWindow'),
+  quit: () => runtime.Application.Quit(),
+  on: (name: string, callback: (...data: unknown[]) => void) => runtime.Events.On(name, (event) => {
+    const data: unknown = event.data
+    callback(...(Array.isArray(data) ? data : data == null ? [] : [data]))
+  }),
+} : undefined
+
 export const isMac = /Mac/.test(navigator.platform) || /Mac OS X/.test(navigator.userAgent)
 
 /**
@@ -51,7 +53,7 @@ export function markPlatform() {
 
 /** Opens a web page in the default browser: the desktop app's WebView can't open one itself. */
 export function openExternal(url: string) {
-  if (window.runtime?.BrowserOpenURL) window.runtime.BrowserOpenURL(url)
+  if (runtime) void runtime.Browser.OpenURL(url)
   else window.open(url, '_blank', 'noopener,noreferrer')
 }
 
@@ -61,8 +63,7 @@ export function openExternal(url: string) {
  * when the person cancelled.
  */
 export async function saveText(name: string, text: string): Promise<boolean> {
-  const save = window.go?.main?.App?.SaveText
-  if (save) return (await save(name, text)) !== ''
+  if (runtime) return (await call<string>('SaveText', name, text)) !== ''
   const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }))
   const a = Object.assign(document.createElement('a'), { href: url, download: name })
   document.body.append(a)
@@ -74,5 +75,5 @@ export async function saveText(name: string, text: string): Promise<boolean> {
 
 /** The desktop app's window follows the appearance chosen here, not only the system's. */
 export function setWindowAppearance(a: string) {
-  window.go?.main?.App?.SetAppearance?.(a).catch(() => {})
+  if (runtime) void call('SetAppearance', a).catch(() => {})
 }

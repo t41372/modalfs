@@ -14,5 +14,6 @@ func nativeInit()                     {}
 func nativeSetMenus([]byte)           {}
 func nativeSetTray([]byte)            {}
 func nativeShowWindow()               {}
-func nativeWake()                     {}
+func nativeHideWindow()               {}
+func nativeIsSystemQuit() bool        { return false }
 func nativePreferredLanguage() string { return "" }

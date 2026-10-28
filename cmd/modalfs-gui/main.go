@@ -8,11 +8,10 @@
 //
 //	go build -tags desktop,production -ldflags "-s -w" -o modalfs-gui ./cmd/modalfs-gui
 //
-// On Linux add the webkit2_41 tag when only WebKitGTK 4.1 is installed.
+// Linux builds need GTK4 and WebKitGTK 6.0.
 package main
 
 import (
-	"context"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -24,26 +23,24 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/t41372/modalfs/internal/daemon"
 	"github.com/t41372/modalfs/internal/webui"
-	"github.com/wailsapp/wails/v2"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
-	"github.com/wailsapp/wails/v2/pkg/options/linux"
-	"github.com/wailsapp/wails/v2/pkg/options/mac"
-	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 //go:embed icon.png
 var icon []byte
 
-// App holds the methods the UI can call (window.go.main.App.*).
+// App holds the window's state and the methods the UI can call as a Wails service.
 type App struct {
-	ctx      context.Context
+	desktop  *application.App
+	window   *application.WebviewWindow
 	client   *daemon.Client
 	quitting atomic.Bool // the window may close for good now
 	closing  atomic.Bool // without a menu bar icon: the window may close, the daemon stays
@@ -74,14 +71,14 @@ func (a *App) CloseAck() { a.acked.Store(true) }
 // CloseWindow closes the window without quitting: the daemon keeps the mounts.
 func (a *App) CloseWindow() {
 	a.closing.Store(true)
-	go wruntime.Quit(a.ctx)
+	go a.desktop.Quit()
 }
 
 // SaveText asks where to save a text file, such as an encrypted volume's key
 // (the WebView can't download), and writes it readable only by its owner. It
 // returns the path, or "" when the person cancelled.
 func (a *App) SaveText(name, text string) (string, error) {
-	path, err := wruntime.SaveFileDialog(a.ctx, wruntime.SaveDialogOptions{DefaultFilename: name, CanCreateDirectories: true})
+	path, err := a.desktop.Dialog.SaveFile().SetFilename(name).CanCreateDirectories(true).AttachToWindow(a.window).PromptForSingleSelection()
 	if err != nil || path == "" {
 		return "", err
 	}
@@ -97,13 +94,13 @@ func (a *App) SaveText(name, text string) (string, error) {
 // load) can't show it, so the app quits without it; the daemon keeps the
 // mounts, as when the window just closes.
 func (a *App) requestQuit() {
-	if a.quitting.Load() || a.ctx == nil {
+	if a.quitting.Load() || a.desktop == nil {
 		return
 	}
 	nativeShowWindow()
 	a.ask("quit:request", func() {
 		a.quitting.Store(true)
-		wruntime.Quit(a.ctx)
+		a.desktop.Quit()
 	})
 }
 
@@ -111,8 +108,8 @@ func (a *App) requestQuit() {
 // volumes stay mounted and offer to quit instead. A window that doesn't
 // answer (its page failed to load) just closes.
 func (a *App) requestClose() {
-	wruntime.WindowUnminimise(a.ctx)
-	wruntime.WindowShow(a.ctx)
+	a.window.UnMinimise()
+	a.window.Show()
 	a.ask("close:request", a.CloseWindow)
 }
 
@@ -126,7 +123,7 @@ func (a *App) ask(event string, fallback func()) {
 	}
 	defer a.asking.Store(false)
 	a.acked.Store(false)
-	wruntime.EventsEmit(a.ctx, event)
+	a.desktop.Event.Emit(event)
 	for range 40 {
 		if a.acked.Load() {
 			return
@@ -138,40 +135,39 @@ func (a *App) ask(event string, fallback func()) {
 	}
 }
 
-// beforeClose runs when Wails is about to quit. On macOS that's ⌘Q or the
-// Dock (the close button only hides the window), so unless the quit
-// checklist finished (or it's a logout), it shows the checklist instead.
-// Without a menu bar icon (Linux) it's the close button: only the window
-// goes, and the daemon, a process of its own, keeps the mounts. Nothing on
-// screen says so afterwards, so the UI may say it first (requestClose).
-// Quit in the window still runs the checklist, which sets quitting first.
-func (a *App) beforeClose(context.Context) (prevent bool) {
-	if !hasTray && !a.quitting.Load() {
-		if a.closing.Load() || a.ctx == nil {
-			return false
-		}
-		go a.requestClose()
+// beforeQuit asks the UI to finish the quit checklist. A logout quits at
+// once; launchd signals the separate daemon, which handles its own unmounts.
+func (a *App) beforeQuit() bool {
+	if a.quitting.Load() || a.closing.Load() {
 		return true
 	}
-	if a.quitting.Load() {
-		// Wails stops the run loop from a goroutine here; an event makes it notice.
-		go func() {
-			for range 20 {
-				time.Sleep(100 * time.Millisecond)
-				nativeWake()
-			}
-		}()
-		return false
+	if nativeIsSystemQuit() {
+		a.quitting.Store(true)
+		return true
 	}
 	go a.requestQuit()
-	return true
+	return false
+}
+
+// Closing the macOS window leaves the menu bar app. Without a menu bar
+// icon, the UI explains that the separate daemon keeps the mounts first.
+func (a *App) beforeClose(event *application.WindowEvent) {
+	if a.quitting.Load() || a.closing.Load() {
+		return
+	}
+	event.Cancel()
+	if hasTray {
+		nativeHideWindow()
+		return
+	}
+	go a.requestClose()
 }
 
 // nativeAction is a click in the menu bar menu or the app menu.
 func (a *App) nativeAction(action, id string) {
 	nav := func(section, id string) {
 		nativeShowWindow()
-		wruntime.EventsEmit(a.ctx, "nav", section, id)
+		a.desktop.Event.Emit("nav", section, id)
 	}
 	switch action {
 	case "reveal":
@@ -193,17 +189,13 @@ func (a *App) nativeAction(action, id string) {
 	}
 }
 
-func (a *App) startup(ctx context.Context) {
-	a.ctx = ctx
-	if hasTray {
-		nativeInit()
-	}
-}
-
-func (a *App) domReady(ctx context.Context) {
+func (a *App) runtimeReady() {
 	styleWindow()
 	if hasTray {
-		a.trayOnce.Do(func() { go a.trayLoop(ctx) })
+		a.trayOnce.Do(func() {
+			nativeInit()
+			go a.trayLoop(a.desktop.Context())
+		})
 	}
 }
 
@@ -239,9 +231,9 @@ func main() {
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		// The daemon quit on purpose (`modalfs quit`, or a logout): the app
 		// goes too, rather than mounting everything again.
-		if _, serr := os.Stat(daemon.InfoPath()); errors.Is(serr, fs.ErrNotExist) && app.ran.Load() && !app.quitting.Load() && app.ctx != nil {
+		if _, serr := os.Stat(daemon.InfoPath()); errors.Is(serr, fs.ErrNotExist) && app.ran.Load() && !app.quitting.Load() && app.desktop != nil {
 			app.quitting.Store(true)
-			go wruntime.Quit(app.ctx)
+			go app.desktop.Quit()
 		}
 		// Otherwise it crashed: bring it back, unless this window is quitting it.
 		if !app.quitting.Load() {
@@ -261,30 +253,38 @@ func main() {
 	}
 	app.ran.Store(daemonErr == nil)
 
-	err := wails.Run(&options.App{
-		Title:            "modalfs",
-		Width:            1000,
-		Height:           680,
-		MinWidth:         680,
-		MinHeight:        480,
-		BackgroundColour: background(),
-		AssetServer:      &assetserver.Options{Assets: webui.FS(), Handler: proxy},
-		Bind:             []interface{}{app},
-		OnStartup:        app.startup,
-		OnDomReady:       app.domReady,
-		OnBeforeClose:    app.beforeClose,
-		Mac: &mac.Options{
-			TitleBar:             mac.TitleBarHiddenInset(),
-			WebviewIsTransparent: true,
-			WindowIsTranslucent:  true,
-			About:                &mac.AboutInfo{Title: "modalfs", Message: "Modal Volumes as local folders.\nVersion " + daemon.VersionBuild()},
-		},
-		Linux: &linux.Options{Icon: icon, ProgramName: "modalfs", WebviewGpuPolicy: linux.WebviewGpuPolicyOnDemand},
-		// The WebView's own menu (Copy, Paste…) on text fields and selected
-		// text; elsewhere the UI shows its own, such as a volume's actions.
-		EnableDefaultContextMenu: true,
+	assets := application.BundledAssetFileServer(webui.FS())
+	app.desktop = application.New(application.Options{
+		Name:        "modalfs",
+		Description: "Modal Volumes as local folders.\nVersion " + daemon.VersionBuild(),
+		Icon:        icon,
+		Services:    []application.Service{application.NewService(app)},
+		ShouldQuit:  app.beforeQuit,
+		Assets: application.AssetOptions{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/api/") {
+				proxy.ServeHTTP(w, r)
+				return
+			}
+			assets.ServeHTTP(w, r)
+		})},
+		Linux: application.LinuxOptions{ProgramName: "modalfs", ApplicationID: "dev.modalfs.app"},
 	})
-	if err != nil {
+	app.window = app.desktop.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name: "main", Title: "modalfs",
+		Width: 1000, Height: 680, MinWidth: 680, MinHeight: 480,
+		BackgroundColour: background(),
+		Mac: application.MacWindow{
+			TitleBar: application.MacTitleBarHiddenInset,
+			Backdrop: application.MacBackdropTranslucent,
+		},
+		Linux: application.LinuxWindow{Icon: icon, WebviewGpuPolicy: application.WebviewGpuPolicyOnDemand},
+	})
+	app.window.RegisterHook(events.Common.WindowClosing, app.beforeClose)
+	app.window.OnWindowEvent(events.Common.WindowRuntimeReady, func(*application.WindowEvent) { app.runtimeReady() })
+	if hasTray {
+		app.desktop.Event.OnApplicationEvent(events.Mac.ApplicationShouldHandleReopen, func(*application.ApplicationEvent) { nativeShowWindow() })
+	}
+	if err := app.desktop.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "modalfs-gui:", err, runtime.GOOS)
 		os.Exit(1)
 	}
@@ -293,9 +293,9 @@ func main() {
 // On macOS the window is see-through and the UI draws its own translucent
 // layers over the material; elsewhere there's nothing behind it, so it starts
 // with the UI's solid light background.
-func background() *options.RGBA {
+func background() application.RGBA {
 	if runtime.GOOS == "darwin" {
-		return &options.RGBA{}
+		return application.RGBA{}
 	}
-	return &options.RGBA{R: 234, G: 236, B: 244, A: 255}
+	return application.RGBA{Red: 234, Green: 236, Blue: 244, Alpha: 255}
 }
