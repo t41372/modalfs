@@ -98,7 +98,7 @@ export async function startQuit() {
     st = await api<State>('GET', '/state')
   } catch {
     // No daemon to stop: the window is all there is.
-    void allowQuit()
+    await allowQuit()
     desktop?.quit()
     return
   }
