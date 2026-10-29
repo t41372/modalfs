@@ -34,8 +34,10 @@ func (f desktopFS) Open(name string) (fs.File, error) {
 	return f.FS.Open(name)
 }
 
-// DesktopAPI preserves Wails' streaming request bodies. Its scheme handler
-// reports an unknown length as zero; ReverseProxy treats zero as no body.
+// DesktopAPI preserves Wails' streaming request bodies. Wails 3.0.0's scheme
+// handler reports an unknown length as zero; ReverseProxy treats zero as no body.
+// Recheck this adapter when upgrading Wails: remove it once the unwrapped
+// native proxy preserves mutation bodies.
 func DesktopAPI(api http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil && r.Body != http.NoBody && r.ContentLength == 0 {
