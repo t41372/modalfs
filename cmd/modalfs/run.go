@@ -201,7 +201,7 @@ func runLegacy(cmd string, argv []string) {
 func mountCommand(port int, mp string) string {
 	if runtime.GOOS == "darwin" {
 		// the daemon's options (internal/daemon/mounts.go)
-		return fmt.Sprintf("mount -t nfs -o port=%d,mountport=%d,vers=3,tcp,locallocks,soft,intr,dumbtimer,timeo=600,retrans=2,rsize=1048576,wsize=1048576,readahead=16,actimeo=1,noquota localhost:/ %q", port, port, mp)
+		return fmt.Sprintf("mount -t nfs -o port=%d,mountport=%d,vers=3,tcp,locallocks,soft,intr,timeo=600,retrans=2,rsize=1048576,wsize=1048576,readahead=16,actimeo=1,noquota localhost:/ %q", port, port, mp)
 	}
 	return fmt.Sprintf("sudo mount -t nfs -o port=%d,mountport=%d,vers=3,tcp,nolock,rsize=1048576,wsize=1048576,readahead=16,actimeo=1 127.0.0.1:/ %q", port, port, mp)
 }

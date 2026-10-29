@@ -762,9 +762,7 @@ func prepareMountpoint(mp string) error {
 func nfsMount(port int, mp string, ro bool) (string, error) {
 	var args []string
 	if runtime.GOOS == "darwin" {
-		// A fast cache hit must not shorten the timeout for a cold block
-		// download. Without dumbtimer, timeo only sets the initial timeout.
-		opts := fmt.Sprintf("port=%d,mountport=%d,vers=3,tcp,locallocks,soft,intr,dumbtimer,timeo=600,retrans=2,rsize=1048576,wsize=1048576,readahead=16,actimeo=1,noquota", port, port)
+		opts := fmt.Sprintf("port=%d,mountport=%d,vers=3,tcp,locallocks,soft,intr,timeo=600,retrans=2,rsize=1048576,wsize=1048576,readahead=16,actimeo=1,noquota", port, port)
 		if ro {
 			opts += ",rdonly"
 		}
