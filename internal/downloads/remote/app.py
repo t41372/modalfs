@@ -42,11 +42,16 @@ import urllib.error
 import urllib.request
 from typing import Optional
 
+GOPEED_VERSION = "v2.0.0-beta.3"
+GOPEED_SHA256 = "230f703d8147df28b68c162c4398e12d8e57412d43584f7312fa3532c2bd3c8e"
+# JavaScript runtime for yt-dlp in the remote download image.
 DENO_VERSION = "v2.9.8"
 DENO_SHA256 = "e890975bc2549807bbcc0b584ffafda72cc7c93349dd99c80483dd784f6c4609"
 # Cloudflare WARP (class Warp): wgcf registers an identity (it mimics the
 # official app's TLS handshake, which Cloudflare's API checks), and the
-# proxy in warp/, wgcf and Gopeed are built with this Go.
+# proxy in warp/ is built with this Go.
+WGCF_VERSION = "v2.3.1"
+WGCF_SHA256 = "4fb7a136aa470ece11d17949c7db07b040ec9c604742dc8680bcf1889f85d0c8"
 GO_VERSION = "1.27.3"
 GO_SHA256 = "65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40"
 WARP_ERROR = "Cloudflare WARP"  # failures because of WARP start with it; modalfs offers to retry without
@@ -1547,7 +1552,6 @@ except ImportError:  # the local tests and `python3 app.py run` don't need it
 
 if modal is not None:
     WARP_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "warp")  # modalfs deploys it next to app.py
-    GO_TOOLS_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "build-go-tools.sh")
     image = (
         modal.Image.debian_slim(python_version="3.12")
         # socat, iproute2 and util-linux's unshare: the downloader's own network (NetNS)
@@ -1555,14 +1559,18 @@ if modal is not None:
         .run_commands(
             # the user the downloaders run as (Sandbox)
             f"useradd --system --create-home --home-dir /home/{DOWNLOADER_USER} --shell /usr/sbin/nologin {DOWNLOADER_USER}",
+            f"curl -fsSL -o /tmp/g.zip https://github.com/GopeedLab/gopeed/releases/download/{GOPEED_VERSION}/gopeed-web-{GOPEED_VERSION}-linux-amd64.zip",
+            f"echo '{GOPEED_SHA256}  /tmp/g.zip' | sha256sum -c -",
+            "cd /tmp && unzip -q g.zip && mv gopeed-web-*/gopeed /usr/local/bin/gopeed && rm -rf /tmp/g.zip /tmp/gopeed-web-*",
             f"curl -fsSL -o /tmp/d.zip https://github.com/denoland/deno/releases/download/{DENO_VERSION}/deno-x86_64-unknown-linux-gnu.zip",
             f"echo '{DENO_SHA256}  /tmp/d.zip' | sha256sum -c -",
             "cd /tmp && unzip -q d.zip && mv deno /usr/local/bin/deno && rm /tmp/d.zip",
+            f"curl -fsSL -o /usr/local/bin/wgcf https://github.com/ViRb3/wgcf/releases/download/{WGCF_VERSION}/wgcf_{WGCF_VERSION[1:]}_linux_amd64",
+            f"echo '{WGCF_SHA256}  /usr/local/bin/wgcf' | sha256sum -c - && chmod 755 /usr/local/bin/wgcf",
         )
     )
     if modal.is_local():  # the source is only there when deploying
         image = image.add_local_dir(WARP_SRC, "/opt/modalfs-warp", copy=True)
-        image = image.add_local_file(GO_TOOLS_SRC, "/opt/modalfs-build-go-tools.sh", copy=True)
     image = (
         image.run_commands(
             # The WARP proxy, built from source with a pinned Go; its
@@ -1571,11 +1579,9 @@ if modal is not None:
             f"curl -fsSL -o /tmp/go.tgz https://go.dev/dl/go{GO_VERSION}.linux-amd64.tar.gz",
             f"echo '{GO_SHA256}  /tmp/go.tgz' | sha256sum -c -",
             "tar -C /tmp -xzf /tmp/go.tgz && rm /tmp/go.tgz",
-            f"PATH=/tmp/go/bin:$PATH GO_VERSION={GO_VERSION} GOPATH=/tmp/gopath GOCACHE=/tmp/gocache "
-            "sh /opt/modalfs-build-go-tools.sh /usr/local/bin",
             "cd /opt/modalfs-warp && GOTOOLCHAIN=local GOFLAGS=-mod=readonly CGO_ENABLED=0 GOPATH=/tmp/gopath "
             "GOCACHE=/tmp/gocache /tmp/go/bin/go build -tags modalfs_warp -trimpath -ldflags='-s -w' "
-            "-o /usr/local/bin/modalfs-warp . && rm -rf /tmp/go /tmp/gopath /tmp/gocache /opt/modalfs-warp /opt/modalfs-build-go-tools.sh",
+            "-o /usr/local/bin/modalfs-warp . && rm -rf /tmp/go /tmp/gopath /tmp/gocache /opt/modalfs-warp",
         )
         .env({"MODALFS_APP_NAME": APP_NAME})  # so the agent knows its app when it runs
     )
