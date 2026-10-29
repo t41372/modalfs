@@ -19,7 +19,7 @@ import (
 const AppName = "modalfs-downloads"
 
 // ClientVersion is the Modal Python client the deploy Sandbox installs.
-const ClientVersion = "1.6.3"
+const ClientVersion = "1.5.5"
 
 // Modal runs downloads in a Modal Function in the account's workspace.
 type Modal struct {

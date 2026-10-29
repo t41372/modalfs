@@ -44,16 +44,15 @@ from typing import Optional
 
 GOPEED_VERSION = "v2.0.0-beta.3"
 GOPEED_SHA256 = "230f703d8147df28b68c162c4398e12d8e57412d43584f7312fa3532c2bd3c8e"
-# JavaScript runtime for yt-dlp in the remote download image.
-DENO_VERSION = "v2.9.8"
-DENO_SHA256 = "e890975bc2549807bbcc0b584ffafda72cc7c93349dd99c80483dd784f6c4609"
+DENO_VERSION = "v2.9.7"
+DENO_SHA256 = "c6527f24f4b16031d3ae4fa9f658d5f11534c8d84ce7dc8502420280919c3490"
 # Cloudflare WARP (class Warp): wgcf registers an identity (it mimics the
 # official app's TLS handshake, which Cloudflare's API checks), and the
 # proxy in warp/ is built with this Go.
-WGCF_VERSION = "v2.3.1"
-WGCF_SHA256 = "4fb7a136aa470ece11d17949c7db07b040ec9c604742dc8680bcf1889f85d0c8"
-GO_VERSION = "1.27.3"
-GO_SHA256 = "65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40"
+WGCF_VERSION = "v2.3.0"
+WGCF_SHA256 = "01614e38c0eb5f3405232e71cfaf02d64d4809e4988ad8f5a8071af16d193405"
+GO_VERSION = "1.27.2"
+GO_SHA256 = "ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5"
 WARP_ERROR = "Cloudflare WARP"  # failures because of WARP start with it; modalfs offers to retry without
 PROXY_PORT = 1080  # the WARP proxy, as a downloader in its own network namespace sees it
 
