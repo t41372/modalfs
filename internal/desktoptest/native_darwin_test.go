@@ -78,6 +78,9 @@ type windowState struct {
 	Page   string `json:"page"`
 	Native struct {
 		SystemAppearance string `json:"systemAppearance"`
+		RegularPolicy    bool   `json:"regularPolicy"`
+		QuitAcknowledged bool   `json:"quitAcknowledged"`
+		Quitting         bool   `json:"quitting"`
 		Windows          []struct {
 			Visible         bool   `json:"visible"`
 			Opaque          bool   `json:"opaque"`
@@ -106,6 +109,37 @@ func (m inspector) state() (windowState, error) {
 	var state windowState
 	err := m.call("js_eval", map[string]any{"js": inspectJS, "timeout_ms": 5000}, &state)
 	return state, err
+}
+
+func (m inspector) appCall(method string) error {
+	payload, err := json.Marshal(map[string]any{"object": 0, "method": 0,
+		"args": map[string]any{"call-id": "smoke-" + method, "methodName": "main.App." + method, "args": []any{}}})
+	if err != nil {
+		return err
+	}
+	js := `const r = await fetch('/wails/runtime', {
+  method:'POST', headers:{'Content-Type':'application/json','x-wails-client-id':window._wails.clientId},
+  body:` + strconv.Quote(string(payload)) + `
+});
+if (!r.ok) throw new Error(await r.text());
+return null;`
+	return m.call("js_eval", map[string]any{"js": js}, nil)
+}
+
+func runningDaemonPID(t *testing.T) int {
+	t.Helper()
+	if !daemon.NewClient().Alive() {
+		t.Fatal("the isolated daemon is not answering")
+	}
+	raw, err := os.ReadFile(daemon.InfoPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var info daemon.Info
+	if err := json.Unmarshal(raw, &info); err != nil {
+		t.Fatal(err)
+	}
+	return info.PID
 }
 
 func waitFor(t *testing.T, what string, check func() bool) {
@@ -219,6 +253,7 @@ func TestNativeDesktop(t *testing.T) {
 	})
 	start()
 	waitFor(t, "native UI", func() bool { s, err := m.state(); return err == nil && s.Marker && len(s.Native.Windows) == 1 })
+	daemonPID := runningDaemonPID(t)
 	if err := m.call("emit_event", map[string]any{"name": "nav", "data": []string{"settings", ""}}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -249,35 +284,70 @@ func TestNativeDesktop(t *testing.T) {
 				len(w.Materials) > 0 && w.Materials[0].FullScreenUI && w.Materials[0].BehindWindow
 		})
 	}
-	const closeOnlyJS = `await fetch('/wails/runtime',{method:'POST',headers:{'Content-Type':'application/json','x-wails-client-id':window._wails.clientId},body:JSON.stringify({object:0,method:0,args:{'call-id':'close-native-smoke',methodName:'main.App.CloseWindow',args:[]}})});return null;`
-	_ = m.call("js_eval", map[string]any{"js": closeOnlyJS}, nil)
+	_ = m.appCall("CloseWindow") // the app may exit before replying
 	if err := process.Wait(); err != nil {
 		t.Fatal(err)
 	}
 	process = nil
-	if _, err := os.Stat(daemon.InfoPath()); err != nil {
-		t.Fatalf("closing only the app stopped its daemon: %v", err)
+	if runningDaemonPID(t) != daemonPID {
+		t.Fatal("closing only the app replaced its daemon")
 	}
 	start()
 	waitFor(t, "dark appearance after restart", func() bool {
 		s, err := m.state()
 		return err == nil && s.Saved == "dark" && s.Dark && len(s.Native.Windows) == 1 && s.Native.Windows[0].Appearance == "NSAppearanceNameDarkAqua"
 	})
-	if err := m.call("window_control", map[string]any{"action": "close", "window": "main"}, nil); err != nil {
+	hideWindow := func() {
+		if err := m.call("window_control", map[string]any{"action": "close", "window": "main"}, nil); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "window and Dock icon hidden without quitting", func() bool {
+			s, err := m.state()
+			return err == nil && len(s.Native.Windows) == 1 && !s.Native.Windows[0].Visible && !s.Native.RegularPolicy
+		})
+	}
+	hideWindow()
+	if err := m.appCall("NativeAuditReopen"); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "window hidden without quitting", func() bool {
+	waitFor(t, "native reopen restores window and Dock icon", func() bool {
 		s, err := m.state()
-		return err == nil && len(s.Native.Windows) == 1 && !s.Native.Windows[0].Visible
+		return err == nil && len(s.Native.Windows) == 1 && s.Native.Windows[0].Visible && s.Native.RegularPolicy
 	})
-	const reopenJS = `await fetch('/wails/runtime',{method:'POST',headers:{'Content-Type':'application/json','x-wails-client-id':window._wails.clientId},body:JSON.stringify({object:0,method:0,args:{'call-id':'reopen-native-smoke',methodName:'main.App.NativeAuditOpen',args:[]}})});return null;`
-	if err := m.call("js_eval", map[string]any{"js": reopenJS}, nil); err != nil {
+	hideWindow()
+	if s, err := m.state(); err != nil || s.Native.QuitAcknowledged || s.Native.Quitting {
+		t.Fatalf("quit flags were already set before native termination: %+v, %v", s.Native, err)
+	}
+	// Hold the UI's state request after QuitAck. The inspector's bare fetch
+	// omits X-Modalfs-Request, so we can observe the initial veto and ack.
+	const holdQuitJS = `
+const originalFetch = window.fetch.bind(window);
+let release;
+const held = new Promise(resolve => { release = resolve; });
+window.__releaseQuit = () => { window.fetch = originalFetch; release(); };
+window.fetch = async (input, init) => {
+  if (new URL(input, location.href).pathname === '/api/state' &&
+      new Headers(init?.headers).get('X-Modalfs-Request') === '1') await held;
+  return originalFetch(input, init);
+};
+return null;`
+	if err := m.call("js_eval", map[string]any{"js": holdQuitJS}, nil); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "window reopened", func() bool { s, err := m.state(); return err == nil && s.Native.Windows[0].Visible })
-	// Quit must go through the UI's acknowledgement and stop the daemon,
-	// rather than falling back after four seconds and only closing the GUI.
-	_ = m.call("emit_event", map[string]any{"name": "quit:request"}, nil)
+	if err := m.appCall("NativeAuditQuit"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "native termination veto, window shown and UI QuitAck", func() bool {
+		s, err := m.state()
+		return err == nil && s.Native.QuitAcknowledged && !s.Native.Quitting &&
+			len(s.Native.Windows) == 1 && s.Native.Windows[0].Visible && s.Native.RegularPolicy
+	})
+	if runningDaemonPID(t) != daemonPID {
+		t.Fatal("the native termination request replaced its daemon before the UI could stop it")
+	}
+	// Resume the real UI quit flow. It sets Quitting, stops the daemon and
+	// requests final termination; the app may exit before inspection replies.
+	_ = m.call("js_eval", map[string]any{"js": "window.__releaseQuit(); return null;"}, nil)
 	waitFor(t, "daemon shutdown", func() bool { _, err := os.Stat(daemon.InfoPath()); return os.IsNotExist(err) })
 	if err := process.Wait(); err != nil {
 		t.Fatal(err)
