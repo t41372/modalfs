@@ -212,26 +212,62 @@ func parseFlags(fl *flag.FlagSet, args []string) []string {
 }
 
 func pickAccount(st daemon.StateView, want string) config.Account {
+	a, err := findAccount(st, want)
+	must(err)
+	return a
+}
+
+// findAccount takes an account's ID, label or workspace. Labels aren't
+// unique (logging in again adds an account named after the same workspace),
+// so a name that fits several accounts is an error, never a guess.
+func findAccount(st daemon.StateView, want string) (config.Account, error) {
 	if len(st.Accounts) == 0 {
-		fatal(errors.New("no accounts yet: run `modalfs account login` or `modalfs account import`"))
+		return config.Account{}, errors.New("no accounts yet: run `modalfs account login` or `modalfs account import`")
 	}
 	if want == "" {
 		if len(st.Accounts) == 1 {
-			return st.Accounts[0]
+			return st.Accounts[0], nil
 		}
-		var names []string
-		for _, a := range st.Accounts {
-			names = append(names, a.Label)
-		}
-		fatal(fmt.Errorf("several accounts; pick one with --account (%s)", strings.Join(names, ", ")))
+		return config.Account{}, fmt.Errorf("several accounts; pick one with --account: %s", describeAccounts(st, st.Accounts))
 	}
+	var hits []config.Account
 	for _, a := range st.Accounts {
-		if a.ID == want || strings.EqualFold(a.Label, want) || a.Workspace == want {
-			return a
+		if a.ID == want {
+			return a, nil
+		}
+		if strings.EqualFold(a.Label, want) || a.Workspace == want {
+			hits = append(hits, a)
 		}
 	}
-	fatal(fmt.Errorf("no account %q", want))
-	return config.Account{}
+	switch len(hits) {
+	case 0:
+		return config.Account{}, fmt.Errorf("no account %q", want)
+	case 1:
+		return hits[0], nil
+	}
+	return config.Account{}, fmt.Errorf("%d accounts match %q: %s; use the account ID", len(hits), want, describeAccounts(st, hits))
+}
+
+// describeAccounts lists accounts with what tells them apart: the ID, and
+// how many volumes each manages (as the app's account list shows).
+func describeAccounts(st daemon.StateView, accounts []config.Account) string {
+	var out []string
+	for _, a := range accounts {
+		n := 0
+		for _, m := range st.Mounts {
+			if m.AccountID == a.ID {
+				n++
+			}
+		}
+		vols := "no volumes"
+		if n == 1 {
+			vols = "1 volume"
+		} else if n > 1 {
+			vols = fmt.Sprintf("%d volumes", n)
+		}
+		out = append(out, fmt.Sprintf("%s (%s, %s)", a.Label, a.ID, vols))
+	}
+	return strings.Join(out, ", ")
 }
 
 func findMount(st daemon.StateView, key string) daemon.MountView {
