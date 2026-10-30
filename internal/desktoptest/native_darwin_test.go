@@ -7,7 +7,6 @@ package desktoptest
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -19,6 +18,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -79,6 +79,7 @@ type windowState struct {
 	Native struct {
 		SystemAppearance string `json:"systemAppearance"`
 		RegularPolicy    bool   `json:"regularPolicy"`
+		StatusItem       bool   `json:"statusItem"`
 		QuitAcknowledged bool   `json:"quitAcknowledged"`
 		Quitting         bool   `json:"quitting"`
 		Windows          []struct {
@@ -152,6 +153,23 @@ func waitFor(t *testing.T, what string, check func() bool) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+// exited waits for the app to exit on its own and returns how it exited. A
+// hung app is killed, so it fails the test instead of outliving it.
+func exited(t *testing.T, process *exec.Cmd) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- process.Wait() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(30 * time.Second):
+		process.Process.Kill()
+		<-done
+		t.Fatal("timed out waiting for the app to exit")
+		return nil
+	}
 }
 
 func run(t *testing.T, dir string, env []string, name string, args ...string) {
@@ -237,14 +255,7 @@ func TestNativeDesktop(t *testing.T) {
 			process.Process.Kill()
 			process.Wait()
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "http://modalfsd/api/shutdown?now=1", nil)
-		req.Header.Set("X-Modalfs-Request", "1")
-		client := http.Client{Transport: daemon.NewClient().Transport()}
-		if response, err := client.Do(req); err == nil {
-			response.Body.Close()
-		}
+		_ = daemon.NewClient().Do("POST", "/api/shutdown?now=1", nil, nil)
 		if t.Failed() {
 			if raw, err := os.ReadFile(filepath.Join(home, "app.log")); err == nil {
 				t.Log(string(raw))
@@ -252,7 +263,10 @@ func TestNativeDesktop(t *testing.T) {
 		}
 	})
 	start()
-	waitFor(t, "native UI", func() bool { s, err := m.state(); return err == nil && s.Marker && len(s.Native.Windows) == 1 })
+	waitFor(t, "native UI and menu bar icon", func() bool {
+		s, err := m.state()
+		return err == nil && s.Marker && len(s.Native.Windows) == 1 && s.Native.StatusItem
+	})
 	daemonPID := runningDaemonPID(t)
 	if err := m.call("emit_event", map[string]any{"name": "nav", "data": []string{"settings", ""}}, nil); err != nil {
 		t.Fatal(err)
@@ -285,7 +299,7 @@ func TestNativeDesktop(t *testing.T) {
 		})
 	}
 	_ = m.appCall("CloseWindow") // the app may exit before replying
-	if err := process.Wait(); err != nil {
+	if err := exited(t, process); err != nil {
 		t.Fatal(err)
 	}
 	process = nil
@@ -297,6 +311,20 @@ func TestNativeDesktop(t *testing.T) {
 		s, err := m.state()
 		return err == nil && s.Saved == "dark" && s.Dark && len(s.Native.Windows) == 1 && s.Native.Windows[0].Appearance == "NSAppearanceNameDarkAqua"
 	})
+	// A signal ends the app without waiting for anyone to answer the quit
+	// checklist, and leaves the daemon's mounts alone.
+	if err := process.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if err := exited(t, process); err == nil {
+		t.Fatal("the app exited normally on SIGTERM; expected the signal to end it")
+	}
+	process = nil
+	if runningDaemonPID(t) != daemonPID {
+		t.Fatal("a signal to the app replaced its daemon")
+	}
+	start()
+	waitFor(t, "native UI after SIGTERM", func() bool { s, err := m.state(); return err == nil && s.Marker && len(s.Native.Windows) == 1 })
 	hideWindow := func() {
 		if err := m.call("window_control", map[string]any{"action": "close", "window": "main"}, nil); err != nil {
 			t.Fatal(err)
@@ -345,11 +373,17 @@ return null;`
 	if runningDaemonPID(t) != daemonPID {
 		t.Fatal("the native termination request replaced its daemon before the UI could stop it")
 	}
-	// Resume the real UI quit flow. It sets Quitting, stops the daemon and
-	// requests final termination; the app may exit before inspection replies.
+	// Closing the window while a quit is under way (Quitting is what the UI
+	// calls first) only hides it: its page has to finish the quit.
+	if err := m.appCall("Quitting"); err != nil {
+		t.Fatal(err)
+	}
+	hideWindow()
+	// Resume the real UI quit flow from the hidden window. It stops the daemon
+	// and requests final termination; the app may exit before inspection replies.
 	_ = m.call("js_eval", map[string]any{"js": "window.__releaseQuit(); return null;"}, nil)
 	waitFor(t, "daemon shutdown", func() bool { _, err := os.Stat(daemon.InfoPath()); return os.IsNotExist(err) })
-	if err := process.Wait(); err != nil {
+	if err := exited(t, process); err != nil {
 		t.Fatal(err)
 	}
 	process = nil

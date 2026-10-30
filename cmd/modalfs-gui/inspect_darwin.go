@@ -38,7 +38,9 @@ static char *inspectNativeWindow(void) {
     void (^inspect)(void) = ^{
         @autoreleasepool {
             NSMutableArray *windows = [NSMutableArray array];
+            BOOL statusItem = NO;
             for (NSWindow *window in NSApp.windows) {
+                if ([NSStringFromClass([window class]) containsString:@"StatusBar"]) statusItem = YES;
                 WKWebView *webview = inspectWebview(window.contentView);
                 if (webview == nil) continue;
                 id drawsBackground = [NSNull null];
@@ -61,6 +63,7 @@ static char *inspectNativeWindow(void) {
                 @[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]];
             NSDictionary *state = @{@"hidden": @(NSApp.hidden), @"windows": windows,
                 @"regularPolicy": @((BOOL)(NSApp.activationPolicy == NSApplicationActivationPolicyRegular)),
+                @"statusItem": @(statusItem),
                 @"systemAppearance": systemAppearance ?: @""};
             NSData *data = [NSJSONSerialization dataWithJSONObject:state options:0 error:nil];
             NSString *json = [[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] autorelease];
