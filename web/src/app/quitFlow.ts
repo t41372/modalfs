@@ -97,9 +97,8 @@ export async function startQuit() {
   try {
     st = await api<State>('GET', '/state')
   } catch {
-    // No daemon to stop: the window is all there is.
-    await allowQuit()
-    desktop?.quit()
+    // No answer: the daemon is gone (the app then quits by itself) or just restarted (it stops now).
+    void quitWithoutList()
     return
   }
   const on = st.mounts.filter(live)
@@ -189,12 +188,7 @@ async function finish(now = false) {
     }
     await sleep(250)
   }
-  if (token !== run) return
-  update({ stage: 'quit' })
-  if (desktop) {
-    await sleep(700)
-    desktop?.quit()
-  }
+  if (token === run) update({ stage: 'quit' }) // the desktop app quits by itself once the daemon is gone
 }
 
 /** Tries a blocked or failed volume again. */

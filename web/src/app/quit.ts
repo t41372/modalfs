@@ -1,5 +1,5 @@
 // Quitting from this window: the daemon unmounts everything once its uploads are done, and the window
-// shows the progress until the daemon is gone.
+// shows the progress until the daemon is gone. The desktop app then quits by itself.
 
 import { useSyncExternalStore } from 'react'
 import { api } from '@/api/client'
@@ -24,7 +24,7 @@ export const useQuitPhase = () =>
 export async function quit(now = false) {
   if (phase === 'idle') {
     set('quitting')
-    // First, so the desktop app won't start a new daemon when a poll finds this one gone.
+    // First, so the desktop app won't start a new daemon when a poll finds this one gone, and quits once it is.
     await desktop?.quitting().catch(() => {})
   }
   await api('POST', now ? '/shutdown?now=1' : '/shutdown').catch(() => {})
@@ -32,8 +32,5 @@ export async function quit(now = false) {
 
 /** The daemon stopped answering while quitting: it's done. */
 export function quitDone() {
-  if (phase !== 'quitting') return
-  set('quit')
-  // The app asks for the quit checklist unless told the quitting is done.
-  if (desktop) void (desktop?.quitting() ?? Promise.resolve()).finally(() => desktop?.quit())
+  if (phase === 'quitting') set('quit')
 }

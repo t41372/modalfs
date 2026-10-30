@@ -6,7 +6,10 @@ const params = new URLSearchParams(location.search)
 // Only the native asset server adds this marker. Importing Wails has side
 // effects, so the daemon's browser UI must never infer it from its browser.
 export const inApp = document.querySelector<HTMLMetaElement>('meta[name="modalfs-desktop"]')?.content === '1'
-const runtime = inApp ? await import('@wailsio/runtime') : undefined
+// The app serves the Wails runtime that matches its Go side; the npm package
+// only provides the types, so the two can't drift apart in separate updates.
+const runtimeURL = '/wails/runtime.js'
+const runtime: typeof import('@wailsio/runtime') | undefined = inApp ? await import(/* @vite-ignore */ runtimeURL) : undefined
 
 function call<T = void>(method: string, ...args: unknown[]): Promise<T> {
   return runtime!.Call.ByName(`main.App.${method}`, ...args)
@@ -18,7 +21,6 @@ export const desktop = runtime ? {
   quitAck: () => call('QuitAck'),
   closeAck: () => call('CloseAck'),
   closeWindow: () => call('CloseWindow'),
-  quit: () => runtime.Application.Quit(),
   on: (name: string, callback: (...data: unknown[]) => void) => runtime.Events.On(name, (event) => {
     const data: unknown = event.data
     callback(...(Array.isArray(data) ? data : data == null ? [] : [data]))

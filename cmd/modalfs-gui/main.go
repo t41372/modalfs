@@ -48,7 +48,7 @@ type App struct {
 	asking   atomic.Bool // a quit or close request is waiting for the UI
 	acked    atomic.Bool // the UI answered it
 	ran      atomic.Bool // a daemon was running for this window at some point
-	trayOnce sync.Once
+	quitOnce sync.Once   // starts quitAfterDaemon
 }
 
 // theApp is the one App, for the callbacks from native_darwin.m.
@@ -60,8 +60,23 @@ func (*App) SetAppearance(name string) { setAppearance(name) }
 
 // Quitting is called by the UI right before it posts /api/shutdown. From then
 // on a failed request never starts a new daemon, which would mount again, and
-// the window may close for good.
-func (a *App) Quitting() { a.quitting.Store(true) }
+// the app quits once the daemon is gone. The app watches for that itself: the
+// page in a hidden window stops polling, so it would never notice.
+func (a *App) Quitting() {
+	a.quitting.Store(true)
+	a.quitOnce.Do(func() { go a.quitAfterDaemon() })
+}
+
+// quitAfterDaemon quits once the daemon stops answering its ping (which takes
+// no locks, so a daemon that can't answer is exiting), after a moment for
+// the window to show that the quit is done.
+func (a *App) quitAfterDaemon() {
+	for a.client.Alive() {
+		time.Sleep(250 * time.Millisecond)
+	}
+	time.Sleep(700 * time.Millisecond)
+	a.desktop.Quit()
+}
 
 // QuitAck tells the app the UI is showing the quit checklist it asked for.
 func (a *App) QuitAck() { a.acked.Store(true) }
@@ -152,8 +167,10 @@ func (a *App) beforeQuit() bool {
 
 // Closing the macOS window leaves the menu bar app. Without a menu bar
 // icon, the UI explains that the separate daemon keeps the mounts first.
+// Only the app shutting down closes the window for good; until then it can
+// be shown again, in the middle of a quit too.
 func (a *App) beforeClose(event *application.WindowEvent) {
-	if a.quitting.Load() || a.closing.Load() {
+	if a.desktop.Context().Err() != nil {
 		return
 	}
 	event.Cancel()
@@ -190,13 +207,12 @@ func (a *App) nativeAction(action, id string) {
 	}
 }
 
-func (a *App) runtimeReady() {
-	styleWindow()
+// started sets up the menu bar icon and the app menus. They show the
+// daemon's state, not the page's, so they're there even if the page fails.
+func (a *App) started() {
 	if hasTray {
-		a.trayOnce.Do(func() {
-			nativeInit()
-			go a.trayLoop(a.desktop.Context())
-		})
+		nativeInit()
+		go a.trayLoop(a.desktop.Context())
 	}
 }
 
@@ -267,6 +283,11 @@ func main() {
 		Icon:        icon,
 		Services:    []application.Service{application.NewService(app)},
 		ShouldQuit:  app.beforeQuit,
+		// Wails turns SIGTERM and Ctrl-C into a quit request, which shows the
+		// quit checklist and waits for someone to answer it, then ignores
+		// every later signal. A signal (a Linux logout, kill) just ends the
+		// app, as a macOS logout does; the separate daemon keeps the mounts.
+		DisableDefaultSignalHandler: true,
 		Assets: application.AssetOptions{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.HasPrefix(r.URL.Path, "/api/") {
 				api.ServeHTTP(w, r)
@@ -287,7 +308,8 @@ func main() {
 		Linux: application.LinuxWindow{Icon: icon, WebviewGpuPolicy: application.WebviewGpuPolicyOnDemand},
 	})
 	app.window.RegisterHook(events.Common.WindowClosing, app.beforeClose)
-	app.window.OnWindowEvent(events.Common.WindowRuntimeReady, func(*application.WindowEvent) { app.runtimeReady() })
+	app.window.OnWindowEvent(events.Common.WindowRuntimeReady, func(*application.WindowEvent) { styleWindow() })
+	app.desktop.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) { app.started() })
 	if hasTray {
 		app.desktop.Event.OnApplicationEvent(events.Mac.ApplicationShouldHandleReopen, func(*application.ApplicationEvent) { nativeShowWindow() })
 	}
