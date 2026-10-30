@@ -13,10 +13,10 @@ import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { AddAccountDialog } from './AddAccount'
+import { BrowserLogin } from './BrowserLogin'
 
 /**
- * Connecting a Modal account: the Modal CLI's profiles found on this computer,
- * ticked and imported at once, or a token pasted in.
+ * Browser login first, with existing Modal CLI profiles available below.
  */
 export function ConnectPanel({ onDone }: { onDone?: () => void }) {
   const { t } = useTranslation()
@@ -48,6 +48,8 @@ export function ConnectPanel({ onDone }: { onDone?: () => void }) {
 
   return (
     <div className="flex flex-col gap-6">
+      <BrowserLogin onDone={onDone} />
+      {profiles.error && <p role="alert" className="text-[13px] text-destructive">{profiles.error.message}</p>}
       {profiles.isLoading ? (
         <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
           <Spinner />
@@ -69,7 +71,7 @@ export function ConnectPanel({ onDone }: { onDone?: () => void }) {
                 )
               })}
               <div className="flex justify-end px-4 py-3">
-                <Button disabled={!picked.length || busy} onClick={importPicked}>
+                <Button variant="outline" disabled={!picked.length || busy} onClick={importPicked}>
                   {busy && <Spinner />}
                   {t('connect.importN', { count: picked.length })}
                 </Button>
@@ -78,17 +80,7 @@ export function ConnectPanel({ onDone }: { onDone?: () => void }) {
           </section>
         )
       )}
-      <section>
-        {fresh.length > 0 && <h2 className="mb-2 px-1 text-[12.5px] font-medium text-muted-foreground">{t('connect.orElse')}</h2>}
-        <Card>
-          <div className="flex items-center gap-3 px-4 py-3">
-            <span className="min-w-0 flex-1 text-[14px] font-medium">{t('connect.paste')}</span>
-            <Button variant={fresh.length ? 'outline' : 'default'} onClick={() => setPasting(true)}>
-              {t('connect.pasteButton')}
-            </Button>
-          </div>
-        </Card>
-      </section>
+      <button type="button" className="self-start px-1 text-[13px] text-muted-foreground underline-offset-4 hover:underline" onClick={() => setPasting(true)}>{t('connect.manual')}</button>
       <p className="flex items-center gap-2 px-1 text-[12.5px] text-muted-foreground">
         <Lock className="size-3.5 shrink-0" />
         {t('connect.safe')}
@@ -113,7 +105,7 @@ export function ConnectDialog({ open, onOpenChange }: { open: boolean; onOpenCha
           <DialogTitle>{t('connect.title')}</DialogTitle>
           <DialogDescription>{t('connect.desc')}</DialogDescription>
         </DialogHeader>
-        <ConnectPanel onDone={() => onOpenChange(false)} />
+        {open && <ConnectPanel onDone={() => onOpenChange(false)} />}
       </DialogContent>
     </Dialog>
   )

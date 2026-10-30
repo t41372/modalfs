@@ -36,6 +36,12 @@ type Account struct {
 	AddedAt      int64  `json:"added_at"`
 }
 
+// A Mount is pinned to its account. Logging in again adds a new account and
+// never moves mounts to it, so recovering from a revoked token can mean
+// disconnecting the old account and adding its volumes again. That's only
+// acceptable while a mount is this cheap to set up again. Before a mount or
+// an account holds anything costly to recreate, let a login replace an
+// existing account's token or move its mounts (docs/design/browser-login.md).
 type Mount struct {
 	ID          string `json:"id"`
 	AccountID   string `json:"account_id"`

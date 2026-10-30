@@ -31,6 +31,7 @@ var volNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
 func (d *Daemon) routes() http.Handler {
 	mux := http.NewServeMux()
 	d.encryptionRoutes(mux)
+	d.loginRoutes(mux)
 	mux.Handle("GET /", webui.Handler())
 
 	// ping takes no locks, so a daemon busy with a long commit still answers it.

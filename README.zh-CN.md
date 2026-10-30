@@ -82,7 +82,7 @@
 ## 开始使用
 
 1. 启动 **modalfs**。
-2. 连接你的 Modal 账号：可以在 [modal.com → Settings → API Tokens](https://modal.com/settings/tokens) 生成一个 API Token 填入，也可以直接一键导入本机 Modal CLI 已有的 Profile。
+2. 点击**“前往浏览器登录”**，选择 Modal 工作区并同意连接。也可以**“复制登录链接”**自行打开，或导入本机 Modal CLI 已有的 Profile。无需复制 token，modalfs 会在授权后将凭证保存在这台电脑上。
 3. 点击**“添加 Volume”**从账号中选择一个 Volume（添加后会立即挂载），或新建一个 Volume。挂载成功后，它会出现在 `~/ModalVolumes` 目录下，可直接在访达中打开使用。
 
 ## 常见问题
@@ -293,12 +293,15 @@ Linux 环境需确保已安装 FUSE 3（`fuse3` 软件包及 `/dev/fuse`）。�
 
 ### 快速上手
 
-1. **添加账号。** 在 [modal.com → Settings → API Tokens](https://modal.com/settings/tokens) 创建一个 Token，或直接导入本地 Modal CLI 配置：
+1. **在浏览器中连接 Modal 账号**，或导入本地 Modal CLI 配置：
 
    ```sh
-   modalfs account add                    # 交互式提示输入 Token ID 和 Secret
+   modalfs account login                  # 打开浏览器，并显示登录链接
+   modalfs account login --no-browser     # 只显示链接，供自行打开
    modalfs account import                 # 或一键导入 ~/.modal.toml 中的 Profile
    ```
+
+   浏览器登录使用与 `modal token new` 相同的凭证授权流程，无需安装 Modal CLI，也不会修改其 Profile。如果 Modal 要求确认码，请使用 modalfs 显示的代码。每次登录最多等待 10 分钟；可点击**“取消”**、关闭连接对话框，或在 CLI 中按 Ctrl-C 取消。如果授权已进入保存阶段，取消会返回已连接的账号。后台进程使用已有的钥匙串或 `0600` 文件存储凭证。仍可通过**“手动输入 API token…”**或 `modalfs account add` 使用现有 token。
 
 2. **创建并挂载 Volume：**
 
@@ -362,6 +365,7 @@ Volume
   modalfs volume decrypt NAME --to FOLDER     只用密钥，把所有文件解密复制出来
 
 账号
+  modalfs account login [--no-browser] [--label L] [--env E]
   modalfs account add [--label L] [--token-id ID] [--env E] [--secret-from-env]
   modalfs account import [PROFILE...]
   modalfs account ls

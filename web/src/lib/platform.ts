@@ -52,6 +52,12 @@ export function openExternal(url: string) {
   else window.open(url, '_blank', 'noopener,noreferrer')
 }
 
+/** Uses the native clipboard in the app, and the browser clipboard in a tab. */
+export async function copyText(text: string): Promise<void> {
+  if (runtime) await runtime.Clipboard.SetText(text)
+  else await navigator.clipboard.writeText(text)
+}
+
 /**
  * Saves text as a file the person picks up: the desktop app asks where (its
  * WebView doesn't download), a browser downloads it. Resolves to false only

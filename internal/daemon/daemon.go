@@ -56,8 +56,9 @@ type Daemon struct {
 	rtMu sync.Mutex // serializes runtime.json writes
 
 	encryption encryptionState
-	clients    clientCache // shared Modal clients for API calls
-	dl         *dlManager  // remote downloads
+	clients    clientCache   // shared Modal clients for API calls
+	logins     accountLogins // browser account connections
+	dl         *dlManager    // remote downloads
 
 	traffic   traffic     // each mount's totals over the last hour
 	speeds    speeds      // each live mount's totals over the last few seconds
@@ -209,6 +210,7 @@ func Run(log *slog.Logger) error {
 	// this file knows it quit on purpose and doesn't start it again.
 	_ = os.Remove(InfoPath())
 	d.stopAll()
+	d.logins.close()
 	_ = ul.Close()
 	_ = tl.Close()
 	_ = os.Remove(SocketPath())

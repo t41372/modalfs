@@ -847,6 +847,8 @@ function insight(method: string, mt: Mount, what: string, body: Body): unknown {
 // After a shutdown the mock stops answering, like the daemon does once it has quit.
 let gone = false
 
+const logins = new Map<string, { id: string; url: string; code: string; expires_at: number; state: string; account?: Account; error?: string }>()
+
 export async function mockRequest(method: string, path: string, raw?: unknown): Promise<unknown> {
   await wait(method === 'GET' ? 60 : 280)
   if (gone) throw new TypeError('mock: modalfs has quit')
@@ -903,6 +905,37 @@ export async function mockRequest(method: string, path: string, raw?: unknown): 
   if (route === 'POST /open') return ok
 
   // accounts
+  if (route === 'POST /account-logins') {
+    const id = `login-${Date.now()}`
+    const login = { id, url: `https://modal.com/token-flow/${id}`, code: 'ABCD-EFGH', expires_at: now() + 600, state: 'waiting' }
+    logins.set(id, login)
+    return clone(login)
+  }
+  if ((m = p.match(/^\/account-logins\/([^/]+)(\/open)?$/))) {
+    const login = logins.get(m[1])
+    if (!login) return fail('Login session not found. Start browser login again.')
+    if (method === 'DELETE' && login.state === 'waiting') login.state = 'cancelled'
+    if (method === 'POST' && m[2]) {
+      // The mock demonstrates approval without opening a real Modal page.
+      setTimeout(() => {
+        if (login.state !== 'waiting') return
+        if (params.get('login') === 'error') {
+          login.state = 'error'
+          login.error = 'Browser login failed. Start browser login again.'
+          return
+        }
+        const a: Account = { id: `acc-${login.id}`, label: 'new-workspace', workspace: 'new-workspace', token_id: 'ak-mock-browser', secret_store: 'keychain', added_at: now() }
+        accounts.push(a)
+        volumes[a.id] = []
+        environments[a.id] = [{ name: 'main', default: true }]
+        login.account = a
+        login.state = 'connected'
+        emit('info', '', 'acct_added', [a.label, a.workspace!])
+      }, 15000)
+      return ok
+    }
+    return clone(login)
+  }
   if (route === 'POST /accounts') {
     const tokenId = String(body.tokenId || '').trim()
     if (!/^ak-/.test(tokenId) || !String(body.tokenSecret || '').startsWith('as-')) fail('invalid token: check the ID and secret')

@@ -82,7 +82,7 @@ Download `modalfs-gui-<version>-linux-amd64.tar.gz` from [Releases](https://gith
 ## Getting started
 
 1. Launch **modalfs**.
-2. Connect your Modal account using an API token from [modal.com → Settings → API Tokens](https://modal.com/settings/tokens), or import your existing profiles directly from the Modal CLI.
+2. Click **Continue in browser**, choose your Modal workspace and approve the connection. You can also **Copy login link** to open it yourself, or import your existing Modal CLI profiles. No token needs to be copied; modalfs saves it on this computer after approval.
 3. Click **Add volume** to pick a volume from your account (it's mounted right away), or create a new one. It will appear under `~/ModalVolumes`, ready to open in Finder.
 
 ## FAQ
@@ -293,12 +293,15 @@ On Linux, ensure FUSE 3 is installed (`fuse3` package and `/dev/fuse`). To build
 
 ### Quick start
 
-1. **Connect your Modal account.** Generate a token at [modal.com → Settings → API Tokens](https://modal.com/settings/tokens), or import your existing CLI profiles:
+1. **Connect your Modal account in your browser**, or import your existing CLI profiles:
 
    ```sh
-   modalfs account add                    # prompts for Token ID and Secret
+   modalfs account login                  # opens your browser and prints the login link
+   modalfs account login --no-browser     # print the link to open yourself
    modalfs account import                 # or import profiles from ~/.modal.toml
    ```
+
+   Browser login uses the same token flow as `modal token new`, without requiring the Modal CLI or changing its profiles. If Modal asks for a confirmation code, use the code shown in modalfs. Each login attempt lasts up to 10 minutes; cancel it with **Cancel**, by closing the connection dialog, or with Ctrl-C in the CLI. If approval is already being saved, cancellation reports the connected account instead. The daemon saves credentials in its existing keychain or `0600` file store. Manual tokens remain available through **Enter an API token manually…** and `modalfs account add`.
 
 2. **Create and mount a volume:**
 
@@ -362,6 +365,7 @@ Encrypted volumes
   modalfs volume decrypt NAME --to FOLDER     copy every file out, decrypted, with only the key
 
 Accounts
+  modalfs account login [--no-browser] [--label L] [--env E]
   modalfs account add [--label L] [--token-id ID] [--env E] [--secret-from-env]
   modalfs account import [PROFILE...]
   modalfs account ls

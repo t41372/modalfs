@@ -66,7 +66,8 @@ Remote downloads (off until enabled; each runs in a Modal Function billed to you
   modalfs download help                     everything else, and how to turn them on
 
 Accounts (each mount is pinned to one; the Modal CLI's active profile is never used):
-  modalfs account add [--label L] [--token-id ID]   token secret is prompted, stored in the keychain
+  modalfs account login [--no-browser]      connect in your browser; also prints a login link
+  modalfs account add [--label L] [--token-id ID]   manually enter a token, stored in the keychain
   modalfs account import [PROFILE...]       copy profiles from ~/.modal.toml
   modalfs account ls
   modalfs account check ACCOUNT              ask Modal whether the token still works
@@ -212,7 +213,7 @@ func parseFlags(fl *flag.FlagSet, args []string) []string {
 
 func pickAccount(st daemon.StateView, want string) config.Account {
 	if len(st.Accounts) == 0 {
-		fatal(errors.New("no accounts yet: run `modalfs account add` or `modalfs account import`"))
+		fatal(errors.New("no accounts yet: run `modalfs account login` or `modalfs account import`"))
 	}
 	if want == "" {
 		if len(st.Accounts) == 1 {
@@ -850,9 +851,12 @@ func cmdAccount(args []string) {
 	env := fl.String("env", "", "default environment for this account")
 	fromEnv := fl.Bool("secret-from-env", false, "take the secret from MODAL_TOKEN_SECRET at run time instead of storing it")
 	yes := fl.Bool("yes", false, "don't ask for confirmation (rm)")
+	noBrowser := fl.Bool("no-browser", false, "print the login link without opening a browser (login)")
 	pos := parseFlags(fl, args[1:])
 	c := client()
 	switch sub {
+	case "login":
+		must(cmdAccountLogin(c, *label, *env, *noBrowser))
 	case "ls", "list":
 		st := state(c)
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
