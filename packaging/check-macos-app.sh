@@ -9,7 +9,7 @@ trap 'rm -rf "$work"' EXIT
 lipo -info "$app/Contents/MacOS/modalfs"
 codesign --verify --strict "$app"
 "$app/Contents/Resources/bin/modalfs" version
-for arch in arm64 x86_64; do
+for arch in $(lipo -archs "$app/Contents/MacOS/modalfs"); do
   lipo -thin "$arch" "$app/Contents/MacOS/modalfs" -output "$work/gui-$arch"
   tags=$(go version -m "$work/gui-$arch" | sed -n 's/^[[:space:]]*build[[:space:]]*-tags=//p')
   case ",$tags," in

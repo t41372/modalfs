@@ -9,7 +9,7 @@ You need:
 - Go (the version in `go.mod` or newer)
 - [Bun](https://bun.sh), for the UI in `web/`
 - [just](https://github.com/casey/just) (`brew install just`, or see its README for other platforms)
-- To build the desktop app: Xcode Command Line Tools on macOS (`xcode-select --install`), or `libgtk-3-dev` and `libwebkit2gtk-4.1-dev` on Linux
+- To build the desktop app: Xcode Command Line Tools on macOS (`xcode-select --install`), or `libgtk-4-dev` and `libwebkitgtk-6.0-dev` on Linux (Ubuntu 24.04 or newer)
 
 Run `just` to list the tasks:
 
