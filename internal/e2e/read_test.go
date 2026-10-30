@@ -203,6 +203,9 @@ func TestStreamingReadThroughput(t *testing.T) {
 	if least := ciOr(0.5, 0.7); cold < least*float64(link)/MiB {
 		t.Errorf("streaming read ran at %.1f MiB/s, under %.0f%% of the %d MiB/s link", cold, least*100, link/MiB)
 	}
+	if served == 0 {
+		t.Error("cold read counted no block bytes; check the backend's byte counter")
+	}
 	if served > int64(len(data))+2*modalapi.BlockSize {
 		t.Errorf("downloaded %d MiB to read a %d MiB file", served/MiB, len(data)/MiB)
 	}

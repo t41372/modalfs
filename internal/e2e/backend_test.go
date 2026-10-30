@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,7 +31,8 @@ import (
 // On real Modal, the network knobs and byte counts come from a proxy between
 // modalfs and Modal (see proxy below), so the same checks hold.
 
-// network counts what modalfs sent to and got from "Modal".
+// network counts block transfers, excluding control-plane traffic.
+// The live proxy also counts the block connections' TLS/HTTP overhead.
 type network interface {
 	Received() int64 // bytes uploaded by modalfs
 	Served() int64   // bytes downloaded by modalfs
@@ -108,7 +110,7 @@ func startLive(t *testing.T, profile string, opt modalfake.Options) backend {
 	if opt.Latency > 0 {
 		t.Logf("real Modal: ignoring the added latency of %v", opt.Latency)
 	}
-	p := startProxy(t, opt.UpBytesPerSec, opt.DownBytesPerSec)
+	p := startProxy(t, cfg.ServerURL, opt.UpBytesPerSec, opt.DownBytesPerSec)
 	return backend{
 		net: p, client: client, vol: vol,
 		flags: []string{"-profile", profile},
@@ -117,22 +119,32 @@ func startLive(t *testing.T, profile string, opt modalfake.Options) backend {
 }
 
 // proxy is an HTTPS (CONNECT) proxy between modalfs and real Modal. Both
-// the gRPC connection and the block transfers go through it, so it can
-// count the bytes each way and limit them like one slow network link, as
-// the fake does by itself.
+// the gRPC connection and the block transfers share its bandwidth limits,
+// but only block connections count towards Received and Served, like the
+// fake's block transfers. The encrypted tunnels include protocol overhead.
 type proxy struct {
 	ln       net.Listener
+	apiHost  string // CONNECT target of the configured control-plane API
 	up, down limiter
 	sent     atomic.Int64
 	recv     atomic.Int64
 }
 
-func startProxy(t *testing.T, up, down int64) *proxy {
+func startProxy(t *testing.T, serverURL string, up, down int64) *proxy {
+	t.Helper()
+	api, err := url.Parse(serverURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiHost := api.Host
+	if api.Port() == "" {
+		apiHost = net.JoinHostPort(api.Hostname(), "443")
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &proxy{ln: ln, up: limiter{rate: up}, down: limiter{rate: down}}
+	p := &proxy{ln: ln, apiHost: apiHost, up: limiter{rate: up}, down: limiter{rate: down}}
 	t.Cleanup(func() { ln.Close() })
 	go func() {
 		for {
@@ -163,16 +175,20 @@ func (p *proxy) handle(c net.Conn) {
 	}
 	defer up.Close()
 	fmt.Fprint(c, "HTTP/1.1 200 Connection Established\r\n\r\n")
+	var sent, recv *atomic.Int64
+	if !strings.EqualFold(req.Host, p.apiHost) {
+		sent, recv = &p.sent, &p.recv
+	}
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		pump(up, br, &p.sent, &p.up)
+		pump(up, br, sent, &p.up)
 		_ = up.(*net.TCPConn).CloseWrite()
 	}()
 	go func() {
 		defer wg.Done()
-		pump(c, up, &p.recv, &p.down)
+		pump(c, up, recv, &p.down)
 		_ = c.(*net.TCPConn).CloseWrite()
 	}()
 	wg.Wait()
@@ -187,7 +203,9 @@ func pump(dst io.Writer, src io.Reader, n *atomic.Int64, l *limiter) {
 			if _, err := dst.Write(buf[:k]); err != nil {
 				return
 			}
-			n.Add(int64(k))
+			if n != nil {
+				n.Add(int64(k))
+			}
 		}
 		if err != nil {
 			return
