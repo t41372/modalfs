@@ -8,7 +8,7 @@ import { useSyncExternalStore } from 'react'
 import { api } from '@/api/client'
 import type { Mount, State } from '@/api/types'
 import { RUNNING } from '@/lib/downloads'
-import { inApp } from '@/lib/platform'
+import { desktop } from '@/lib/platform'
 import { live, nameOf } from '@/lib/mounts'
 import { quit as quitWithoutList } from './quit'
 
@@ -70,8 +70,8 @@ export const useQuitFlow = () =>
   )
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-const ack = () => window.go?.main?.App?.QuitAck?.().catch(() => {})
-const allowQuit = () => window.go?.main?.App?.Quitting?.().catch(() => {})
+const ack = () => desktop?.quitAck().catch(() => {})
+const allowQuit = () => desktop?.quitting().catch(() => {})
 
 async function mount(id: string): Promise<Mount | undefined> {
   const st = await api<State>('GET', '/state')
@@ -97,9 +97,8 @@ export async function startQuit() {
   try {
     st = await api<State>('GET', '/state')
   } catch {
-    // No daemon to stop: the window is all there is.
-    void allowQuit()
-    window.runtime?.Quit?.()
+    // No answer: the daemon is gone (the app then quits by itself) or just restarted (it stops now).
+    void quitWithoutList()
     return
   }
   const on = st.mounts.filter(live)
@@ -189,12 +188,7 @@ async function finish(now = false) {
     }
     await sleep(250)
   }
-  if (token !== run) return
-  update({ stage: 'quit' })
-  if (inApp) {
-    await sleep(700)
-    window.runtime?.Quit?.()
-  }
+  if (token === run) update({ stage: 'quit' }) // the desktop app quits by itself once the daemon is gone
 }
 
 /** Tries a blocked or failed volume again. */

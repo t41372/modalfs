@@ -77,7 +77,7 @@ Because the app is ad-hoc signed rather than notarized by Apple, macOS Gatekeepe
 
 ### Linux
 
-Download `modalfs-gui-<version>-linux-amd64.tar.gz` from [Releases](https://github.com/t41372/modalfs/releases) and extract it. The desktop GUI is built on Ubuntu 24.04 and needs a distribution at least that new, plus WebKitGTK 4.1 (`libwebkit2gtk-4.1-0`) and FUSE 3 (`fuse3` and `/dev/fuse`). On older distributions, headless servers, ARM64 Linux, or systems without WebKitGTK, install the [CLI binary](#command-line) instead—`modalfs ui` serves the exact same interface on the machine's `127.0.0.1` (on a headless server, reach it through an SSH tunnel to that port; `modalfs ui --print` shows the link).
+Download `modalfs-gui-<version>-linux-amd64.tar.gz` from [Releases](https://github.com/t41372/modalfs/releases) and extract it. The desktop GUI is built on Ubuntu 24.04 and needs a distribution at least that new, plus GTK4 and WebKitGTK 6.0 (`libgtk-4-1` and `libwebkitgtk-6.0-4`) and FUSE 3 (`fuse3` and `/dev/fuse`). On older distributions, headless servers, ARM64 Linux, or systems without WebKitGTK, install the [CLI binary](#command-line) instead—`modalfs ui` serves the exact same interface on the machine's `127.0.0.1` (on a headless server, reach it through an SSH tunnel to that port; `modalfs ui --print` shows the link).
 
 ## Getting started
 
@@ -426,11 +426,13 @@ $ modalfs download show dl-3f2a --follow
 
 ## Development
 
-Prerequisites: Go 1.26+, [Bun](https://bun.sh) (for building the frontend), and [just](https://github.com/casey/just). Building the macOS desktop app requires Xcode Command Line Tools (`xcode-select --install`); building the Linux desktop app requires `libgtk-3-dev` and `libwebkit2gtk-4.1-dev`. Run `just` to list all available recipes:
+Prerequisites: Go 1.27.3+, [Bun](https://bun.sh) (for building the frontend), and [just](https://github.com/casey/just). Building the macOS desktop app requires Xcode Command Line Tools (`xcode-select --install`); building the Linux desktop app requires `libgtk-4-dev` and `libwebkitgtk-6.0-dev`. Run `just` to list all available recipes:
 
 ```sh
 git clone https://github.com/t41372/modalfs && cd modalfs
 just app             # Build universal macOS app bundle: dist/modalfs.app (Apple Silicon & Intel)
+just check-app       # Verify the production bundle, including native transparency flags
+just test-app-macos  # Exercise native appearance, settings and window lifecycle with an isolated daemon
 just linux-gui       # Build Linux desktop app: dist/modalfs-gui
 just cli             # Cross-compile CLI binaries: dist/modalfs-{darwin,linux}-{arm64,amd64}
 just build           # Build CLI binary for the host machine: dist/modalfs
@@ -443,7 +445,7 @@ just fake -up 20M    # Launch a local fake Modal server to test modalfs without 
 MODALFS_TEST_VOLUME=scratch just test-integration   # Run live integration tests (CREATES AND DELETES files in the target volume)
 ```
 
-macOS 12 isn't supported. With Go 1.26, `MIN_MACOS=12.0 just app` builds an app that targets it, but it's untested; Go 1.27 and later don't run on macOS 12 at all.
+macOS 12 isn't supported. Go 1.27 and later require macOS 13 or later.
 
 The frontend is built with React, Tailwind CSS, and shadcn/ui (on Base UI), following the visual language of [Jezo](https://github.com/t41372/Jezo). Running `just ui` compiles the frontend into `internal/webui/dist`, which is embedded into both the daemon and desktop binaries.
 

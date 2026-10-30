@@ -43,9 +43,17 @@ cli: ui
 app: ui
     ./packaging/build-macos-app.sh
 
-# build the Linux desktop app (needs libgtk-3-dev and libwebkit2gtk-4.1-dev)
+# verify the universal macOS production bundle and its transparency flags
+check-app:
+    sh packaging/check-macos-app.sh
+
+# exercise the real macOS WebView, appearance and lifecycle with an isolated daemon
+test-app-macos: ui
+    go test -tags desktop_smoke -count=1 -timeout 5m -v ./internal/desktoptest
+
+# build the Linux desktop app (needs libgtk-4-dev and libwebkitgtk-6.0-dev)
 linux-gui: ui
-    CGO_ENABLED=1 go build -trimpath -tags desktop,production,webkit2_41 -ldflags "{{ldflags}}" -o dist/modalfs-gui ./cmd/modalfs-gui
+    CGO_ENABLED=1 go build -trimpath -tags desktop,production -ldflags "{{ldflags}}" -o dist/modalfs-gui ./cmd/modalfs-gui
 
 # format all Go code
 fmt:

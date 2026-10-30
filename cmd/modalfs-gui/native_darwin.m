@@ -1,10 +1,8 @@
-// See native_darwin.h. Wails creates the window and its delegates; this file
-// changes three of their methods at startup (closing the window, quitting,
-// clicking the Dock icon) and owns the menu bar icon and the app menu.
+// See native_darwin.h. Wails owns the window and its lifecycle hooks; this
+// file owns the menu bar icon, the localized menus and the Dock policy.
 // Compiled without ARC, like Wails' own Objective-C.
 
 #import <Cocoa/Cocoa.h>
-#import <objc/runtime.h>
 #include "native_darwin.h"
 #include "_cgo_export.h"
 
@@ -50,13 +48,10 @@ static void showWindow(void) {
 	[NSApp activateIgnoringOtherApps:YES];
 }
 
-// Wails stops the app with [NSApp stop:], which takes effect only when the
-// next event arrives. Quitting from a goroutine (as OnBeforeClose makes it)
-// would otherwise wait for the mouse to move.
-void nativeWake(void) {
+void nativeHideWindow(void) {
 	dispatch_async(dispatch_get_main_queue(), ^{
-		NSEvent *e = [NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil subtype:0 data1:0 data2:0];
-		[NSApp postEvent:e atStart:YES];
+		[mainWindow() orderOut:nil];
+		updatePolicy();
 	});
 }
 
@@ -64,42 +59,12 @@ void nativeShowWindow(void) {
 	dispatch_async(dispatch_get_main_queue(), ^{ showWindow(); });
 }
 
-// ----- the methods replaced on Wails' delegates -----
-
-// The red button and ⌘W close the window; modalfs keeps running in the menu bar.
-static BOOL mfWindowShouldClose(id self, SEL _cmd, NSWindow *sender) {
-	mainWindow(); // found while it's still visible
-	[sender orderOut:nil];
-	updatePolicy();
-	return NO;
-}
-
-// Quit from the Dock, or a logout. A person quitting gets the window's quit
-// checklist; logging out, restarting or shutting down quits at once (the
-// daemon gets its own signal from launchd and unmounts by itself).
-static NSApplicationTerminateReply mfShouldTerminate(id self, SEL _cmd, NSApplication *app) {
+// Called by Wails' ShouldQuit callback on the native main thread. A logout,
+// restart or shutdown must not wait for the interactive quit checklist.
+int nativeIsSystemQuit(void) {
 	NSAppleEventDescriptor *ev = [[NSAppleEventManager sharedAppleEventManager] currentAppleEvent];
 	NSAppleEventDescriptor *reason = [ev attributeDescriptorForKeyword:kAEQuitReason];
-	if (reason != nil && [reason enumCodeValue] != 0) {
-		goSystemQuit();
-		return NSTerminateNow;
-	}
-	goQuitRequested();
-	return NSTerminateCancel;
-}
-
-// Clicking the Dock icon, or opening the app again while it runs.
-static BOOL mfShouldHandleReopen(id self, SEL _cmd, NSApplication *app, BOOL hasVisibleWindows) {
-	showWindow();
-	return YES;
-}
-
-static void replaceMethod(NSString *className, SEL sel, IMP imp, const char *types) {
-	Class c = NSClassFromString(className);
-	if (c == nil) return;
-	Method m = class_getInstanceMethod(c, sel);
-	if (m != NULL) method_setImplementation(m, imp);
-	else class_addMethod(c, sel, imp, types);
+	return reason != nil && [reason enumCodeValue] != 0;
 }
 
 // ----- menus -----
@@ -292,8 +257,5 @@ char *nativePreferredLanguage(void) {
 void nativeInit(void) {
 	dispatch_async(dispatch_get_main_queue(), ^{
 		if (target == nil) target = [[MFTarget alloc] init];
-		replaceMethod(@"WindowDelegate", @selector(windowShouldClose:), (IMP)mfWindowShouldClose, "c@:@");
-		replaceMethod(@"AppDelegate", @selector(applicationShouldTerminate:), (IMP)mfShouldTerminate, "Q@:@");
-		replaceMethod(@"AppDelegate", @selector(applicationShouldHandleReopen:hasVisibleWindows:), (IMP)mfShouldHandleReopen, "c@:@c");
 	});
 }

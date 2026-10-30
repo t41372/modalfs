@@ -1,11 +1,8 @@
 package main
 
-// Wails v2 uses UTType (macOS 11+) for file dialogs but doesn't link the
-// framework that defines it, so the final link fails without the first flag.
-
 /*
 #cgo CFLAGS: -x objective-c
-#cgo LDFLAGS: -framework UniformTypeIdentifiers -framework Cocoa
+#cgo LDFLAGS: -framework Cocoa
 #import <Cocoa/Cocoa.h>
 
 // Wails puts an NSVisualEffectView behind the web view with the default

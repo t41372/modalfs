@@ -7,12 +7,12 @@ import type { State } from '@/api/types'
 import { confirm, confirmBusy } from '@/components/confirm'
 import i18n from '@/i18n'
 import { live } from '@/lib/mounts'
+import { desktop } from '@/lib/platform'
 import { checklistOpen, startQuit } from './quitFlow'
 
 const KEY = 'modalfs.closeExplained'
 
-const app = () => window.go?.main?.App
-const close = () => app()?.CloseWindow?.()
+const close = () => desktop?.closeWindow()
 
 function explained() {
   try {
@@ -23,7 +23,7 @@ function explained() {
 }
 
 export async function askClose() {
-  void app()?.CloseAck?.().catch(() => {})
+  void desktop?.closeAck().catch(() => {})
   // This page is unmounting the volumes, or running what was just confirmed: closing it now would
   // stop that halfway. The window stays; it can close once that's done.
   if (checklistOpen() || confirmBusy()) return

@@ -40,7 +40,7 @@ func Handler() http.Handler {
 	})
 }
 
-const placeholder = `<!doctype html><meta charset="utf-8"><title>modalfs</title>
+const placeholder = `<!doctype html><head><meta charset="utf-8"><title>modalfs</title></head>
 <body style="font:15px/1.5 -apple-system,system-ui,sans-serif;max-width:34em;margin:15vh auto;padding:0 1.5em;color:#333">
 <h1 style="font-size:20px">The modalfs UI wasn't built into this binary</h1>
 <p>Everything else works: use the <code>modalfs</code> CLI. To include the UI, build from a checkout with

@@ -13,7 +13,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { setPlatform } from '@/i18n'
 import { eventText, homeOf } from '@/lib/format'
 import { easeOut } from '@/lib/motion'
-import { trafficLights } from '@/lib/platform'
+import { desktop, trafficLights } from '@/lib/platform'
 import { ActivityPage } from '@/pages/Activity'
 import { DownloadRoute } from '@/pages/Download'
 import { Downloads } from '@/pages/Downloads'
@@ -63,9 +63,9 @@ export function App() {
   // closes where there's no menu bar icon (Linux), and for pages (a click in the menu bar menu).
   useEffect(() => {
     const offs = [
-      window.runtime?.EventsOn?.('quit:request', () => void startQuit()),
-      window.runtime?.EventsOn?.('close:request', () => void askClose()),
-      window.runtime?.EventsOn?.('nav', (section, id) => {
+      desktop?.on('quit:request', () => void startQuit()),
+      desktop?.on('close:request', () => void askClose()),
+      desktop?.on('nav', (section, id) => {
         if ((SECTIONS as readonly unknown[]).includes(section)) navigate(section as Section, typeof id === 'string' && id ? id : undefined)
       }),
     ]

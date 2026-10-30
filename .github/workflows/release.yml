@@ -43,7 +43,8 @@ jobs:
     needs: version
     # The Linux app links against the system's GTK, WebKit and glibc, so it
     # runs only on systems as new as the one it's built on. Built on the older
-    # LTS, it runs on 24.04 and 26.04 alike; CI tests on the newest.
+    # LTS, it runs on 24.04 and 26.04 alike. PR builds use the same baseline;
+    # FUSE end-to-end tests also run on 26.04.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -66,7 +67,7 @@ jobs:
       - name: Linux desktop app
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev
           just linux-gui
       - name: Package
         env:
@@ -105,6 +106,7 @@ jobs:
         with:
           tool: just
       - run: just app
+      - run: just check-app
       - name: Package
         env:
           VERSION: ${{ needs.version.outputs.version }}
