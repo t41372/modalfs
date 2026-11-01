@@ -115,6 +115,10 @@ func (d *Daemon) startLogin(ctx context.Context, label, env, server string) (Log
 		defer flow.Close()
 		defer cancel()
 		tokenID, secret, err := flow.Wait(waitCtx)
+		// gRPC can fail the call with DeadlineExceeded as the deadline
+		// passes, before waitCtx's timer has fired and set waitCtx.Err().
+		// So the clock decides whether the link expired.
+		expired := !time.Now().Before(expires)
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		if f.status.State != "waiting" {
@@ -122,7 +126,7 @@ func (d *Daemon) startLogin(ctx context.Context, label, env, server string) (Log
 		}
 		f.finished = time.Now()
 		if err != nil {
-			if waitCtx.Err() != nil {
+			if expired {
 				f.status.State, f.status.Error = "error", "Login link expired. Start browser login again."
 			} else {
 				f.status.State, f.status.Error = "error", "Browser login failed: "+friendly(err).Error()+". Start browser login again."
