@@ -520,6 +520,19 @@ func (n *Namespace) Remove(parent, name string) (string, error) {
 	return n.RemoveGuarded(parent, name, nil)
 }
 
+// The API contract explicitly refuses symlink mutations. Reject these
+// before a mutation guard so a known unchanged link keeps its identity.
+// Other special types have different capabilities: sockets can be moved
+// and removed, so the content-I/O classifier cannot be used here.
+func (n *Namespace) rejectSymlinkMutation(s nameSelection, operation string) error {
+	if !s.remote || s.entry.Mode()&os.ModeSymlink == 0 {
+		return nil
+	}
+	err := specialEntry(s.entry)
+	n.fs.unsupported(s.path, operation, err)
+	return err
+}
+
 func (n *Namespace) RemoveGuarded(parent, name string, guard func(string) func(error)) (raw string, err error) {
 	if n.fs.opt.ReadOnly {
 		return "", syscall.EROFS
@@ -534,11 +547,11 @@ func (n *Namespace) RemoveGuarded(parent, name string, guard func(string) func(e
 	if !s.exists {
 		return "", os.ErrNotExist
 	}
-	if why := specialEntry(s.entry); s.remote && why != nil {
-		n.fs.log.Error(why.Error())
-		n.fs.event("unreadable", s.path, why.Error())
-		return "", why
+	if err := n.rejectSymlinkMutation(s, "delete"); err != nil {
+		return "", err
 	}
+	// Modal can delete some types it cannot read or copy, including sockets.
+	// Let remove perform that operation and explain any actual API refusal.
 	if guard != nil {
 		if finish := guard(s.path); finish != nil {
 			defer func() { finish(err) }()
@@ -579,12 +592,8 @@ func (n *Namespace) RenameGuarded(oldParent, oldName, newParent, newName string,
 	}
 	defer n.fs.releaseNameSnapshot(destination.parent, destination.key, destination.snapshot)
 	for _, selected := range []nameSelection{source, destination} {
-		if selected.remote {
-			if why := specialEntry(selected.entry); why != nil {
-				n.fs.log.Error(why.Error())
-				n.fs.event("unreadable", selected.path, why.Error())
-				return "", "", why
-			}
+		if err := n.rejectSymlinkMutation(selected, "move"); err != nil {
+			return "", "", err
 		}
 	}
 	if len(path.Base(destination.path)) > 255 {
