@@ -3,6 +3,7 @@ module github.com/t41372/modalfs
 go 1.27.3
 
 require (
+	github.com/ebitengine/purego v0.11.2
 	github.com/go-git/go-billy/v5 v5.9.2
 	github.com/hanwen/go-fuse/v2 v2.12.1
 	github.com/hashicorp/golang-lru/v2 v2.0.7
