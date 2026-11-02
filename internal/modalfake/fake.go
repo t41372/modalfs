@@ -15,6 +15,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -585,18 +586,24 @@ func (s *Server) putBlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := s.blockPath(want)
-	if err := os.MkdirAll(filepath.Dir(p), 0o700); err == nil {
-		tmp, err := os.CreateTemp(filepath.Dir(p), "put-*")
-		if err == nil {
-			_, err = tmp.Write(data)
-			tmp.Close()
-			if err == nil {
-				err = os.Rename(tmp.Name(), p)
-			}
-			if err != nil {
-				_ = os.Remove(tmp.Name())
-			}
-		}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		http.Error(w, "storing block: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(p), "put-*")
+	if err != nil {
+		http.Error(w, "storing block: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer os.Remove(tmp.Name())
+	_, writeErr := tmp.Write(data)
+	err = errors.Join(writeErr, tmp.Close())
+	if err == nil {
+		err = os.Rename(tmp.Name(), p)
+	}
+	if err != nil {
+		http.Error(w, "storing block: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
 	receipt := "receipt-" + rand.Text()
 	s.mu.Lock()
