@@ -55,7 +55,15 @@ func (fs *FS) purgeContentSidecars(paths ...string) error {
 				continue
 			}
 			seen[metadata] = true
-			if err := fs.c.Remove(fs.ctx, metadata, true); err != nil && !modalapi.IsNotFound(err) {
+			// These are disposable files in our reserved metadata tree. A
+			// corrupt encrypted sidecar must be removable without decoding
+			// its body/size; payload removal still uses Volume.Remove's
+			// unreadable-entry checks. Encode the exact metadata path first.
+			raw, err := fs.c.Path(metadata)
+			if err != nil {
+				return fmt.Errorf("cannot encode sidecar %q: %w", metadata, err)
+			}
+			if err := fs.c.Client.Remove(fs.ctx, fs.volID, raw, true); err != nil && !modalapi.IsNotFound(err) {
 				return fmt.Errorf("cannot invalidate sidecar %q before changing data: %w", metadata, err)
 			}
 		}
