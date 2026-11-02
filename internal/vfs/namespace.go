@@ -550,8 +550,6 @@ func (n *Namespace) RemoveGuarded(parent, name string, guard func(string) func(e
 	if err := n.rejectSymlinkMutation(s, "delete"); err != nil {
 		return "", err
 	}
-	// Modal can delete some types it cannot read or copy, including sockets.
-	// Let remove perform that operation and explain any actual API refusal.
 	if guard != nil {
 		if finish := guard(s.path); finish != nil {
 			defer func() { finish(err) }()
