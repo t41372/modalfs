@@ -81,12 +81,12 @@ type Attr struct {
 type dirListing struct {
 	gen           uint64
 	at            time.Time
-	entries       map[string]modalapi.Entry // by base name; nil: list again
-	aliases       map[string]string         // client key -> actual name; empty means ambiguous
-	keys          map[string]string         // actual name -> cached client key
-	revision      uint64                    // raw listing replacement, independent of invalidation
-	indexRevision uint64                    // listing revision covered by aliases and keys
-	reported      map[string]bool           // namespace errors already shown
+	entries       map[string]modalapi.Entry  // by base name; nil: list again
+	aliases       map[string]string          // client key -> actual name; empty means ambiguous
+	keys          map[string]string          // actual name -> cached client key
+	revision      uint64                     // raw listing replacement, independent of invalidation
+	indexRevision uint64                     // listing revision covered by aliases and keys
+	reported      map[string]nameProblemKind // namespace errors already shown
 }
 
 // dirSweepMin is how many listings the cache holds before it sweeps out
@@ -267,7 +267,8 @@ func (fs *FS) listDir(dir string, fresh bool) (map[string]modalapi.Entry, error)
 			m[path.Base(e.Path)] = e
 		}
 		fs.mu.Lock()
-		if l := fs.dirs[dir]; l != nil && l.gen == gen { // not invalidated meanwhile
+		// A separate freshNames request may have published a newer snapshot.
+		if l := fs.dirs[dir]; l != nil && l.gen == gen && !l.at.After(start) {
 			l.at, l.entries = start, m
 			l.revision++
 			l.aliases = nil
@@ -828,8 +829,9 @@ func (fs *FS) stateFromNameSnapshot(p string, create bool, key string, snapshot 
 	}
 	if fs.rawNameAmbiguousLocked(dir, name, key, snapshot) {
 		fs.mu.Unlock()
-		return nil, fs.nameProblem(dir, key, fmt.Sprintf("cannot start writing %q: another file has the same client filename", p))
+		return nil, fs.nameProblem(dir, key, nameCollision, fmt.Sprintf("cannot start writing %q: another file has the same client filename", p))
 	}
+	fs.clearNameCollisionLocked(dir, key)
 	st := fs.newStateLocked(p, exists, e, key)
 	fs.mu.Unlock()
 	return st, nil

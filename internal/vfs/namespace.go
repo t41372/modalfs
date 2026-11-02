@@ -245,15 +245,36 @@ func (fs *FS) nameRecovery(shorter bool) string {
 	return "use " + tool + " to copy the file to " + target + " before removing its old entry"
 }
 
-func (fs *FS) nameProblem(dir, key, detail string) error {
+type nameProblemKind uint8
+
+const (
+	nameCollision nameProblemKind = 1 << iota
+	nameUnconvertible
+	nameTooLong
+)
+
+// A successful selection proves only that its key is unambiguous. It does
+// not prove the frontend can display a long or unconvertible stored name.
+func (fs *FS) clearNameCollisionLocked(dir, key string) {
+	if l := fs.dirs[dir]; l != nil {
+		remaining := l.reported[key] &^ nameCollision
+		if remaining == 0 {
+			delete(l.reported, key)
+		} else {
+			l.reported[key] = remaining
+		}
+	}
+}
+
+func (fs *FS) nameProblem(dir, key string, kind nameProblemKind, detail string) error {
 	fs.mu.Lock()
 	report := true
 	if l := fs.dirs[dir]; l != nil {
 		if l.reported == nil {
-			l.reported = map[string]bool{}
+			l.reported = map[string]nameProblemKind{}
 		}
-		report = !l.reported[key]
-		l.reported[key] = true
+		report = l.reported[key] == 0
+		l.reported[key] |= kind
 	}
 	fs.mu.Unlock()
 	if report {
@@ -316,11 +337,14 @@ func (n *Namespace) selectName(parent, name string, fresh bool) (nameSelection, 
 			}
 			match(candidate)
 		}
+		if !ambiguous {
+			n.fs.clearNameCollisionLocked(parent, key)
+		}
 		n.fs.mu.Unlock()
 		if ambiguous {
 			n.fs.releaseNameSnapshot(parent, key, snapshot)
 			detail := fmt.Sprintf("cannot access %q in %q: multiple files have the same client filename; %s", name, parent, n.fs.nameRecovery(false))
-			return nameSelection{}, n.fs.nameProblem(parent, key, detail)
+			return nameSelection{}, n.fs.nameProblem(parent, key, nameCollision, detail)
 		}
 		selection.exists = found != ""
 		if found == "" {
@@ -613,6 +637,7 @@ func (n *Namespace) ReadDir(parent string) ([]Attr, error) { return n.ReadDirLim
 // ReadDirLimit applies a frontend's client-name byte limit after exact name
 // conversion. Zero leaves the limit to that frontend (for example macFUSE).
 func (n *Namespace) ReadDirLimit(parent string, maxClientNameBytes int) ([]Attr, error) {
+	parent = clean(parent)
 	if n.fs.opt.NameKey == nil && maxClientNameBytes <= 0 {
 		return n.fs.ReadDir(parent)
 	}
@@ -627,6 +652,7 @@ func (n *Namespace) ReadDirLimit(parent string, maxClientNameBytes int) ([]Attr,
 	keys := make([]string, len(entries))
 	valid := make([]bool, len(entries))
 	counts := map[string]int{}
+	problems := map[string]nameProblemKind{}
 	for i, e := range entries {
 		var conversionErr error
 		var ok bool
@@ -641,7 +667,8 @@ func (n *Namespace) ReadDirLimit(parent string, maxClientNameBytes int) ([]Attr,
 		}
 		if conversionErr != nil {
 			if errors.Is(conversionErr, syscall.EINVAL) {
-				_ = n.fs.nameProblem(parent, e.Name, fmt.Sprintf("filename %q in %q cannot be shown by this client: %v; the file is kept on the volume; %s", e.Name, parent, conversionErr, n.fs.nameRecovery(false)))
+				problems[e.Name] |= nameUnconvertible
+				_ = n.fs.nameProblem(parent, e.Name, nameUnconvertible, fmt.Sprintf("filename %q in %q cannot be shown by this client: %v; the file is kept on the volume; %s", e.Name, parent, conversionErr, n.fs.nameRecovery(false)))
 				continue
 			}
 			return nil, conversionErr
@@ -655,17 +682,31 @@ func (n *Namespace) ReadDirLimit(parent string, maxClientNameBytes int) ([]Attr,
 			continue
 		}
 		if maxClientNameBytes > 0 && (len(keys[i]) > maxClientNameBytes || len(e.Name) > maxClientNameBytes) {
+			problems[keys[i]] |= nameTooLong
 			detail := fmt.Sprintf("filename %q in %q cannot be shown by this client: its stored spelling is %d bytes and converted spelling is %d bytes (limit %d); the file is kept on the volume; %s", e.Name, parent, len(e.Name), len(keys[i]), maxClientNameBytes, n.fs.nameRecovery(true))
-			_ = n.fs.nameProblem(parent, keys[i], detail)
+			_ = n.fs.nameProblem(parent, keys[i], nameTooLong, detail)
 			continue
 		}
 		if counts[keys[i]] > 1 {
+			problems[keys[i]] |= nameCollision
 			detail := fmt.Sprintf("files with client filename %q in %q cannot be shown because their names collide; %s", keys[i], parent, n.fs.nameRecovery(false))
-			_ = n.fs.nameProblem(parent, keys[i], detail)
+			_ = n.fs.nameProblem(parent, keys[i], nameCollision, detail)
 			continue
 		}
 		out = append(out, e)
 	}
+	// Suppress repeated notices while a problem remains. Once a complete
+	// listing observes it resolved, a later recurrence needs a new notice.
+	n.fs.mu.Lock()
+	if l := n.fs.dirs[parent]; l != nil {
+		for key := range l.reported {
+			l.reported[key] &= problems[key]
+			if l.reported[key] == 0 {
+				delete(l.reported, key)
+			}
+		}
+	}
+	n.fs.mu.Unlock()
 	return out, nil
 }
 
