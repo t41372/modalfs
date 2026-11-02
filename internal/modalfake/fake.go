@@ -111,13 +111,13 @@ func Start(dir string, opt Options) (*Server, error) {
 
 	s.grpcSrv = grpc.NewServer(grpc.MaxRecvMsgSize(100<<20), grpc.MaxSendMsgSize(100<<20), grpc.UnaryInterceptor(s.delay))
 	pb.RegisterModalClientServer(s.grpcSrv, s)
-	go func() { _ = s.grpcSrv.Serve(gl) }()
+	go func() { _ = s.grpcSrv.Serve(boundedListener{gl}) }()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /get/{hash}", s.getBlock)
 	mux.HandleFunc("PUT /put/{hash}", s.putBlock)
 	s.httpSrv = &http.Server{Handler: mux}
-	go func() { _ = s.httpSrv.Serve(hl) }()
+	go func() { _ = s.httpSrv.Serve(boundedListener{hl}) }()
 	return s, nil
 }
 
