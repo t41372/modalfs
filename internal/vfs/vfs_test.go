@@ -303,6 +303,59 @@ func TestFreshListingAfterInvalidate(t *testing.T) {
 	}
 }
 
+// Directory attributes let NFS clients decide whether to list again. Their
+// mtime must change on remote additions and deletions, and stay stable when
+// a fresh listing has the same contents.
+func TestDirectoryMtimeTracksChanges(t *testing.T) {
+	for _, dir := range []string{"", "d"} {
+		t.Run("/"+dir, func(t *testing.T) {
+			f := newFakeFS(t, Options{})
+			f.put(t, path.Join(dir, "keep"), []byte("keep"))
+			stat := func() Attr {
+				t.Helper()
+				a, err := f.Stat(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return a
+			}
+			refresh := func() Attr {
+				t.Helper()
+				if _, err := f.listDir(dir, true); err != nil {
+					t.Fatal(err)
+				}
+				return stat()
+			}
+			before := stat()
+			if got := refresh(); !got.Mtime.Equal(before.Mtime) {
+				t.Fatal("unchanged contents changed the directory mtime")
+			}
+			name := path.Join(dir, "download")
+			f.put(t, name, []byte("downloaded remotely"))
+			added := refresh()
+			if !added.Mtime.After(before.Mtime) {
+				t.Fatal("adding a remote file didn't update the directory mtime")
+			}
+			if got := refresh(); !got.Mtime.Equal(added.Mtime) {
+				t.Fatal("unchanged contents changed the directory mtime")
+			}
+			if err := f.client.Remove(context.Background(), f.vol.ID, name, false); err != nil {
+				t.Fatal(err)
+			}
+			deleted := refresh()
+			if !deleted.Mtime.After(added.Mtime) {
+				t.Fatal("removing a remote file didn't update the directory mtime")
+			}
+			if err := f.Create(path.Join(dir, "local"), true); err != nil {
+				t.Fatal(err)
+			}
+			if got := stat(); !got.Mtime.After(deleted.Mtime) {
+				t.Fatal("a local file must update its directory mtime before being uploaded")
+			}
+		})
+	}
+}
+
 // Expired listings are swept once there are many, so the cache holds
 // about what was listed within one TTL.
 func TestDirSweep(t *testing.T) {

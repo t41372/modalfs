@@ -31,6 +31,73 @@ func putFile(t *testing.T, c *modalapi.Client, volID, name string, data []byte) 
 	}
 }
 
+// Remote downloads bypass the mount. A directory already opened by Finder
+// must show files added or removed remotely without needing a remount.
+func TestRemoteDirectoryChanges(t *testing.T) {
+	e := setup(t, modalfake.Options{Latency: 20 * time.Millisecond}, []string{"-dir-cache-ttl", "100ms"}, func(c *modalapi.Client, id string) {
+		putFile(t, c, id, "Downloads/nested/keep", []byte("keep"))
+	})
+	for _, dir := range []string{"", "Downloads/nested"} {
+		t.Run("/"+dir, func(t *testing.T) {
+			folder := filepath.Join(e.mnt, dir)
+			if _, err := os.ReadDir(folder); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(folder)
+			if err != nil {
+				t.Fatal(err)
+			}
+			modified := info.ModTime()
+			name := filepath.ToSlash(filepath.Join(dir, "download.bin"))
+			data := []byte("downloaded directly into the volume")
+			putFile(t, e.client, e.vol.ID, name, data)
+			waitListing := func(present bool) {
+				t.Helper()
+				deadline := time.Now().Add(20 * time.Second)
+				for {
+					info, err := os.Stat(folder)
+					if err != nil {
+						t.Fatal(err)
+					}
+					// Finder watches directory attributes before asking for
+					// another listing; repeatedly opening it can hide the bug.
+					if info.ModTime().Equal(modified) {
+						if time.Now().After(deadline) {
+							t.Fatalf("%s: directory modification time never changed after a remote update", dir)
+						}
+						time.Sleep(200 * time.Millisecond)
+						continue
+					}
+					entries, err := os.ReadDir(folder)
+					if err != nil {
+						t.Fatal(err)
+					}
+					found := false
+					for _, entry := range entries {
+						found = found || entry.Name() == "download.bin"
+					}
+					if found == present {
+						modified = info.ModTime()
+						return
+					}
+					if time.Now().After(deadline) {
+						t.Fatalf("%s: download.bin present=%v, want %v; the mount kept its old directory listing", dir, found, present)
+					}
+					time.Sleep(200 * time.Millisecond)
+				}
+			}
+			waitListing(true)
+			if got, err := os.ReadFile(filepath.Join(e.mnt, name)); err != nil || string(got) != string(data) {
+				t.Fatalf("downloaded file: %q, %v", got, err)
+			}
+			if err := e.client.Remove(context.Background(), e.vol.ID, name, false); err != nil {
+				t.Fatal(err)
+			}
+			waitListing(false)
+		})
+	}
+}
+
 // Opening many large files and reading the start of each (what Quick Look
 // and Finder previews do) must not download them whole. The macOS NFS
 // client reads 16 MiB ahead by itself, so that's two blocks per file; read-

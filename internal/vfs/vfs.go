@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -76,6 +77,7 @@ type Attr struct {
 type dirListing struct {
 	gen     uint64
 	at      time.Time
+	mtime   time.Time                 // when this mount last observed different contents
 	entries map[string]modalapi.Entry // by base name; nil: list again
 }
 
@@ -251,6 +253,9 @@ func (fs *FS) listDir(dir string, fresh bool) (map[string]modalapi.Entry, error)
 		}
 		fs.mu.Lock()
 		if l := fs.dirs[dir]; l != nil && l.gen == gen { // not invalidated meanwhile
+			if l.entries == nil || !maps.Equal(l.entries, m) {
+				l.mtime = time.Now()
+			}
 			l.at, l.entries = start, m
 		}
 		fs.mu.Unlock()
@@ -321,8 +326,16 @@ func (fs *FS) remoteStat(p string, fresh bool) (modalapi.Entry, error) {
 	return e, nil
 }
 
-func entryAttr(e modalapi.Entry) Attr {
-	return Attr{Name: path.Base(e.Path), IsDir: e.IsDir, Size: e.Size, Mtime: time.Unix(e.Mtime, 0), Mode: e.Mode()}
+func (fs *FS) entryAttr(e modalapi.Entry) Attr {
+	a := Attr{Name: path.Base(e.Path), IsDir: e.IsDir, Size: e.Size, Mtime: time.Unix(e.Mtime, 0), Mode: e.Mode()}
+	if e.IsDir {
+		fs.mu.Lock()
+		if l := fs.dirs[e.Path]; l != nil && !l.mtime.IsZero() {
+			a.Mtime = l.mtime
+		}
+		fs.mu.Unlock()
+	}
+	return a
 }
 
 func (fs *FS) Stat(p string) (Attr, error) {
@@ -336,9 +349,6 @@ func (fs *FS) Stat(p string) (Attr, error) {
 	if st != nil {
 		return st.attr(), nil
 	}
-	if p == "" {
-		return Attr{Name: "", IsDir: true, Mode: os.ModeDir | 0o755, Mtime: time.Now()}, nil
-	}
 	if hidden(parentOf(p), path.Base(p)) {
 		return Attr{}, os.ErrNotExist
 	}
@@ -346,12 +356,24 @@ func (fs *FS) Stat(p string) (Attr, error) {
 	if err != nil {
 		return Attr{}, err
 	}
+	if e.IsDir {
+		// Modal doesn't provide a reliable directory mtime. Refresh its
+		// contents within the listing TTL so the kernel and Finder can
+		// notice remote additions and removals without a remount.
+		if _, err := fs.listDir(p, false); err != nil {
+			return Attr{}, err
+		}
+	}
 	if fs.c.Cipher != nil && e.Mode().IsRegular() && e.Size == 0 {
 		if _, _, err := fs.remoteBlock(p, 0, e.Mtime, 0, true); err != nil {
 			return Attr{}, err
 		}
 	}
-	return entryAttr(e), nil
+	a := fs.entryAttr(e)
+	if p == "" {
+		a.Name = ""
+	}
+	return a, nil
 }
 
 func (fs *FS) ReadDir(p string) ([]Attr, error) {
@@ -367,7 +389,7 @@ func (fs *FS) ReadDir(p string) ([]Attr, error) {
 			continue
 		}
 		seen[name] = true
-		out = append(out, entryAttr(e))
+		out = append(out, fs.entryAttr(e))
 	}
 	fs.mu.Lock()
 	var local []*fileState
@@ -759,6 +781,11 @@ func (fs *FS) getState(p string, create bool) (*fileState, error) {
 		st.sure = m.Hashes // known before the edit began: the base's own
 	}
 	fs.files[p] = st
+	if !exists {
+		if l := fs.dirs[parentOf(p)]; l != nil {
+			l.mtime = time.Now() // visible locally before its first commit
+		}
+	}
 	return st, nil
 }
 
