@@ -29,10 +29,11 @@ func (n *Namespace) WithClientNameLimit(maxBytes int) *Namespace {
 }
 
 func (n *Namespace) checkDestination(s nameSelection) error {
-	if len(path.Base(s.path)) > maxName {
+	storedBytes := len(path.Base(s.path))
+	if storedBytes > maxName {
 		return syscall.ENAMETOOLONG
 	}
-	if !s.exists && n.maxClientNameBytes > 0 && len(s.key) > n.maxClientNameBytes {
+	if !s.exists && n.maxClientNameBytes > 0 && (storedBytes > n.maxClientNameBytes || len(s.key) > n.maxClientNameBytes) {
 		return syscall.ENAMETOOLONG
 	}
 	return nil

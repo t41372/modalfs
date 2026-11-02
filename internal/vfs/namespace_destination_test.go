@@ -119,3 +119,25 @@ func TestClientNameLimitKeepsLinuxNamesLiteral(t *testing.T) {
 		t.Fatalf("literal client view: %+v %v", entries, err)
 	}
 }
+
+func TestClientNameLimitChecksStoredAndConvertedNames(t *testing.T) {
+	f := newFakeFS(t, Options{NameKey: testNameKey, WriteBack: time.Hour})
+	// Native decomposition contracts Greek prosgegrammeni from three UTF-8
+	// bytes to the two-byte iota. Both spellings must fit the same view.
+	const raw = "\u1fbe"
+	key, err := testNameKey(raw)
+	if err != nil || len(raw) != 3 || len(key) != 2 {
+		t.Fatalf("contracting-name fixture: raw=%x key=%x err=%v", raw, key, err)
+	}
+	ns := f.Names().WithClientNameLimit(2)
+	if _, _, err := ns.Create("", raw, true, nil); !errors.Is(err, syscall.ENAMETOOLONG) {
+		t.Fatalf("new stored name exceeds the view: %v", err)
+	}
+	if err := f.c.WriteFile(f.ctx, raw, []byte("existing")); err != nil {
+		t.Fatal(err)
+	}
+	f.invalidate("")
+	if _, _, err := ns.Rename("", key, "", "x"); err != nil {
+		t.Fatalf("existing raw-name recovery: %v", err)
+	}
+}
