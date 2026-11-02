@@ -62,6 +62,9 @@ func onRemove(ctx context.Context, w *response, userHandle Handler) error {
 	}
 
 	if err != nil {
+		if named {
+			return &NFSStatusError{statusFromNamedError(err), err}
+		}
 		if os.IsNotExist(err) {
 			return &NFSStatusError{NFSStatusNoEnt, err}
 		}
