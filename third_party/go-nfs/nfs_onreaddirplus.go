@@ -102,7 +102,7 @@ func onReadDirPlus(ctx context.Context, w *response, userHandle Handler) error {
 			}
 
 			filePath := joinPath(p, c.Name())
-			handle := userHandle.ToHandle(fs, filePath)
+			handle := handleForInfo(userHandle, fs, filePath, c)
 			attrs := ToFileAttribute(c, path.Join(filePath...))
 			entities = append(entities, readDirPlusEntity{
 				FileID:     attrs.Fileid,

@@ -24,13 +24,17 @@ func onRemove(ctx context.Context, w *response, userHandle Handler) error {
 		return &NFSStatusError{NFSStatusROFS, os.ErrPermission}
 	}
 
-	if len(string(obj.Filename)) > PathNameMax {
+	_, named := fs.(NamedOperations)
+	if !named && len(string(obj.Filename)) > PathNameMax {
 		return &NFSStatusError{NFSStatusNameTooLong, nil}
 	}
 
 	fullPath := fs.Join(path...)
 	dirInfo, err := fs.Stat(fullPath)
 	if err != nil {
+		if named {
+			return &NFSStatusError{statusFromNamedError(err), err}
+		}
 		if os.IsNotExist(err) {
 			return &NFSStatusError{NFSStatusNoEnt, err}
 		}
@@ -45,9 +49,18 @@ func onRemove(ctx context.Context, w *response, userHandle Handler) error {
 	preCacheData := ToFileAttribute(dirInfo, fullPath).AsCache()
 
 	toDelete := fs.Join(append(path, string(obj.Filename))...)
-	toDeleteHandle := userHandle.ToHandle(fs, append(path, string(obj.Filename)))
+	var guarded bool
+	if names, ok := fs.(NamedOperations); ok {
+		var guard func(string) func(error)
+		if identities, ok := userHandle.(NamespaceGuards); ok {
+			guarded = true
+			guard = func(raw string) func(error) { return identities.GuardRemove(fs, splitFSPath(raw)) }
+		}
+		toDelete, err = names.RemoveNamed(fs.Join(path...), string(obj.Filename), guard)
+	} else {
+		err = fs.Remove(toDelete)
+	}
 
-	err = fs.Remove(toDelete)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &NFSStatusError{NFSStatusNoEnt, err}
@@ -58,8 +71,11 @@ func onRemove(ctx context.Context, w *response, userHandle Handler) error {
 		return &NFSStatusError{statusFromNameError(err, NFSStatusIO), err}
 	}
 
-	if err := userHandle.InvalidateHandle(fs, toDeleteHandle); err != nil {
-		return &NFSStatusError{NFSStatusServerFault, err}
+	if !guarded {
+		toDeleteHandle := userHandle.ToHandle(fs, splitFSPath(toDelete))
+		if err := userHandle.InvalidateHandle(fs, toDeleteHandle); err != nil {
+			return &NFSStatusError{NFSStatusServerFault, err}
+		}
 	}
 
 	writer := bytes.NewBuffer([]byte{})

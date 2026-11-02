@@ -18,6 +18,7 @@ import (
 
 	"github.com/t41372/modalfs/internal/config"
 	"github.com/t41372/modalfs/internal/encryption"
+	"github.com/t41372/modalfs/internal/filename"
 	"github.com/t41372/modalfs/internal/fusefront"
 	"github.com/t41372/modalfs/internal/modalapi"
 	"github.com/t41372/modalfs/internal/nfsfront"
@@ -115,8 +116,13 @@ func runLegacy(cmd string, argv []string) {
 		must(err)
 		cipher = encryption.New(key)
 	}
+	nameKey, err := filename.Key()
+	if err != nil {
+		fatal(err)
+	}
 	v, err := vfs.New(client, vol, vfs.Options{
 		Cipher:   cipher,
+		NameKey:  nameKey,
 		CacheDir: *cacheDir, CacheMaxBytes: cs, DirCacheTTL: *dirTTL, WriteBack: *writeBack, MaxPending: *maxPending, FilterJunk: !*keepJunk,
 		ReadAhead: *readAhead, SidecarMin: sm, OnConflict: *onConflict, ReadOnly: *readOnly, Logger: log,
 	})

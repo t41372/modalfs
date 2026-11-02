@@ -6,11 +6,12 @@ import (
 	"errors"
 	"hash/fnv"
 	"io"
+	"math"
 	"net"
 	"os"
 	"path"
-	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/go-git/go-billy/v5"
@@ -31,10 +32,12 @@ type billyFS struct {
 	fs       *vfs.FS
 	ro       bool
 	uid, gid uint32
+	identity func(string) uint64
 }
 
 type fileInfo struct {
 	a        vfs.Attr
+	id       uint64
 	path     string
 	uid, gid uint32
 }
@@ -45,30 +48,23 @@ func (fi fileInfo) Mode() os.FileMode  { return fi.a.Mode }
 func (fi fileInfo) ModTime() time.Time { return fi.a.Mtime }
 func (fi fileInfo) IsDir() bool        { return fi.a.IsDir }
 func (fi fileInfo) Sys() any {
-	h := fnv.New64a()
-	h.Write([]byte(fi.path))
-	return &nfsfile.FileInfo{Nlink: 1, UID: fi.uid, GID: fi.gid, Fileid: h.Sum64()}
+	id := fi.id
+	if id == 0 {
+		h := fnv.New64a()
+		h.Write([]byte(fi.path))
+		id = h.Sum64()
+	}
+	return &nfsfile.FileInfo{Nlink: 1, UID: fi.uid, GID: fi.gid, Fileid: id}
 }
 
 func norm(p string) string { return strings.Trim(path.Clean("/"+p), "/") }
 
-func clientPath(p string) string {
-	if runtime.GOOS == "darwin" {
-		return vfs.DecomposeMacOSPath(p)
-	}
-	return p
-}
-
-func (b *billyFS) resolve(name string) (string, error) {
-	p := norm(name)
-	if runtime.GOOS == "darwin" {
-		return b.fs.ResolveNormalizedPath(p)
-	}
-	return p, nil
-}
-
 func (b *billyFS) info(p string, a vfs.Attr) os.FileInfo {
-	return fileInfo{a: a, path: p, uid: b.uid, gid: b.gid}
+	var id uint64
+	if b.identity != nil {
+		id = b.identity(p)
+	}
+	return fileInfo{a: a, id: id, path: p, uid: b.uid, gid: b.gid}
 }
 
 func (b *billyFS) Capabilities() billy.Capability {
@@ -89,12 +85,9 @@ func (b *billyFS) Open(name string) (billy.File, error) {
 }
 
 func (b *billyFS) OpenFile(name string, flag int, _ os.FileMode) (billy.File, error) {
+	p := norm(name)
 	if flag&(os.O_WRONLY|os.O_RDWR|os.O_CREATE|os.O_TRUNC) != 0 && b.ro {
 		return nil, os.ErrPermission
-	}
-	p, err := b.resolve(name)
-	if err != nil {
-		return nil, err
 	}
 	if flag&os.O_CREATE != 0 {
 		// exclusive, so vfs.Create never truncates an existing file;
@@ -121,10 +114,7 @@ func (b *billyFS) OpenFile(name string, flag int, _ os.FileMode) (billy.File, er
 }
 
 func (b *billyFS) Stat(name string) (os.FileInfo, error) {
-	p, err := b.resolve(name)
-	if err != nil {
-		return nil, err
-	}
+	p := norm(name)
 	a, err := b.fs.Stat(p)
 	if err != nil {
 		return nil, err
@@ -134,35 +124,12 @@ func (b *billyFS) Stat(name string) (os.FileInfo, error) {
 
 func (b *billyFS) Lstat(name string) (os.FileInfo, error) { return b.Stat(name) }
 
-func (b *billyFS) Rename(o, n string) error {
-	oldPath, err := b.resolve(o)
-	if err != nil {
-		return err
-	}
-	newPath, err := b.resolve(n)
-	if err != nil {
-		return err
-	}
-	return b.fs.Rename(oldPath, newPath)
-}
-
-func (b *billyFS) Remove(name string) error {
-	p, err := b.resolve(name)
-	if err != nil {
-		return err
-	}
-	return b.fs.Remove(p)
-}
+func (b *billyFS) Rename(o, n string) error { return b.fs.Rename(norm(o), norm(n)) }
+func (b *billyFS) Remove(name string) error { return b.fs.Remove(norm(name)) }
 
 // SyncPath makes a file's written data durable (NFS COMMIT; see
 // third_party/go-nfs/modalfs.go).
-func (b *billyFS) SyncPath(name string) error {
-	p, err := b.resolve(name)
-	if err != nil {
-		return err
-	}
-	return b.fs.Sync(p)
-}
+func (b *billyFS) SyncPath(name string) error { return b.fs.Sync(name) }
 
 func (b *billyFS) Join(elem ...string) string {
 	return path.Join(elem...)
@@ -174,38 +141,20 @@ func (b *billyFS) TempFile(dir, prefix string) (billy.File, error) {
 }
 
 func (b *billyFS) ReadDir(name string) ([]os.FileInfo, error) {
-	p, err := b.resolve(name)
-	if err != nil {
-		return nil, err
-	}
-	as, err := b.fs.ReadDir(p)
+	p := norm(name)
+	as, err := b.fs.Names().ReadDirLimit(p, nfs.PathNameMax)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]os.FileInfo, 0, len(as))
-	seen := map[string]bool{}
 	for _, a := range as {
-		key := clientPath(a.Name)
-		if seen[key] {
-			// Resolve reports the ambiguity in Activity and refuses to pick
-			// a file. Never give two entries the same macOS file handle.
-			_, err := b.fs.ResolveNormalizedPath(path.Join(p, key))
-			if err == nil {
-				err = os.ErrExist // the directory changed while it was listed
-			}
-			return nil, err
-		}
-		seen[key] = true
 		out = append(out, b.info(path.Join(p, a.Name), a))
 	}
 	return out, nil
 }
 
 func (b *billyFS) MkdirAll(name string, _ os.FileMode) error {
-	p, err := b.resolve(name)
-	if err != nil {
-		return err
-	}
+	p := norm(name)
 	if p == "" {
 		return nil
 	}
@@ -229,6 +178,44 @@ func (b *billyFS) Chroot(_ string) (billy.Filesystem, error) {
 	return nil, errors.New("chroot not supported")
 }
 func (b *billyFS) Root() string { return "/" }
+
+// Named operations are separate from raw handle operations. Their results
+// contain the actual stored path, which the NFS handler pins in its handle.
+func (b *billyFS) LookupNamed(parent, name string) (string, os.FileInfo, error) {
+	p, a, err := b.fs.Names().Lookup(parent, name)
+	if err != nil {
+		return "", nil, err
+	}
+	return p, b.info(p, a), nil
+}
+func (b *billyFS) CreateNamed(parent, name string, exclusive bool, size *uint64, guard func(string, bool) func(error)) (string, os.FileInfo, error) {
+	var target *int64
+	if size != nil {
+		if *size > math.MaxInt64 {
+			return "", nil, syscall.EFBIG
+		}
+		v := int64(*size)
+		target = &v
+	}
+	p, a, err := b.fs.Names().CreateGuarded(parent, name, exclusive, target, guard)
+	if err != nil {
+		return "", nil, err
+	}
+	return p, b.info(p, a), nil
+}
+func (b *billyFS) MkdirNamed(parent, name string, guard func(string) func(error)) (string, os.FileInfo, error) {
+	p, a, err := b.fs.Names().MkdirGuarded(parent, name, guard)
+	if err != nil {
+		return "", nil, err
+	}
+	return p, b.info(p, a), nil
+}
+func (b *billyFS) RemoveNamed(parent, name string, guard func(string) func(error)) (string, error) {
+	return b.fs.Names().RemoveGuarded(parent, name, guard)
+}
+func (b *billyFS) RenameNamed(oldParent, oldName, newParent, newName string, guard func(string, string) func(error)) (string, string, error) {
+	return b.fs.Names().RenameGuarded(oldParent, oldName, newParent, newName, guard)
+}
 
 // billy.Change: Modal Volumes do not store owner or settable mtimes; accept
 // and ignore so that tools like cp -p / rsync / editors do not fail.
@@ -263,7 +250,7 @@ func (f *file) Write(b []byte) (int, error) {
 			f.pos = a.Size
 		}
 	}
-	n, err := f.fs.WriteAt(f.p, b, f.pos)
+	n, err := f.fs.WriteExistingAt(f.p, b, f.pos)
 	f.pos += int64(n)
 	return n, err
 }

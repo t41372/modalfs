@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/go-git/go-billy/v5"
 	lru "github.com/hashicorp/golang-lru/v2"
@@ -21,10 +22,10 @@ import (
 
 // handler gives the NFS server its file handles and checks who's asking.
 //
-// File handles are an HMAC of the path with a key made at startup: the same
-// path always gets the same handle (no cache to evict, so a long `find`
-// can't make a shell's working directory go stale, and no table to scan),
-// and nobody without the key can make one up.
+// Live raw paths retain their handle. Each allocation gets a monotonically
+// increasing ID and an unguessable HMAC tag; invalidated handles can never
+// be revived by a later lookup of the same path. Local renames relocate the
+// bindings, including descendants, without changing their file IDs.
 //
 // Every request must carry AUTH_UNIX credentials of the user running
 // modalfs (or root), the way the kernel's NFS client sends them for that
@@ -37,10 +38,14 @@ type handler struct {
 	uid uint32
 	log *slog.Logger
 
-	mu    sync.RWMutex
-	paths map[[16]byte][]string
+	namesMu sync.Mutex // namespace selection through identity publication
+	mu      sync.RWMutex
+	paths   map[[24]byte]*handleBinding
+	byPath  map[string][24]byte
+	nextID  uint64
 
-	verifiers *lru.Cache[uint64, verifier]
+	verifiers    *lru.Cache[uint64, verifier]
+	nextVerifier atomic.Uint64
 }
 
 type verifier struct {
@@ -49,8 +54,11 @@ type verifier struct {
 }
 
 func newHandler(f billy.Filesystem) *handler {
-	h := &handler{fs: f, uid: uint32(os.Getuid()), paths: map[[16]byte][]string{}}
+	h := &handler{fs: f, uid: uint32(os.Getuid()), paths: map[[24]byte]*handleBinding{}, byPath: map[string][24]byte{}}
 	_, _ = rand.Read(h.key[:])
+	if b, ok := f.(*billyFS); ok {
+		b.identity = h.fileID
+	}
 	h.verifiers, _ = lru.New[uint64, verifier](1024)
 	return h
 }
@@ -103,58 +111,114 @@ func (h *handler) Change(f billy.Filesystem) billy.Change {
 
 func (h *handler) FSStat(context.Context, billy.Filesystem, *nfs.FSStat) error { return nil }
 
-func (h *handler) handleFor(p string) [16]byte {
-	m := hmac.New(sha256.New, h.key[:])
-	m.Write([]byte(p))
-	var id [16]byte
-	copy(id[:], m.Sum(nil))
+func (h *handler) encodedHandle(counter uint64) [24]byte {
+	var id [24]byte
+	binary.BigEndian.PutUint64(id[:8], counter)
+	mac := hmac.New(sha256.New, h.key[:])
+	mac.Write(id[:8])
+	copy(id[8:], mac.Sum(nil)[:16])
 	return id
 }
 
-func (h *handler) ToHandle(f billy.Filesystem, path []string) []byte {
-	p := clientPath(strings.Join(path, "/"))
-	id := h.handleFor(p)
-	h.mu.RLock()
-	_, known := h.paths[id]
-	h.mu.RUnlock()
-	if !known {
-		h.mu.Lock()
-		if p == "" {
-			h.paths[id] = nil
-		} else {
-			h.paths[id] = strings.Split(p, "/")
-		}
-		h.mu.Unlock()
-	}
-	return id[:]
-}
-
-func (h *handler) FromHandle(fh []byte) (billy.Filesystem, []string, error) {
-	var id [16]byte
-	if len(fh) != len(id) {
-		return nil, nil, &nfs.NFSStatusError{NFSStatus: nfs.NFSStatusBadHandle}
-	}
-	copy(id[:], fh)
-	h.mu.RLock()
-	p, ok := h.paths[id]
-	h.mu.RUnlock()
+func (h *handler) ToHandle(_ billy.Filesystem, parts []string) []byte {
+	p := strings.Join(parts, "/")
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	id, ok := h.byPath[p]
 	if !ok {
-		return nil, nil, &nfs.NFSStatusError{NFSStatus: nfs.NFSStatusStale}
+		h.nextID++
+		id = h.encodedHandle(h.nextID)
+		h.byPath[p] = id
+		h.paths[id] = &handleBinding{id: id, parts: append([]string(nil), parts...)}
 	}
-	return h.fs, append([]string(nil), p...), nil
+	return append([]byte(nil), id[:]...)
 }
 
-// InvalidateHandle forgets a removed or renamed path; if it comes back, it
-// gets the same handle again.
-func (h *handler) InvalidateHandle(_ billy.Filesystem, fh []byte) error {
-	var id [16]byte
-	if len(fh) == len(id) {
-		copy(id[:], fh)
-		h.mu.Lock()
-		delete(h.paths, id)
-		h.mu.Unlock()
+func (h *handler) fileID(p string) uint64 {
+	var parts []string
+	if p != "" {
+		parts = strings.Split(p, "/")
 	}
+	handle := h.ToHandle(h.fs, parts)
+	return binary.BigEndian.Uint64(handle[:8])
+}
+
+// A cached listing may contain an identity that has since been invalidated.
+// Return its old tagged handle without registering it again or substituting
+// a successor now occupying the same raw path.
+func (h *handler) ToHandleInfo(f billy.Filesystem, path []string, info os.FileInfo) []byte {
+	if entry, ok := info.(fileInfo); ok && entry.id != 0 {
+		id := h.encodedHandle(entry.id)
+		return append([]byte(nil), id[:]...)
+	}
+	return h.ToHandle(f, path)
+}
+
+func (h *handler) binding(handle []byte) (*handleBinding, error) {
+	var id [24]byte
+	if len(handle) != len(id) {
+		return nil, &nfs.NFSStatusError{NFSStatus: nfs.NFSStatusBadHandle}
+	}
+	copy(id[:], handle)
+	h.mu.RLock()
+	binding := h.paths[id]
+	h.mu.RUnlock()
+	if binding == nil {
+		return nil, &nfs.NFSStatusError{NFSStatus: nfs.NFSStatusStale}
+	}
+	return binding, nil
+}
+
+func (h *handler) bindingPath(binding *handleBinding) ([]string, error) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if binding.stale || h.paths[binding.id] != binding {
+		return nil, &nfs.NFSStatusError{NFSStatus: nfs.NFSStatusStale}
+	}
+	return append([]string(nil), binding.parts...), nil
+}
+
+func (h *handler) FromHandle(handle []byte) (billy.Filesystem, []string, error) {
+	binding, err := h.binding(handle)
+	if err != nil {
+		return nil, nil, err
+	}
+	binding.mu.RLock()
+	defer binding.mu.RUnlock()
+	parts, err := h.bindingPath(binding)
+	return h.fs, parts, err
+}
+
+// Caller holds both binding.mu for writing and h.mu.
+func (h *handler) invalidateBindingLocked(binding *handleBinding) {
+	if h.paths[binding.id] != binding {
+		return
+	}
+	p := strings.Join(binding.parts, "/")
+	if h.byPath[p] == binding.id {
+		delete(h.byPath, p)
+	}
+	delete(h.paths, binding.id)
+	binding.stale = true
+}
+
+func (h *handler) InvalidateHandle(_ billy.Filesystem, handle []byte) error {
+	binding, err := h.binding(handle)
+	if err != nil {
+		return nil
+	}
+	binding.mu.Lock()
+	defer binding.mu.Unlock()
+	h.mu.Lock()
+	h.invalidateBindingLocked(binding)
+	h.mu.Unlock()
 	return nil
+}
+
+// These convenience methods are also used by focused identity tests.
+func (h *handler) Removed(f billy.Filesystem, path []string) { h.GuardRemove(f, path)(nil) }
+func (h *handler) Renamed(f billy.Filesystem, oldPath, newPath []string) {
+	h.GuardRename(f, oldPath, newPath)(nil)
 }
 
 // HandleLimit only sizes READDIR batches (handles are never evicted).
@@ -163,13 +227,10 @@ func (h *handler) HandleLimit() int { return 1 << 16 }
 // VerifierFor and DataForVerifier keep directory listings stable while a
 // client pages through them with READDIR cookies.
 func (h *handler) VerifierFor(path string, contents []fs.FileInfo) uint64 {
-	s := sha256.New()
-	s.Write([]byte(path))
-	for _, c := range contents {
-		s.Write([]byte{0})
-		s.Write([]byte(c.Name()))
-	}
-	id := binary.BigEndian.Uint64(s.Sum(nil)[:8])
+	// Every listing owns its snapshot. A digest of names would reuse the
+	// verifier after replacement and silently substitute a successor's ID
+	// or attributes for an older paginated READDIR request.
+	id := h.nextVerifier.Add(1)
 	h.verifiers.Add(id, verifier{path, contents})
 	return id
 }

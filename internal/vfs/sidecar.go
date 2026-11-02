@@ -47,6 +47,7 @@ func (fs *FS) writeSidecar(p string, m *manifest) error {
 }
 
 func (fs *FS) loadSidecar(p string, size, mtime int64) *manifest {
+	epoch := fs.contentEpoch()
 	sp := fs.sidecarPath(p)
 	urls, sz, err := fs.c.BlockURLs(fs.ctx, sp, 0, 1<<20)
 	if err != nil || sz > 64<<20 {
@@ -65,7 +66,7 @@ func (fs *FS) loadSidecar(p string, size, mtime int64) *manifest {
 		data = append(data, b...)
 	}
 	var sc sidecarJSON
-	if json.Unmarshal(data, &sc) != nil || sc.Size != size || sc.Mtime != mtime || int64(sc.BlockSize) != fs.chunkSize() {
+	if json.Unmarshal(data, &sc) != nil || sc.Path != p || sc.Size != size || sc.Mtime != mtime || int64(sc.BlockSize) != fs.chunkSize() {
 		return nil
 	}
 	if len(sc.SHA256) != fs.numBlocks(size) {
@@ -94,6 +95,11 @@ func (fs *FS) loadSidecar(p string, size, mtime int64) *manifest {
 	}
 	if checked == 0 {
 		fs.log.Debug("sidecar accepted on size and mtime alone: no block hash known to check it against", "path", p)
+	}
+	fs.cachePublishMu.RLock()
+	defer fs.cachePublishMu.RUnlock()
+	if epoch != fs.cacheEpoch {
+		return nil
 	}
 	fs.mdb.Put(p, m)
 	return m

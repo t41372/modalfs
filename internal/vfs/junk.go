@@ -42,6 +42,7 @@ func (fs *FS) ephDeleteLocked(p string) {
 	if e := fs.eph[p]; e != nil {
 		fs.ephBytes -= int64(len(e.data))
 		delete(fs.eph, p)
+		fs.removeLocalNameLocked(p)
 	}
 }
 
@@ -142,6 +143,10 @@ func (fs *FS) ephRead(p string, buf []byte, off int64) (int, bool) {
 }
 
 func (fs *FS) ephCreate(p string, exclusive bool) error {
+	key, err := fs.nameKey(path.Base(p))
+	if err != nil {
+		return err
+	}
 	if _, err := fs.dirStat(parentOf(p)); err != nil {
 		return err
 	}
@@ -156,17 +161,23 @@ func (fs *FS) ephCreate(p string, exclusive bool) error {
 		return nil
 	}
 	fs.eph[p] = &ephFile{mtime: time.Now(), used: time.Now()}
+	fs.addLocalNameLocked(p, key)
 	fs.ephTrimLocked()
 	return nil
 }
 
-func (fs *FS) ephWrite(p string, data []byte, off int64) int {
+func (fs *FS) ephWrite(p string, data []byte, off int64) (int, error) {
+	key, err := fs.nameKey(path.Base(p))
+	if err != nil {
+		return 0, err
+	}
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	e := fs.eph[p]
 	if e == nil {
 		e = &ephFile{}
 		fs.eph[p] = e
+		fs.addLocalNameLocked(p, key)
 	}
 	e.used = time.Now()
 	defer fs.ephTrimLocked()
@@ -175,7 +186,7 @@ func (fs *FS) ephWrite(p string, data []byte, off int64) int {
 		// absurdly large "junk": accept but keep only what fits
 		end = maxEphSize
 		if off >= end {
-			return len(data)
+			return len(data), nil
 		}
 		data = data[:end-off]
 	}
@@ -184,7 +195,7 @@ func (fs *FS) ephWrite(p string, data []byte, off int64) int {
 	}
 	copy(e.data[off:], data)
 	e.mtime = time.Now()
-	return len(data)
+	return len(data), nil
 }
 
 func (fs *FS) ephTruncate(p string, size int64) bool {
@@ -225,6 +236,10 @@ func (fs *FS) ephRename(oldp, newp string) (bool, error) {
 	if !fs.opt.FilterJunk {
 		return false, nil
 	}
+	key, err := fs.nameKey(path.Base(newp))
+	if err != nil {
+		return true, err
+	}
 	fs.mu.Lock()
 	e := fs.eph[oldp]
 	if e == nil {
@@ -238,7 +253,9 @@ func (fs *FS) ephRename(oldp, newp string) (bool, error) {
 	if fs.isJunk(newp) {
 		fs.ephDeleteLocked(newp)
 		delete(fs.eph, oldp)
+		fs.removeLocalNameLocked(oldp)
 		fs.eph[newp] = e
+		fs.addLocalNameLocked(newp, key)
 		e.used = time.Now()
 		fs.mu.Unlock()
 		return true, nil
@@ -267,9 +284,12 @@ func (fs *FS) ephMoveTree(oldp, newp string) {
 	for p, e := range fs.eph {
 		if strings.HasPrefix(p, oldp+"/") {
 			np := newp + strings.TrimPrefix(p, oldp)
+			key := fs.localKeys[p]
 			fs.ephDeleteLocked(np)
 			delete(fs.eph, p)
+			fs.removeLocalNameLocked(p)
 			fs.eph[np] = e
+			fs.addLocalNameLocked(np, key)
 		}
 	}
 }

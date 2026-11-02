@@ -57,35 +57,55 @@ func onCreate(ctx context.Context, w *response, userHandle Handler) error {
 		return &NFSStatusError{NFSStatusROFS, os.ErrPermission}
 	}
 
-	if len(string(obj.Filename)) > PathNameMax {
+	_, named := fs.(NamedOperations)
+	if !named && len(string(obj.Filename)) > PathNameMax {
 		return &NFSStatusError{NFSStatusNameTooLong, nil}
 	}
 
 	newFile := append(path, string(obj.Filename))
 	newFilePath := fs.Join(newFile...)
-	if s, err := fs.Stat(newFilePath); err == nil {
-		if s.IsDir() {
-			return &NFSStatusError{NFSStatusExist, nil}
+	if names, ok := fs.(NamedOperations); ok {
+		var guard func(string, bool) func(error)
+		if identities, ok := userHandle.(NamespaceGuards); ok {
+			guard = func(raw string, existed bool) func(error) {
+				return identities.GuardCreate(fs, splitFSPath(raw), existed)
+			}
 		}
-		if how == createModeGuarded {
-			return &NFSStatusError{NFSStatusExist, os.ErrPermission}
+		raw, _, createErr := names.CreateNamed(fs.Join(path...), string(obj.Filename), how == createModeGuarded, attrs.SetSize, guard)
+		if createErr != nil {
+			return &NFSStatusError{statusFromNamedError(createErr), createErr}
 		}
+		newFilePath = raw
+		newFile = splitFSPath(raw)
+		copied := *attrs
+		copied.SetSize = nil
+		attrs = &copied
 	} else {
-		if s, err := fs.Stat(fs.Join(path...)); err != nil {
-			return &NFSStatusError{NFSStatusAccess, err}
-		} else if !s.IsDir() {
-			return &NFSStatusError{NFSStatusNotDir, nil}
+		if s, err := fs.Stat(newFilePath); err == nil {
+			if s.IsDir() {
+				return &NFSStatusError{NFSStatusExist, nil}
+			}
+			if how == createModeGuarded {
+				return &NFSStatusError{NFSStatusExist, os.ErrPermission}
+			}
+		} else {
+			if s, err := fs.Stat(fs.Join(path...)); err != nil {
+				return &NFSStatusError{NFSStatusAccess, err}
+			} else if !s.IsDir() {
+				return &NFSStatusError{NFSStatusNotDir, nil}
+			}
 		}
-	}
 
-	file, err := fs.Create(newFilePath)
-	if err != nil {
-		Log.Errorf("Error Creating: %v", err)
-		return &NFSStatusError{statusFromNameError(err, NFSStatusAccess), err}
-	}
-	if err := file.Close(); err != nil {
-		Log.Errorf("Error Creating: %v", err)
-		return &NFSStatusError{NFSStatusAccess, err}
+		file, err := fs.Create(newFilePath)
+		if err != nil {
+			Log.Errorf("Error Creating: %v", err)
+			return &NFSStatusError{statusFromNameError(err, NFSStatusAccess), err}
+		}
+		if err := file.Close(); err != nil {
+			Log.Errorf("Error Creating: %v", err)
+			return &NFSStatusError{NFSStatusAccess, err}
+		}
+
 	}
 
 	fp := userHandle.ToHandle(fs, newFile)
@@ -107,7 +127,7 @@ func onCreate(ctx context.Context, w *response, userHandle Handler) error {
 	if err := xdr.Write(writer, fp); err != nil {
 		return &NFSStatusError{NFSStatusServerFault, err}
 	}
-	if err := WritePostOpAttrs(writer, tryStat(fs, []string{file.Name()})); err != nil {
+	if err := WritePostOpAttrs(writer, tryStat(fs, newFile)); err != nil {
 		return &NFSStatusError{NFSStatusServerFault, err}
 	}
 
