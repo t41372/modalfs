@@ -54,7 +54,7 @@ func TestMetadataRPC(t *testing.T) {
 	}
 	defer ln.Close()
 	go nfs.Serve(ln, h)
-	client, err := rpc.DialTCP("tcp", ln.Addr().String(), false)
+	client, err := dialTestRPC(ln.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}

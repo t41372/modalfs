@@ -50,7 +50,7 @@ func (r *namespaceRPC) header(proc uint32) rpc.Header {
 	return rpc.Header{Rpcvers: 2, Prog: 100003, Vers: 3, Proc: proc, Cred: unixCred("names", uint32(os.Getuid()), uint32(os.Getgid()))}
 }
 func (r *namespaceRPC) request(request any) ([]byte, error) {
-	client, err := rpc.DialTCP("tcp", r.addr, false)
+	client, err := dialTestRPC(r.addr)
 	if err != nil {
 		return nil, err
 	}
@@ -159,6 +159,8 @@ func TestRawWritePinsIdentityAcrossConcurrentReplacement(t *testing.T) {
 	}()
 	select {
 	case <-probe.entered:
+	case result := <-writeDone:
+		t.Fatalf("WRITE returned before acquiring its raw binding: %x %v", result.data, result.err)
 	case <-time.After(2 * time.Second):
 		t.Fatal("WRITE did not acquire its raw binding")
 	}
