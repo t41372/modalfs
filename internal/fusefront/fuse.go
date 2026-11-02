@@ -242,7 +242,7 @@ func (n *node) Create(ctx context.Context, name string, flags uint32, mode uint3
 		zero := int64(0)
 		size = &zero
 	}
-	raw, a, err := n.v.Names().CreateGuarded(p, name, flags&syscall.O_EXCL != 0, size, n.ids.createGuard)
+	raw, a, err := n.v.Names().WithClientNameLimit(maxClientNameBytes).CreateGuarded(p, name, flags&syscall.O_EXCL != 0, size, n.ids.createGuard)
 	if err != nil {
 		return nil, nil, 0, errno(err)
 	}
@@ -261,7 +261,7 @@ func (n *node) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.En
 	if status != 0 {
 		return nil, status
 	}
-	raw, a, err := n.v.Names().MkdirGuarded(p, name, n.ids.removeGuard)
+	raw, a, err := n.v.Names().WithClientNameLimit(maxClientNameBytes).MkdirGuarded(p, name, n.ids.removeGuard)
 	if err != nil {
 		return nil, errno(err)
 	}
@@ -310,7 +310,7 @@ func (n *node) Rename(ctx context.Context, name string, newParent gofs.InodeEmbe
 	if status != 0 {
 		return status
 	}
-	_, _, err := n.v.Names().RenameGuarded(oldParent, name, nextParent, newName, n.ids.renameGuard)
+	_, _, err := n.v.Names().WithClientNameLimit(maxClientNameBytes).RenameGuarded(oldParent, name, nextParent, newName, n.ids.renameGuard)
 	return errno(err)
 }
 

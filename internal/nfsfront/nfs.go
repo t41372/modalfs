@@ -197,14 +197,14 @@ func (b *billyFS) CreateNamed(parent, name string, exclusive bool, size *uint64,
 		v := int64(*size)
 		target = &v
 	}
-	p, a, err := b.fs.Names().CreateGuarded(parent, name, exclusive, target, guard)
+	p, a, err := b.fs.Names().WithClientNameLimit(nfs.PathNameMax).CreateGuarded(parent, name, exclusive, target, guard)
 	if err != nil {
 		return "", nil, err
 	}
 	return p, b.info(p, a), nil
 }
 func (b *billyFS) MkdirNamed(parent, name string, guard func(string) func(error)) (string, os.FileInfo, error) {
-	p, a, err := b.fs.Names().MkdirGuarded(parent, name, guard)
+	p, a, err := b.fs.Names().WithClientNameLimit(nfs.PathNameMax).MkdirGuarded(parent, name, guard)
 	if err != nil {
 		return "", nil, err
 	}
@@ -214,7 +214,7 @@ func (b *billyFS) RemoveNamed(parent, name string, guard func(string) func(error
 	return b.fs.Names().RemoveGuarded(parent, name, guard)
 }
 func (b *billyFS) RenameNamed(oldParent, oldName, newParent, newName string, guard func(string, string) func(error)) (string, string, error) {
-	return b.fs.Names().RenameGuarded(oldParent, oldName, newParent, newName, guard)
+	return b.fs.Names().WithClientNameLimit(nfs.PathNameMax).RenameGuarded(oldParent, oldName, newParent, newName, guard)
 }
 
 // billy.Change: Modal Volumes do not store owner or settable mtimes; accept

@@ -15,9 +15,28 @@ import (
 // Namespace translates client names only at directory operations. Paths it
 // returns are raw identities: file handles, I/O and journals must keep them.
 // A nil Options.NameKey gives Linux its ordinary byte-exact namespace.
-type Namespace struct{ fs *FS }
+type Namespace struct {
+	fs                 *FS
+	maxClientNameBytes int
+}
 
 func (fs *FS) Names() *Namespace { return &Namespace{fs: fs} }
+
+// WithClientNameLimit prevents publishing new names the frontend cannot
+// display. Existing names remain accessible for byte-exact recovery.
+func (n *Namespace) WithClientNameLimit(maxBytes int) *Namespace {
+	return &Namespace{fs: n.fs, maxClientNameBytes: maxBytes}
+}
+
+func (n *Namespace) checkDestination(s nameSelection) error {
+	if len(path.Base(s.path)) > maxName {
+		return syscall.ENAMETOOLONG
+	}
+	if !s.exists && n.maxClientNameBytes > 0 && len(s.key) > n.maxClientNameBytes {
+		return syscall.ENAMETOOLONG
+	}
+	return nil
+}
 
 func (fs *FS) nameKey(name string) (string, error) {
 	if fs.opt.NameKey == nil {
@@ -402,8 +421,8 @@ func (n *Namespace) CreateGuarded(parent, name string, exclusive bool, size *int
 
 func (n *Namespace) createSelected(s nameSelection, exclusive bool, size *int64, guard func(string, bool) func(error)) (raw string, attr Attr, err error) {
 	defer n.fs.releaseNameSnapshot(s.parent, s.key, s.snapshot)
-	if len(path.Base(s.path)) > 255 {
-		return "", Attr{}, syscall.ENAMETOOLONG
+	if err := n.checkDestination(s); err != nil {
+		return "", Attr{}, err
 	}
 	if err := n.fs.checkPath(s.path); err != nil {
 		return "", Attr{}, err
@@ -508,8 +527,8 @@ func (n *Namespace) mkdirSelected(s nameSelection, guard func(string) func(error
 	if s.exists {
 		return "", Attr{}, os.ErrExist
 	}
-	if len(path.Base(s.path)) > 255 {
-		return "", Attr{}, syscall.ENAMETOOLONG
+	if err := n.checkDestination(s); err != nil {
+		return "", Attr{}, err
 	}
 	if err := n.fs.checkPath(s.path); err != nil {
 		return "", Attr{}, err
@@ -618,8 +637,8 @@ func (n *Namespace) RenameGuarded(oldParent, oldName, newParent, newName string,
 			return "", "", err
 		}
 	}
-	if len(path.Base(destination.path)) > 255 {
-		return "", "", syscall.ENAMETOOLONG
+	if err := n.checkDestination(destination); err != nil {
+		return "", "", err
 	}
 	if guard != nil {
 		if finish := guard(source.path, destination.path); finish != nil {
@@ -632,7 +651,9 @@ func (n *Namespace) RenameGuarded(oldParent, oldName, newParent, newName string,
 
 // ReadDir omits only unaddressable names and reports why in Activity. One
 // canonical collision must not make unrelated files in the folder disappear.
-func (n *Namespace) ReadDir(parent string) ([]Attr, error) { return n.ReadDirLimit(parent, 0) }
+func (n *Namespace) ReadDir(parent string) ([]Attr, error) {
+	return n.ReadDirLimit(parent, n.maxClientNameBytes)
+}
 
 // ReadDirLimit applies a frontend's client-name byte limit after exact name
 // conversion. Zero leaves the limit to that frontend (for example macFUSE).
