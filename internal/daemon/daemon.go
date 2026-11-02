@@ -29,7 +29,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-var Version = "0.2.0"
+var Version = "0.2.1"
 
 type Event struct {
 	Seq     int64    `json:"seq"`
