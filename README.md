@@ -176,7 +176,7 @@ On macOS, modalfs runs a loopback NFS server on `127.0.0.1` mounted by the nativ
 
 Updating a small slice of a large file therefore requires hashing the modified 8 MiB blocks, retaining the hashes of all untouched blocks, and uploading only the newly changed blocks. Because Modal's API does not return the block hashes of existing files, modalfs tracks them through three layers:
 
-1. **Local hash index.** Every full 8 MiB block read from Modal is hashed and cached locally alongside the file's path, size, and modification timestamp.
+1. **Local hash index.** Every full 8 MiB block read from Modal is hashed and cached locally alongside the file's path, size, and modification timestamp. Path-to-hash associations are relearned on each mount so a crash cannot revive an invalidated association; immutable cached blocks and pending-write journals are retained. If this index encounters a disk error, Activity reports it and the mount continues with a bounded in-memory index until remounted.
 2. **In-volume manifests.** Whenever modalfs writes a file of 64 MiB or larger, it saves the block hash list inside the volume under `/.modalfs/manifests/`. This allows other machines (or a cleared cache) to perform fast partial writes immediately, provided the file's size and timestamp still match.
 3. **On-demand block hashing.** For large files written outside modalfs (such as outputs from a Modal container) that have no manifest yet, a commit still needs the hash of every block you didn't change. As soon as you start editing such a file, modalfs streams those blocks once in the background and hashes them, so the first partial write reads the rest of the file once.
 
@@ -230,7 +230,8 @@ modalfs operates through the Volume API that Modal's SDKs use, which exposes few
 ### Current modalfs limitations
 
 - **Modal Volume v2 only.** Legacy v1 volumes are listed in the UI/CLI but cannot be mounted.
-- **Eventual directory consistency.** Directory listings refresh every 10 seconds. If a file is modified remotely while you are actively streaming it locally, subsequent block reads may switch to the newer version mid-read.
+- **Filename limits.** macOS treats some Unicode spellings as the same filename; Linux keeps distinct UTF-8 spellings. If two remote names collide under the local client's rules, or a name's client spelling exceeds the frontend's 255-byte limit, the entries stay on Modal and Activity reports why they are omitted from the mount. For an unencrypted volume, use Modal's `volume cp` to copy an entry to a distinct, shorter name, and check the copy before removing the original. For an encrypted volume, mount it on Linux with its encryption key and rename the plaintext entry there; Modal's CLI does not encode encrypted filenames. Filenames that are not valid UTF-8 are rejected before writes are accepted, because Modal's API and the write journal cannot represent them.
+- **Eventual directory consistency.** Directory listings are cached for up to 10 seconds. If a file is modified remotely while you are actively streaming it locally, subsequent block reads may switch to the newer version mid-read.
 - **Files replaced on Modal mid-edit.** If a file you're editing is replaced or deleted on Modal before modalfs has read the parts you didn't change, or is replaced by a file of the same size after it read some of them, modalfs can't tell which version those parts belong to. Rather than make a conflict copy that might mix two versions, it quarantines your modified 8 MiB blocks on this computer alongside assembly instructions and logs the location in Activity.
 - **No extended attributes (`xattr`).** Extended attributes are not persisted.
 - **macOS-only menu bar item.** On Linux, nothing on screen shows that modalfs is still running after you close the window. Open the app again to get it back (or run `modalfs ui` for the same interface in a browser tab), and choose **Quit** there or run `modalfs quit` to stop it.
@@ -462,7 +463,8 @@ All README screenshots and diagrams are generated programmatically: `cd web && b
 | `internal/modalapi`                       | Modal Volume API client, block uploader, and block downloader                              |
 | `internal/downloads`                      | Remote downloads: jobs, the Modal Function and its worker (`remote/app.py`)                |
 | `internal/encryption`                     | End-to-end encryption of file contents, names and labels                                   |
-| `internal/vfs`                            | Virtual filesystem core: block cache, dirty tracking, write journal, and conflict handling |
+| `internal/filename`                       | Native macOS filename spelling through CoreFoundation; literal names on Linux              |
+| `internal/vfs`                            | Virtual filesystem core: block cache, write journal, conflict handling, and namespace selection |
 | `internal/nfsfront`, `internal/fusefront` | Loopback NFSv3 and FUSE filesystem servers                                                 |
 | `internal/daemon`                         | Mount lifecycle manager, local JSON API server, and login service installer                |
 | `internal/config`                         | Account management, saved mount state, preferences, and keychain integration               |
