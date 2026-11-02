@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path"
+	"runtime"
 	"strings"
 	"time"
 
@@ -51,6 +52,21 @@ func (fi fileInfo) Sys() any {
 
 func norm(p string) string { return strings.Trim(path.Clean("/"+p), "/") }
 
+func clientPath(p string) string {
+	if runtime.GOOS == "darwin" {
+		return vfs.DecomposeMacOSPath(p)
+	}
+	return p
+}
+
+func (b *billyFS) resolve(name string) (string, error) {
+	p := norm(name)
+	if runtime.GOOS == "darwin" {
+		return b.fs.ResolveNormalizedPath(p)
+	}
+	return p, nil
+}
+
 func (b *billyFS) info(p string, a vfs.Attr) os.FileInfo {
 	return fileInfo{a: a, path: p, uid: b.uid, gid: b.gid}
 }
@@ -73,9 +89,12 @@ func (b *billyFS) Open(name string) (billy.File, error) {
 }
 
 func (b *billyFS) OpenFile(name string, flag int, _ os.FileMode) (billy.File, error) {
-	p := norm(name)
 	if flag&(os.O_WRONLY|os.O_RDWR|os.O_CREATE|os.O_TRUNC) != 0 && b.ro {
 		return nil, os.ErrPermission
+	}
+	p, err := b.resolve(name)
+	if err != nil {
+		return nil, err
 	}
 	if flag&os.O_CREATE != 0 {
 		// exclusive, so vfs.Create never truncates an existing file;
@@ -102,7 +121,10 @@ func (b *billyFS) OpenFile(name string, flag int, _ os.FileMode) (billy.File, er
 }
 
 func (b *billyFS) Stat(name string) (os.FileInfo, error) {
-	p := norm(name)
+	p, err := b.resolve(name)
+	if err != nil {
+		return nil, err
+	}
 	a, err := b.fs.Stat(p)
 	if err != nil {
 		return nil, err
@@ -112,12 +134,35 @@ func (b *billyFS) Stat(name string) (os.FileInfo, error) {
 
 func (b *billyFS) Lstat(name string) (os.FileInfo, error) { return b.Stat(name) }
 
-func (b *billyFS) Rename(o, n string) error { return b.fs.Rename(norm(o), norm(n)) }
-func (b *billyFS) Remove(name string) error { return b.fs.Remove(norm(name)) }
+func (b *billyFS) Rename(o, n string) error {
+	oldPath, err := b.resolve(o)
+	if err != nil {
+		return err
+	}
+	newPath, err := b.resolve(n)
+	if err != nil {
+		return err
+	}
+	return b.fs.Rename(oldPath, newPath)
+}
+
+func (b *billyFS) Remove(name string) error {
+	p, err := b.resolve(name)
+	if err != nil {
+		return err
+	}
+	return b.fs.Remove(p)
+}
 
 // SyncPath makes a file's written data durable (NFS COMMIT; see
 // third_party/go-nfs/modalfs.go).
-func (b *billyFS) SyncPath(name string) error { return b.fs.Sync(name) }
+func (b *billyFS) SyncPath(name string) error {
+	p, err := b.resolve(name)
+	if err != nil {
+		return err
+	}
+	return b.fs.Sync(p)
+}
 
 func (b *billyFS) Join(elem ...string) string {
 	return path.Join(elem...)
@@ -129,20 +174,38 @@ func (b *billyFS) TempFile(dir, prefix string) (billy.File, error) {
 }
 
 func (b *billyFS) ReadDir(name string) ([]os.FileInfo, error) {
-	p := norm(name)
+	p, err := b.resolve(name)
+	if err != nil {
+		return nil, err
+	}
 	as, err := b.fs.ReadDir(p)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]os.FileInfo, 0, len(as))
+	seen := map[string]bool{}
 	for _, a := range as {
+		key := clientPath(a.Name)
+		if seen[key] {
+			// Resolve reports the ambiguity in Activity and refuses to pick
+			// a file. Never give two entries the same macOS file handle.
+			_, err := b.fs.ResolveNormalizedPath(path.Join(p, key))
+			if err == nil {
+				err = os.ErrExist // the directory changed while it was listed
+			}
+			return nil, err
+		}
+		seen[key] = true
 		out = append(out, b.info(path.Join(p, a.Name), a))
 	}
 	return out, nil
 }
 
 func (b *billyFS) MkdirAll(name string, _ os.FileMode) error {
-	p := norm(name)
+	p, err := b.resolve(name)
+	if err != nil {
+		return err
+	}
 	if p == "" {
 		return nil
 	}

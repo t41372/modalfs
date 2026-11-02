@@ -112,13 +112,18 @@ func (h *handler) handleFor(p string) [16]byte {
 }
 
 func (h *handler) ToHandle(f billy.Filesystem, path []string) []byte {
-	id := h.handleFor(strings.Join(path, "/"))
+	p := clientPath(strings.Join(path, "/"))
+	id := h.handleFor(p)
 	h.mu.RLock()
 	_, known := h.paths[id]
 	h.mu.RUnlock()
 	if !known {
 		h.mu.Lock()
-		h.paths[id] = append([]string(nil), path...)
+		if p == "" {
+			h.paths[id] = nil
+		} else {
+			h.paths[id] = strings.Split(p, "/")
+		}
 		h.mu.Unlock()
 	}
 	return id[:]

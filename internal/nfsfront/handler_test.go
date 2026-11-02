@@ -3,6 +3,7 @@ package nfsfront
 import (
 	"bytes"
 	"encoding/binary"
+	"runtime"
 	"testing"
 
 	"github.com/willscott/go-nfs-client/nfs/rpc"
@@ -61,5 +62,17 @@ func TestHandlesAreStable(t *testing.T) {
 	}
 	if _, _, err := newHandler(nil).FromHandle(a); err == nil {
 		t.Fatal("another server's handle resolves")
+	}
+}
+
+func TestMacOSHandlesIgnoreUnicodeSpelling(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS decomposes Unicode paths")
+	}
+	h := newHandler(nil)
+	composed := h.ToHandle(nil, []string{"café", "résumé"})
+	decomposed := h.ToHandle(nil, []string{"cafe\u0301", "re\u0301sume\u0301"})
+	if !bytes.Equal(composed, decomposed) {
+		t.Fatal("the same file's Unicode spellings got different handles")
 	}
 }

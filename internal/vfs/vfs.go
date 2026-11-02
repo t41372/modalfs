@@ -79,6 +79,7 @@ type dirListing struct {
 	at      time.Time
 	mtime   time.Time                 // when this mount last observed different contents
 	entries map[string]modalapi.Entry // by base name; nil: list again
+	aliases map[string]string         // decomposed Unicode name -> actual name
 }
 
 // dirSweepMin is how many listings the cache holds before it sweeps out
@@ -251,12 +252,13 @@ func (fs *FS) listDir(dir string, fresh bool) (map[string]modalapi.Entry, error)
 			}
 			m[path.Base(e.Path)] = e
 		}
+		aliases := nameAliases(m)
 		fs.mu.Lock()
 		if l := fs.dirs[dir]; l != nil && l.gen == gen { // not invalidated meanwhile
 			if l.entries == nil || !maps.Equal(l.entries, m) {
 				l.mtime = time.Now()
 			}
-			l.at, l.entries = start, m
+			l.at, l.entries, l.aliases = start, m, aliases
 		}
 		fs.mu.Unlock()
 		return m, nil
@@ -287,6 +289,7 @@ func (fs *FS) sweepDirsLocked() {
 func (fs *FS) invalidateLocked(l *dirListing) {
 	fs.dirGen++
 	l.gen, l.at, l.entries = fs.dirGen, time.Now(), nil // at: not swept while relisted
+	l.aliases = nil
 }
 
 func (fs *FS) invalidate(dir string) {
