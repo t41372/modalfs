@@ -71,8 +71,14 @@ func onLookup(ctx context.Context, w *response, userHandle Handler) error {
 	}
 
 	reqPath := append(p, string(obj.Filename))
-	if _, err = fs.Lstat(fs.Join(reqPath...)); err != nil {
-		return &NFSStatusError{NFSStatusNoEnt, os.ErrNotExist}
+	if names, ok := fs.(NamedOperations); ok {
+		raw, _, resolveErr := names.LookupNamed(fs.Join(p...), string(obj.Filename))
+		if resolveErr != nil {
+			return &NFSStatusError{statusFromNamedError(resolveErr), resolveErr}
+		}
+		reqPath = splitFSPath(raw)
+	} else if _, err = fs.Lstat(fs.Join(reqPath...)); err != nil {
+		return &NFSStatusError{statusFromNameError(err, NFSStatusNoEnt), err}
 	}
 
 	newHandle := userHandle.ToHandle(fs, reqPath)

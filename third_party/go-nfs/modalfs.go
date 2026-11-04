@@ -1,6 +1,13 @@
 package nfs
 
-import "github.com/willscott/go-nfs-client/nfs/rpc"
+import (
+	"errors"
+	"github.com/go-git/go-billy/v5"
+	"github.com/willscott/go-nfs-client/nfs/rpc"
+	"os"
+	"strings"
+	"syscall"
+)
 
 // modalfs: a filesystem that implements Syncer gets real NFS write
 // stability. WRITE replies UNSTABLE for unstable writes (the client keeps the
@@ -27,4 +34,80 @@ type Syncer interface {
 // taken.
 type SlowLogger interface {
 	Slow(msg string, args ...any)
+}
+
+// NamedOperations resolves client-provided child names separately from the
+// raw paths already held by file handles. Implementations return stored
+// paths, so a later READ/WRITE/COMMIT never reselects a different alias.
+type NamedOperations interface {
+	LookupNamed(parent, name string) (string, os.FileInfo, error)
+	CreateNamed(parent, name string, exclusive bool, size *uint64, guard func(string, bool) func(error)) (string, os.FileInfo, error)
+	MkdirNamed(parent, name string, guard func(string) func(error)) (string, os.FileInfo, error)
+	RemoveNamed(parent, name string, guard func(string) func(error)) (string, error)
+	RenameNamed(oldParent, oldName, newParent, newName string, guard func(string, string) func(error)) (string, string, error)
+}
+
+func splitFSPath(p string) []string {
+	p = strings.Trim(p, "/")
+	if p == "" {
+		return nil
+	}
+	return strings.Split(p, "/")
+}
+
+// Named operations preserve the backend's real failure, rather than making
+// an unavailable namespace look like a missing file.
+func statusFromNamedError(err error) NFSStatus {
+	if errors.Is(err, os.ErrNotExist) {
+		return NFSStatusNoEnt
+	}
+	if errors.Is(err, os.ErrExist) {
+		return NFSStatusExist
+	}
+	if errors.Is(err, os.ErrPermission) {
+		return NFSStatusAccess
+	}
+	for _, pair := range []struct {
+		err    error
+		status NFSStatus
+	}{
+		{syscall.ENOTDIR, NFSStatusNotDir}, {syscall.EISDIR, NFSStatusIsDir},
+		{syscall.EROFS, NFSStatusROFS}, {syscall.ESTALE, NFSStatusStale},
+		{syscall.EINVAL, NFSStatusInval}, {syscall.EFBIG, NFSStatusFBig},
+		{syscall.ENOSPC, NFSStatusNoSPC}, {syscall.EDQUOT, NFSStatusDQuot},
+	} {
+		if errors.Is(err, pair.err) {
+			return pair.status
+		}
+	}
+	return statusFromNameError(err, NFSStatusIO)
+}
+
+// NamespaceGuards protect the selected raw identities for the complete
+// mutation, including partial publication and callback/handle publication.
+type NamespaceGuards interface {
+	GuardCreate(fs billy.Filesystem, path []string, existed bool) func(error)
+	GuardMkdir(fs billy.Filesystem, path []string) func(error)
+	GuardRemove(fs billy.Filesystem, path []string) func(error)
+	GuardRename(fs billy.Filesystem, oldPath, newPath []string) func(error)
+}
+
+// RequestScopes gives a handler request-lifetime guards without changing
+// every operation. The returned wrapper may pin raw handle bindings while
+// namespace requests use their own publication lock.
+type RequestScopes interface {
+	BeginRequest(header rpc.Header) (Handler, func())
+}
+
+// FileInfoHandles binds a listing snapshot's attributes to the same object
+// identity, even when that raw name was replaced between READDIR pages.
+type FileInfoHandles interface {
+	ToHandleInfo(fs billy.Filesystem, path []string, info os.FileInfo) []byte
+}
+
+func handleForInfo(h Handler, fs billy.Filesystem, path []string, info os.FileInfo) []byte {
+	if identities, ok := h.(FileInfoHandles); ok {
+		return identities.ToHandleInfo(fs, path, info)
+	}
+	return h.ToHandle(fs, path)
 }

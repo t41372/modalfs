@@ -23,9 +23,10 @@ import (
 // without decoding the file's whole record. Hashes learned from downloads
 // (SetHash) are recorded in memory and written out in batches: every
 // manifestFlushEvery, when many are waiting, and on Put and Close. Get and
-// Hash see them at once. The DB is only a cache of what can be learned again
-// (by downloading a block, or from a sidecar), so a crash that loses the
-// last batch only costs a re-download.
+// Hash see them at once. Path/hash associations are scoped to this open:
+// remounting relearns them from downloads or sidecars. This lets batched
+// writes skip fsync without a crash resurrecting known-invalid mappings.
+// Immutable block files and pending-write journals are kept separately.
 type manifestDB struct {
 	db        *bolt.DB
 	chunkSize int64
@@ -37,9 +38,14 @@ type manifestDB struct {
 	bytes   int64
 	max     int64
 	pending map[string]bool // paths whose cached manifest isn't in the DB yet
-	closed  bool
-	kick    chan struct{}
-	done    chan struct{}
+	// A disk error quarantines this open permanently. RAM remains a bounded
+	// cache, but no old disk record may be loaded after an invalidation fails.
+	diskErr  error
+	onError  func(error) // called by the flusher, outside mu, once per open
+	reported bool
+	closed   bool
+	kick     chan struct{}
+	done     chan struct{}
 }
 
 type manifestEnt struct {
@@ -61,12 +67,10 @@ const (
 )
 
 func openManifestDB(path, volumeID string) (*manifestDB, error) {
-	// NoSync: commits skip fsync. The DB only caches hashes that can be
-	// learned again (by downloading the block, or from a sidecar), so after
-	// a power loss it may lack recent hashes or, rarely, be unreadable; an
-	// unreadable one is moved aside and started afresh below. Syncing would
-	// cost an fsync per batch of downloaded blocks for nothing that matters.
-	// Timeout: another process holding the file gets an error, not a hang.
+	// NoSync is safe only because this open never reads an earlier open's
+	// path/hash associations: acquire bbolt's lock, then clear the bucket.
+	// Even a valid pre-invalidation DB image after power loss is discarded.
+	// Timeout makes another process holding this file fail instead of hang.
 	opts := &bolt.Options{Timeout: time.Second, NoSync: true}
 	db, err := bolt.Open(path, 0o600, opts)
 	if err != nil && !errors.Is(err, bolt.ErrTimeout) {
@@ -85,7 +89,10 @@ func openManifestDB(path, volumeID string) (*manifestDB, error) {
 	}
 	b := []byte(volumeID)
 	err = db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists(b)
+		if err := tx.DeleteBucket(b); err != nil && !errors.Is(err, bolt.ErrBucketNotFound) {
+			return err
+		}
+		_, err := tx.CreateBucket(b)
 		return err
 	})
 	if err != nil {
@@ -149,16 +156,20 @@ func (d *manifestDB) lookupLocked(path string) *manifest {
 		d.lru.MoveToFront(el)
 		return el.Value.(*manifestEnt).m
 	}
-	if d.closed {
+	if d.closed || d.diskErr != nil {
 		return nil
 	}
 	var m *manifest
-	_ = d.db.View(func(tx *bolt.Tx) error {
+	err := d.db.View(func(tx *bolt.Tx) error {
 		if v := tx.Bucket(d.bucket).Get([]byte(path)); v != nil {
 			m, _ = decodeManifest(v)
 		}
 		return nil
 	})
+	if err != nil {
+		d.quarantineLocked(err)
+		return nil
+	}
 	if m != nil {
 		d.storeLocked(path, m)
 	}
@@ -175,9 +186,6 @@ func (d *manifestDB) storeLocked(path string, m *manifest) {
 		back := d.lru.Back().Value.(*manifestEnt)
 		if d.pending[back.path] {
 			d.flushLocked() // write it out before forgetting it
-			if d.pending[back.path] {
-				break // the DB can't be written; keep it rather than lose it
-			}
 		}
 		d.dropLocked(back.path)
 	}
@@ -219,8 +227,10 @@ func (d *manifestDB) Put(path string, m *manifest) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.storeLocked(path, m.clone())
-	d.pending[path] = true
-	d.flushLocked()
+	if d.diskErr == nil && !d.closed {
+		d.pending[path] = true
+		d.flushLocked()
+	}
 }
 
 // SetHash records one block hash for a version, replacing a record of
@@ -240,6 +250,9 @@ func (d *manifestDB) SetHash(path string, size, mtime int64, idx int, h []byte) 
 		return
 	}
 	m.Hashes[idx] = h
+	if d.diskErr != nil || d.closed {
+		return
+	}
 	d.pending[path] = true
 	if len(d.pending) >= manifestFlushBatch {
 		select {
@@ -249,10 +262,10 @@ func (d *manifestDB) SetHash(path string, size, mtime int64, idx int, h []byte) 
 	}
 }
 
-// flushLocked writes every pending manifest in one transaction. On failure
-// they stay pending (and cached) for the next try.
+// flushLocked writes every pending manifest in one transaction. A failure
+// disables persistence: retrying could reload an obsolete path association.
 func (d *manifestDB) flushLocked() {
-	if len(d.pending) == 0 || d.closed {
+	if len(d.pending) == 0 || d.closed || d.diskErr != nil {
 		return
 	}
 	err := d.db.Update(func(tx *bolt.Tx) error {
@@ -268,8 +281,33 @@ func (d *manifestDB) flushLocked() {
 		}
 		return nil
 	})
-	if err == nil {
-		clear(d.pending)
+	if err != nil {
+		d.quarantineLocked(err)
+	}
+	clear(d.pending)
+}
+
+// quarantineLocked keeps immutable blocks usable, but never consults this
+// disk DB again. Dropping pending writes also lets the RAM LRU stay bounded.
+func (d *manifestDB) quarantineLocked(err error) {
+	if d.diskErr != nil {
+		return
+	}
+	d.diskErr = err
+	clear(d.pending)
+	select {
+	case d.kick <- struct{}{}:
+	default:
+	}
+}
+
+func (d *manifestDB) setErrorHandler(f func(error)) {
+	d.mu.Lock()
+	d.onError = f
+	d.mu.Unlock()
+	select {
+	case d.kick <- struct{}{}:
+	default:
 	}
 }
 
@@ -283,62 +321,71 @@ func (d *manifestDB) flusher() {
 		case <-d.kick:
 		}
 		d.mu.Lock()
-		if d.closed {
-			d.mu.Unlock()
+		d.flushLocked()
+		closed := d.closed
+		var report func(error)
+		if d.diskErr != nil && !d.reported && d.onError != nil {
+			d.reported = true
+			report = d.onError
+		}
+		err := d.diskErr
+		d.mu.Unlock()
+		// Callbacks can acquire FS locks. Never invoke one under d.mu.
+		if report != nil {
+			report(err)
+		}
+		if closed {
 			return
 		}
-		d.flushLocked()
-		d.mu.Unlock()
 	}
 }
 
-func (d *manifestDB) Delete(path string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.dropLocked(path)
-	delete(d.pending, path)
-	if d.closed {
-		return
-	}
-	_ = d.db.Update(func(tx *bolt.Tx) error { return tx.Bucket(d.bucket).Delete([]byte(path)) })
-}
+func (d *manifestDB) Delete(path string) error { return d.delete(path, false) }
 
-// Rename moves path (and, for directories, everything below it).
-func (d *manifestDB) Rename(oldp, newp string) {
+func (d *manifestDB) DeleteTree(path string) error { return d.delete(path, true) }
+
+// DeleteTree forgets p and, optionally, every descendant. In-memory removal
+// always completes. The first disk failure is returned and permanently
+// disables disk fallback, so a subsequent cache miss cannot revive a record.
+func (d *manifestDB) delete(p string, tree bool) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.flushLocked() // the DB then holds everything to move
-	under := func(p, dir string) bool { return p == dir || strings.HasPrefix(p, dir+"/") }
-	for p := range d.byPath {
-		if under(p, oldp) || under(p, newp) {
-			d.dropLocked(p)
+	under := func(key string) bool { return key == p || (tree && strings.HasPrefix(key, p+"/")) }
+	for key := range d.byPath {
+		if under(key) {
+			d.dropLocked(key)
+			delete(d.pending, key)
 		}
 	}
-	if d.closed {
-		return
+	if d.closed || d.diskErr != nil {
+		return nil
 	}
-	_ = d.db.Update(func(tx *bolt.Tx) error {
+	err := d.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(d.bucket)
-		type kv struct{ k, v []byte }
-		var moves []kv
+		if err := b.Delete([]byte(p)); err != nil {
+			return err
+		}
+		if !tree {
+			return nil
+		}
 		c := b.Cursor()
-		if v := b.Get([]byte(oldp)); v != nil {
-			moves = append(moves, kv{[]byte(oldp), append([]byte(nil), v...)})
-		}
-		pre := []byte(oldp + "/")
-		for k, v := c.Seek(pre); k != nil && len(k) >= len(pre) && string(k[:len(pre)]) == string(pre); k, v = c.Next() {
-			moves = append(moves, kv{append([]byte(nil), k...), append([]byte(nil), v...)})
-		}
-		for _, m := range moves {
-			_ = b.Delete(m.k)
-			_ = b.Put([]byte(newp+string(m.k[len(oldp):])), m.v)
+		prefix := []byte(p + "/")
+		for k, _ := c.Seek(prefix); k != nil && strings.HasPrefix(string(k), string(prefix)); k, _ = c.Next() {
+			if err := c.Delete(); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
+	if err != nil {
+		d.quarantineLocked(err)
+	}
+	return err
 }
 
-// Close writes out pending updates and closes the DB. Later calls only
-// touch the in-memory cache.
+// Close flushes pending cache records and closes the DB. Later calls only
+// touch memory. Disk failures are reported through onError; cached metadata
+// does not determine whether the user's files were committed successfully.
 func (d *manifestDB) Close() error {
 	d.mu.Lock()
 	if d.closed {

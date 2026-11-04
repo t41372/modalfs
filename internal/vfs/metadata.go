@@ -12,10 +12,10 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// Modal's public Volume API lists symlinks, FIFOs and sockets by type, but
-// can't read a link's target, create links, or change these entries (see
-// docs/design/fs-metadata.md). modalfs shows them as what they are and
-// refuses what it can't commit, saying why.
+// Modal's public Volume API lists special entries by type, but their
+// supported operations differ: sockets can be copied and removed, while
+// symlinks cannot (see docs/design/fs-metadata.md). These helpers restrict
+// content I/O and explain operations the API actually refuses.
 
 type unsupportedEntry struct {
 	path string
@@ -35,7 +35,7 @@ func (e *unsupportedEntry) Error() string {
 	case e.mode&os.ModeIrregular != 0:
 		return fmt.Sprintf("%s has an entry type modalfs doesn't know (%d); update modalfs", e.path, e.typ)
 	}
-	return fmt.Sprintf("%s is a %s, which Modal's Volume API can't read or change; change it inside a Modal container", e.path, kind)
+	return fmt.Sprintf("%s is a %s, whose contents Modal's Volume API can't read or write; change it inside a Modal container", e.path, kind)
 }
 
 func (e *unsupportedEntry) Unwrap() error { return syscall.ENOTSUP }

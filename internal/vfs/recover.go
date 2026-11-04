@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -121,6 +122,13 @@ func (fs *FS) recover(dirtyRoot string) {
 		}
 		st.jSize, st.jFloor = st.size, st.truncFloor
 		st.accountLocked() // not shared yet: no lock needed
+		key, keyErr := fs.nameKey(path.Base(j.Path))
+		if keyErr != nil {
+			// Recovery and raw upload do not depend on whether the local
+			// client can spell this name. Preserve the journal and report it.
+			fs.log.Error("recovered name cannot be shown in the client namespace", "path", j.Path, "err", keyErr)
+			fs.event("unreadable", j.Path, keyErr.Error())
+		}
 		fs.mu.Lock()
 		if old := fs.files[j.Path]; old != nil {
 			// a newer journal for the same path wins; set the older one aside
@@ -129,6 +137,9 @@ func (fs *FS) recover(dirtyRoot string) {
 			setAside(old.dir, j.Path, "newer changes to the file were recovered instead")
 		}
 		fs.files[j.Path] = st
+		if keyErr == nil {
+			fs.addLocalNameLocked(j.Path, key)
+		}
 		fs.mu.Unlock()
 		fs.log.Info("recovered uncommitted changes from previous run", "path", j.Path, "size", st.size, "dirty_blocks", len(st.dirty))
 		fs.event("recovered", j.Path, fmt.Sprintf("%d dirty blocks", len(st.dirty)))

@@ -17,6 +17,7 @@ import (
 
 	"github.com/hanwen/go-fuse/v2/fuse"
 	"github.com/t41372/modalfs/internal/config"
+	"github.com/t41372/modalfs/internal/filename"
 	"github.com/t41372/modalfs/internal/fusefront"
 	"github.com/t41372/modalfs/internal/modalapi"
 	"github.com/t41372/modalfs/internal/nfsfront"
@@ -258,8 +259,13 @@ func (d *Daemon) doStart(m config.Mount, ph *runMount) (_ *runMount, err error) 
 	if err != nil {
 		return nil, err
 	}
+	nameKey, err := filename.Key()
+	if err != nil {
+		return nil, err
+	}
 	fsys, err := vfs.New(c, vol, vfs.Options{
 		Cipher:   remote.Cipher,
+		NameKey:  nameKey,
 		CacheDir: s.CacheDir, Cache: d.cache, DirCacheTTL: 10 * time.Second, WriteBack: wb,
 		ReadAhead: s.ReadAhead, SidecarMin: 64 << 20, OnConflict: m.OnConflict, ReadOnly: m.ReadOnly,
 		FilterJunk: m.FilterJunk, Logger: d.log.With("mount", m.VolumeName),

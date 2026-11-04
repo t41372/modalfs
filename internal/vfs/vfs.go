@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/t41372/modalfs/internal/encryption"
 	"github.com/t41372/modalfs/internal/modalapi"
@@ -37,6 +38,10 @@ const KeepName = ".modalfs_keep"
 const MetaDir = ".modalfs"
 
 type Options struct {
+	// NameKey defines the client namespace. Nil preserves byte-exact names.
+	// It is called outside FS locks, and may report native conversion errors.
+	NameKey func(string) (string, error)
+
 	Cipher        *encryption.Cipher
 	CacheDir      string
 	CacheMaxBytes int64
@@ -74,9 +79,14 @@ type Attr struct {
 // again never reuses one): listings in flight from an older generation
 // are neither joined nor stored.
 type dirListing struct {
-	gen     uint64
-	at      time.Time
-	entries map[string]modalapi.Entry // by base name; nil: list again
+	gen           uint64
+	at            time.Time
+	entries       map[string]modalapi.Entry  // by base name; nil: list again
+	aliases       map[string]string          // client key -> actual name; empty means ambiguous
+	keys          map[string]string          // actual name -> cached client key
+	revision      uint64                     // raw listing replacement, independent of invalidation
+	indexRevision uint64                     // listing revision covered by aliases and keys
+	reported      map[string]nameProblemKind // namespace errors already shown
 }
 
 // dirSweepMin is how many listings the cache holds before it sweeps out
@@ -91,16 +101,22 @@ type FS struct {
 	cache *blockCache
 	mdb   *manifestDB
 
-	mu         sync.Mutex
-	dirs       map[string]*dirListing
-	dirGen     uint64                // last listing generation handed out
-	dirSwept   time.Time             // last sweep of dirs
-	files      map[string]*fileState // open / dirty files, by path
-	inflight   map[string]bool       // blocks being read ahead, by singleflight key
-	eph        map[string]*ephFile   // FilterJunk: local-only files
-	ephBytes   int64
-	ephTrimmed time.Time       // last trim of eph
-	stray      map[string]bool // encrypted volume: names reported as not decrypting
+	cachePublishMu sync.RWMutex // local metadata publication, never held over network I/O
+	cacheEpoch     uint64
+	nameMu         sync.Mutex // namespace mutations; raw file I/O never takes it
+	localKeys      map[string]string
+	localNames     map[string]map[string]map[string]struct{}
+	nameWatches    map[string]map[string]*nameWatch
+	mu             sync.Mutex
+	dirs           map[string]*dirListing
+	dirGen         uint64                // last listing generation handed out
+	dirSwept       time.Time             // last sweep of dirs
+	files          map[string]*fileState // open / dirty files, by path
+	inflight       map[string]bool       // blocks being read ahead, by singleflight key
+	eph            map[string]*ephFile   // FilterJunk: local-only files
+	ephBytes       int64
+	ephTrimmed     time.Time       // last trim of eph
+	stray          map[string]bool // encrypted volume: names reported as not decrypting
 
 	ctr   counters
 	reads readTracker // sequential reads, for read-ahead (own lock)
@@ -181,6 +197,7 @@ func New(c *modalapi.Client, vol modalapi.VolumeInfo, opt Options) (*FS, error) 
 		dirs: map[string]*dirListing{}, files: map[string]*fileState{}, inflight: map[string]bool{},
 		eph: map[string]*ephFile{}, stray: map[string]bool{}, ctx: ctx, cancel: cancel, aheadKick: make(chan struct{}, 1)}
 	remote.Skipped = fs.reportStray
+	mdb.setErrorHandler(fs.reportManifestCacheError)
 	if err := fs.checkJournals(filepath.Join(base, "dirty")); err != nil {
 		mdb.Close()
 		cancel()
@@ -250,8 +267,11 @@ func (fs *FS) listDir(dir string, fresh bool) (map[string]modalapi.Entry, error)
 			m[path.Base(e.Path)] = e
 		}
 		fs.mu.Lock()
-		if l := fs.dirs[dir]; l != nil && l.gen == gen { // not invalidated meanwhile
+		// A separate freshNames request may have published a newer snapshot.
+		if l := fs.dirs[dir]; l != nil && l.gen == gen && !l.at.After(start) {
 			l.at, l.entries = start, m
+			l.revision++
+			l.aliases = nil
 		}
 		fs.mu.Unlock()
 		return m, nil
@@ -282,6 +302,7 @@ func (fs *FS) sweepDirsLocked() {
 func (fs *FS) invalidateLocked(l *dirListing) {
 	fs.dirGen++
 	l.gen, l.at, l.entries = fs.dirGen, time.Now(), nil // at: not swept while relisted
+	l.aliases = nil
 }
 
 func (fs *FS) invalidate(dir string) {
@@ -458,14 +479,23 @@ func (fs *FS) remoteBlock(p string, size, mtime int64, idx int64, cache bool) ([
 	return fs.remoteBlockURL(p, size, mtime, idx, cache, "")
 }
 
-func (fs *FS) remoteBlockURL(p string, size, mtime int64, idx int64, cache bool, url string) ([]byte, []byte, error) {
+func (fs *FS) remoteBlockURL(p string, size, mtime, idx int64, cache bool, url string) ([]byte, []byte, error) {
+	return fs.remoteBlockAtEpoch(p, size, mtime, idx, cache, url, fs.contentEpoch())
+}
+
+func (fs *FS) remoteBlockAtEpoch(p string, size, mtime, idx int64, cache bool, url string, epoch uint64) ([]byte, []byte, error) {
 	want := fs.blockLen(size, idx)
-	if h := fs.mdb.Hash(p, size, mtime, idx); h != nil {
-		if b := fs.cache.get(h, want, fs.c.HashBlock); b != nil {
-			return b, h, nil
+	fs.cachePublishMu.RLock()
+	if epoch == fs.cacheEpoch {
+		if h := fs.mdb.Hash(p, size, mtime, idx); h != nil {
+			if b := fs.cache.get(h, want, fs.c.HashBlock); b != nil {
+				fs.cachePublishMu.RUnlock()
+				return b, h, nil
+			}
 		}
 	}
-	key := fmt.Sprintf("blk:%s@%d.%d#%d", p, size, mtime, idx)
+	fs.cachePublishMu.RUnlock()
+	key := fmt.Sprintf("blk:%s@%d.%d#%d!%d", p, size, mtime, idx, epoch)
 	type res struct{ data, hash []byte }
 	v, err, _ := fs.sf.Do(key, func() (any, error) {
 		urls, rsize := []string{url}, size
@@ -491,12 +521,17 @@ func (fs *FS) remoteBlockURL(p string, size, mtime int64, idx int64, cache bool,
 			return nil, err
 		}
 		h := fs.c.HashBlock(data)
-		if known := fs.mdb.Hash(p, size, mtime, idx); known != nil && !bytes.Equal(known, h) {
-			// the same size but other content: replaced since
-			fs.invalidate(parentOf(p))
-			return nil, fmt.Errorf("%s changed remotely (block %d differs): %w", p, idx, syscall.ESTALE)
+		fs.cachePublishMu.RLock()
+		if epoch == fs.cacheEpoch {
+			if known := fs.mdb.Hash(p, size, mtime, idx); known != nil && !bytes.Equal(known, h) {
+				fs.cachePublishMu.RUnlock()
+				fs.invalidate(parentOf(p))
+				return nil, fmt.Errorf("%s changed remotely (block %d differs): %w", p, idx, syscall.ESTALE)
+			}
+			fs.mdb.SetHash(p, size, mtime, int(idx), h)
 		}
-		fs.mdb.SetHash(p, size, mtime, int(idx), h)
+		fs.cachePublishMu.RUnlock()
+
 		if cache {
 			fs.cache.Put(h, data)
 		}
@@ -512,7 +547,8 @@ func (fs *FS) remoteBlockURL(p string, size, mtime int64, idx int64, cache bool,
 // prefetch starts downloading the blocks after from that aren't cached, as
 // far as the read-ahead window and the free prefetch slots allow. It never
 // waits: the downloads run on their own.
-func (fs *FS) prefetch(p string, size, mtime int64, from int64) {
+func (fs *FS) prefetch(p string, size, mtime, from int64) {
+	epoch := fs.contentEpoch()
 	to := min(from+int64(fs.opt.ReadAhead), int64(fs.numBlocks(size)))
 	var want []int64
 	for i := from; i < to; i++ {
@@ -520,7 +556,7 @@ func (fs *FS) prefetch(p string, size, mtime int64, from int64) {
 			want = append(want, i)
 		}
 	}
-	key := func(i int64) string { return fmt.Sprintf("blk:%s@%d.%d#%d", p, size, mtime, i) }
+	key := func(i int64) string { return fmt.Sprintf("blk:%s@%d.%d#%d!%d", p, size, mtime, i, epoch) }
 	var got []int64
 	fs.mu.Lock()
 	for _, i := range want {
@@ -554,7 +590,7 @@ func (fs *FS) prefetch(p string, size, mtime int64, from int64) {
 			}
 			go func(i int64, url string) {
 				defer done(i)
-				_, _, _ = fs.remoteBlockURL(p, size, mtime, i, true, url)
+				_, _, _ = fs.remoteBlockAtEpoch(p, size, mtime, i, true, url, epoch)
 			}(i, urls[i-first])
 		}
 	}()
@@ -708,7 +744,22 @@ func (t *readTracker) sequential(p string, idx int64) bool {
 
 // ---------- writes ----------
 
+func reservedPath(p string) bool {
+	for i, component := range strings.Split(clean(p), "/") {
+		if component == KeepName || i == 0 && component == MetaDir {
+			return true
+		}
+	}
+	return false
+}
+
 func (fs *FS) checkPath(p string) error {
+	if reservedPath(p) {
+		return fmt.Errorf("cannot store %q: this name is reserved for modalfs metadata; choose a different name: %w", p, syscall.EACCES)
+	}
+	if !utf8.ValidString(p) || strings.IndexByte(p, 0) >= 0 {
+		return fmt.Errorf("cannot store %q: filename paths must be valid UTF-8 without NUL bytes so Modal and the local write journal can preserve their exact identity: %w", p, syscall.EINVAL)
+	}
 	_, err := fs.c.Path(p)
 	if err != nil {
 		fs.log.Error("cannot store path", "path", p, "err", err)
@@ -718,47 +769,71 @@ func (fs *FS) checkPath(p string) error {
 }
 
 func (fs *FS) getState(p string, create bool) (*fileState, error) {
+	if p == "" {
+		return nil, syscall.EISDIR
+	}
 	if err := fs.checkPath(p); err != nil {
 		return nil, err
 	}
-	fs.mu.Lock()
-	st := fs.files[p]
-	fs.mu.Unlock()
-	if st != nil {
-		return st, nil
-	}
-	if fs.opt.ReadOnly {
-		return nil, syscall.EROFS
-	}
-	e, err := fs.remoteStat(p, true)
-	exists := true
-	if errors.Is(err, os.ErrNotExist) {
-		if !create {
-			return nil, os.ErrNotExist
+	for {
+		fs.mu.Lock()
+		st := fs.files[p]
+		fs.mu.Unlock()
+		if st != nil {
+			return st, nil
 		}
-		exists = false
-		if _, perr := fs.dirStat(parentOf(p)); perr != nil {
-			return nil, perr
+		if fs.opt.ReadOnly {
+			return nil, syscall.EROFS
 		}
-	} else if err != nil {
-		return nil, err
-	} else if e.IsDir {
+		dir, name := parentOf(p), path.Base(p)
+		key, err := fs.nameKey(name)
+		if err != nil {
+			return nil, err
+		}
+		snapshot, err := fs.freshNames(dir, key)
+		if err != nil {
+			return nil, err
+		}
+		st, err = fs.stateFromNameSnapshot(p, create, key, snapshot)
+		if errors.Is(err, errNameChanged) {
+			continue
+		}
+		return st, err
+	}
+}
+
+func (fs *FS) stateFromNameSnapshot(p string, create bool, key string, snapshot nameSnapshot) (*fileState, error) {
+	dir, name := parentOf(p), path.Base(p)
+	defer fs.releaseNameSnapshot(dir, key, snapshot)
+	e, exists := snapshot.entries[name]
+	if !exists && !create {
+		return nil, os.ErrNotExist
+	}
+	if e.IsDir {
 		return nil, syscall.EISDIR
-	} else if why := specialEntry(e); why != nil {
-		fs.unsupported(p, "change", why) // before anything is kept that couldn't be committed
-		return nil, why
+	}
+	if exists {
+		if why := specialEntry(e); why != nil {
+			fs.unsupported(p, "change", why)
+			return nil, why
+		}
 	}
 	fs.mu.Lock()
-	defer fs.mu.Unlock()
 	if st := fs.files[p]; st != nil {
+		fs.mu.Unlock()
 		return st, nil
 	}
-	fs.nextID++
-	st = newFileState(fs, p, fmt.Sprintf("%d-%d", time.Now().UnixNano(), fs.nextID), exists, e)
-	if m := fs.mdb.Get(p, e.Size, e.Mtime); exists && m != nil {
-		st.sure = m.Hashes // known before the edit began: the base's own
+	if !fs.selectionCurrentLocked(nameSelection{snapshot: snapshot}) {
+		fs.mu.Unlock()
+		return nil, errNameChanged
 	}
-	fs.files[p] = st
+	if fs.rawNameAmbiguousLocked(dir, name, key, snapshot) {
+		fs.mu.Unlock()
+		return nil, fs.nameProblem(dir, key, nameCollision, fmt.Sprintf("cannot start writing %q: another file has the same client filename", p))
+	}
+	fs.clearNameCollisionLocked(dir, key)
+	st := fs.newStateLocked(p, exists, e, key)
+	fs.mu.Unlock()
 	return st, nil
 }
 
@@ -796,12 +871,22 @@ func (fs *FS) Create(p string, exclusive bool) error {
 }
 
 func (fs *FS) WriteAt(p string, data []byte, off int64) (int, error) {
+	return fs.writeAt(p, data, off, true)
+}
+
+// WriteExistingAt is for a bound kernel file identity. A remote deletion
+// must not turn a later write into implicit creation or zero-filled data.
+func (fs *FS) WriteExistingAt(p string, data []byte, off int64) (int, error) {
+	return fs.writeAt(p, data, off, false)
+}
+
+func (fs *FS) writeAt(p string, data []byte, off int64, create bool) (int, error) {
 	p = clean(p)
 	if fs.isJunk(p) && !fs.opt.ReadOnly {
-		return fs.ephWrite(p, data, off), nil
+		return fs.ephWrite(p, data, off)
 	}
 	for {
-		st, err := fs.getState(p, true)
+		st, err := fs.getState(p, create)
 		if err != nil {
 			return 0, err
 		}
@@ -914,7 +999,9 @@ func (fs *FS) Close() error {
 
 // ---------- namespace ops ----------
 
-func (fs *FS) Mkdir(p string) error {
+func (fs *FS) Mkdir(p string) error { return fs.mkdir(p, nil) }
+
+func (fs *FS) mkdir(p string, beforeMutation func() error) error {
 	p = clean(p)
 	if err := fs.checkPath(p); err != nil {
 		return err
@@ -928,13 +1015,20 @@ func (fs *FS) Mkdir(p string) error {
 	if _, err := fs.dirStat(parentOf(p)); err != nil {
 		return err
 	}
+	if beforeMutation != nil {
+		if err := beforeMutation(); err != nil {
+			return err
+		}
+	}
 	_, err := fs.c.Put(fs.ctx, []modalapi.PutFile{{Path: path.Join(p, KeepName), Size: 0}})
 	fs.invalidate(parentOf(p))
 	fs.invalidate(p)
 	return err
 }
 
-func (fs *FS) Remove(p string) error {
+func (fs *FS) Remove(p string) error { return fs.remove(p, nil) }
+
+func (fs *FS) remove(p string, beforeMutation func() error) error {
 	p = clean(p)
 	if fs.opt.ReadOnly {
 		return syscall.EROFS
@@ -964,12 +1058,52 @@ func (fs *FS) Remove(p string) error {
 			}
 		}
 		fs.mu.Unlock()
+	}
+	// A commit keeps its state discoverable until sidecar publication ends.
+	// Wait for that writer before purging metadata, so nothing from the old
+	// object can publish after this deletion or delete a recreated successor.
+	if !a.IsDir {
+		for {
+			fs.mu.Lock()
+			st := fs.files[p]
+			fs.mu.Unlock()
+			if st == nil {
+				break
+			}
+			st.commitMu.Lock()
+			fs.mu.Lock()
+			current := fs.files[p] == st
+			fs.mu.Unlock()
+			if current {
+				defer st.commitMu.Unlock()
+				break
+			}
+			st.commitMu.Unlock()
+		}
+	}
+	// Do this before discarding a journal or announcing a data mutation.
+	// Deletion also invalidates old descendant mappings of an empty folder:
+	// no future recreation may inherit them, even with equal size/mtime.
+	if err := fs.forgetContent(p); err != nil {
+		return err
+	}
+	if err := fs.purgeContentSidecars(p); err != nil {
+		return err
+	}
+	if beforeMutation != nil {
+		if err := beforeMutation(); err != nil {
+			return err
+		}
+	}
+	defer fs.finishContentMutation(p)
+	if a.IsDir {
 		err = fs.refused(p, "deleted", fs.c.Remove(fs.ctx, p, true))
 		fs.ephDropTree(p)
 	} else {
 		fs.mu.Lock()
 		st := fs.files[p]
 		delete(fs.files, p)
+		fs.removeLocalNameLocked(p)
 		fs.mu.Unlock()
 		remoteExists := true
 		if st != nil {
@@ -984,8 +1118,6 @@ func (fs *FS) Remove(p string) error {
 				fs.unsupported(p, "delete", err)
 			}
 		}
-		fs.mdb.Delete(p)
-		go func() { _ = fs.c.Remove(fs.ctx, fs.sidecarPath(p), false) }()
 	}
 	fs.invalidate(parentOf(p))
 	fs.invalidateTree(p)
@@ -1014,6 +1146,36 @@ func (fs *FS) dropEmptyCopy(dir string) {
 
 func (fs *FS) Rename(oldp, newp string) (err error) {
 	oldp, newp = clean(oldp), clean(newp)
+	destinationAttempted := false
+	prepared := false
+	preparePublication := func() error {
+		if prepared {
+			return nil
+		}
+		if e := fs.purgeContentSidecars(oldp, newp); e != nil {
+			return e
+		}
+		if err := fs.forgetContent(oldp, newp); err != nil {
+			return err
+		}
+		prepared = true
+		return nil
+	}
+	defer func() {
+		if destinationAttempted {
+			fs.finishContentMutation(oldp, newp)
+		}
+		if !destinationAttempted || err == nil {
+			return
+		}
+		// Copy and Remove are separate Modal calls. A failed Remove does not
+		// undo a published destination, and transport failures are uncertain.
+		fs.invalidate(parentOf(oldp))
+		fs.invalidateTree(oldp)
+		fs.invalidate(parentOf(newp))
+		fs.invalidateTree(newp)
+		err = &renameDestinationError{cause: err}
+	}()
 	defer func() {
 		fs.refused(oldp, "moved", err)
 		fs.unsupported(oldp, "move", err)
@@ -1065,7 +1227,13 @@ func (fs *FS) Rename(oldp, newp string) (err error) {
 			return syscall.ENOTDIR
 		}
 		if dst.IsDir {
-			if err := fs.Remove(newp); err != nil { // must be empty
+			if err := fs.remove(newp, func() error {
+				if e := preparePublication(); e != nil {
+					return e
+				}
+				destinationAttempted = true
+				return nil
+			}); err != nil { // must be empty
 				return err
 			}
 		}
@@ -1083,6 +1251,10 @@ func (fs *FS) Rename(oldp, newp string) (err error) {
 		}
 		// VolumeCopyFiles2 is a manifest-level copy (O(#blocks), no data
 		// transfer) and atomically replaces an existing destination file.
+		if err := preparePublication(); err != nil {
+			return err
+		}
+		destinationAttempted = true
 		if err := fs.c.Copy(fs.ctx, []string{oldp}, newp, false); err != nil {
 			if why := fs.explain(oldp, err); why != err {
 				return why
@@ -1093,6 +1265,7 @@ func (fs *FS) Rename(oldp, newp string) (err error) {
 			fs.mu.Lock()
 			if fs.files[newp] == old {
 				delete(fs.files, newp)
+				fs.removeLocalNameLocked(newp)
 			}
 			fs.mu.Unlock()
 			old.discard()
@@ -1100,11 +1273,7 @@ func (fs *FS) Rename(oldp, newp string) (err error) {
 		if err := fs.c.Remove(fs.ctx, oldp, false); err != nil && !modalapi.IsNotFound(err) {
 			return err
 		}
-		go func() {
-			if err := fs.c.Copy(fs.ctx, []string{fs.sidecarPath(oldp)}, fs.sidecarPath(newp), false); err == nil {
-				_ = fs.c.Remove(fs.ctx, fs.sidecarPath(oldp), false)
-			}
-		}()
+
 	} else {
 		// Directory copy semantics are `cp -r src... dstdir/`; so create the
 		// destination dir and copy the children into it. All of them: one
@@ -1113,6 +1282,10 @@ func (fs *FS) Rename(oldp, newp string) (err error) {
 		if err != nil {
 			return err
 		}
+		if err := preparePublication(); err != nil {
+			return err
+		}
+		destinationAttempted = true
 		if _, err := fs.c.Put(fs.ctx, []modalapi.PutFile{{Path: path.Join(newp, KeepName), Size: 0}}); err != nil {
 			return err
 		}
@@ -1135,7 +1308,6 @@ func (fs *FS) Rename(oldp, newp string) (err error) {
 			return err
 		}
 	}
-	fs.mdb.Rename(oldp, newp)
 	fs.ephMoveTree(oldp, newp)
 	fs.invalidate(parentOf(oldp))
 	fs.invalidate(parentOf(newp))

@@ -29,7 +29,7 @@ func hashOf(s string) []byte {
 	return h[:]
 }
 
-// Hashes recorded with SetHash are seen at once, and written out on Close.
+// Batched hashes are immediately visible, but no earlier open is trusted.
 func TestManifestBatchedSetHash(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "manifests.db")
 	d, err := openManifestDB(p, "vo-1")
@@ -55,8 +55,8 @@ func TestManifestBatchedSetHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	if h := d.Hash("a", size, 7, 1); !bytes.Equal(h, hashOf("b1")) {
-		t.Fatal("hash lost over Close")
+	if h := d.Hash("a", size, 7, 1); h != nil {
+		t.Fatal("hash from an earlier open was reused")
 	}
 }
 
@@ -93,9 +93,9 @@ func TestManifestGetCopy(t *testing.T) {
 	}
 }
 
-// Manifests evicted from memory, pending or not, are still found in the DB;
-// Delete and Rename see pending ones.
-func TestManifestEvictDeleteRename(t *testing.T) {
+// Manifests evicted from memory can be loaded during the same open;
+// Delete also sees pending ones.
+func TestManifestEvictDelete(t *testing.T) {
 	d, err := openManifestDB(filepath.Join(t.TempDir(), "m.db"), "vo-1")
 	if err != nil {
 		t.Fatal(err)
@@ -112,11 +112,6 @@ func TestManifestEvictDeleteRename(t *testing.T) {
 		if h := d.Hash(fmt.Sprintf("d/f%d", i), 10, 1, 0); !bytes.Equal(h, hashOf(fmt.Sprint(i))) {
 			t.Fatalf("f%d lost after eviction", i)
 		}
-	}
-	d.SetHash("d/f1", 10, 1, 0, hashOf("new"))
-	d.Rename("d", "e")
-	if d.Hash("d/f1", 10, 1, 0) != nil || !bytes.Equal(d.Hash("e/f1", 10, 1, 0), hashOf("new")) {
-		t.Fatal("rename lost a pending hash or left the old path")
 	}
 	d.SetHash("e/f2", 10, 1, 0, hashOf("x"))
 	d.Delete("e/f2")
@@ -141,5 +136,28 @@ func TestManifestDBRebuilt(t *testing.T) {
 	defer d.Close()
 	if m, _ := filepath.Glob(p + ".broken-*"); len(m) != 1 {
 		t.Fatalf("broken DB not kept aside: %v", m)
+	}
+}
+
+func TestManifestDeleteTreeDropsOnlyDestination(t *testing.T) {
+	d, err := openManifestDB(filepath.Join(t.TempDir(), "manifests.db"), "volume")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	for _, p := range []string{"target", "target/child", "target-other"} {
+		d.SetHash(p, 10, 1, 0, hashOf(p))
+	}
+	d.mu.Lock()
+	d.flushLocked()
+	d.mu.Unlock()
+	d.DeleteTree("target")
+	for _, p := range []string{"target", "target/child"} {
+		if hash := d.Hash(p, 10, 1, 0); hash != nil {
+			t.Fatalf("%s survived", p)
+		}
+	}
+	if hash := d.Hash("target-other", 10, 1, 0); !bytes.Equal(hash, hashOf("target-other")) {
+		t.Fatal("neighboring path removed")
 	}
 }

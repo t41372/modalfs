@@ -318,11 +318,18 @@ func TestFilesystemMetadata(t *testing.T) {
 			}
 			refuse("symlink", true, func() error { return os.Symlink("target", p("new-link")) })
 			refuse("hard link", true, func() error { return os.Link(p("target"), p("new-hard")) })
-			if err := syscall.Unlink(p("socket-remove")); err != nil {
+			if err := os.Rename(p("socket-remove"), p("moved-socket")); err != nil {
+				t.Fatalf("socket rename supported by API was refused: %v", err)
+			}
+			if st, err := os.Lstat(p("moved-socket")); err != nil || st.Mode()&os.ModeSocket == 0 {
+				t.Fatalf("socket rename lost its type: %v, %v", st, err)
+			}
+			art.step("rename socket", "succeeded; public API supports socket copy and removal", nil)
+			if err := syscall.Unlink(p("moved-socket")); err != nil {
 				t.Fatalf("socket unlink supported by API was refused: %v", err)
 			}
 			art.step("unlink socket", "succeeded; public API supports socket removal", nil)
-			for _, name := range []string{"moved", "moved-tree", "new-link", "new-hard"} {
+			for _, name := range []string{"moved", "moved-tree", "new-link", "new-hard", "moved-socket"} {
 				if _, err := os.Lstat(p(name)); !os.IsNotExist(err) {
 					t.Fatalf("refusal left %s: %v\n%s", name, err, d.logs.String())
 				}

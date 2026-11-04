@@ -42,7 +42,7 @@ func TestNFSEndToEnd(t *testing.T) {
 	v := newFS()
 	l, _ := net.Listen("tcp", "127.0.0.1:0")
 	go Serve(l, v, false)
-	rc, err := rpc.DialTCP("tcp", l.Addr().String(), false)
+	rc, err := dialTestRPC(l.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}

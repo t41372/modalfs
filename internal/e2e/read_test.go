@@ -174,9 +174,9 @@ func TestStreamingReadThroughput(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		t0 := time.Now()
-		var got []byte
+		got := make([]byte, 0, len(data))
 		buf := make([]byte, MiB)
+		t0 := time.Now()
 		for {
 			n, err := f.Read(buf)
 			got = append(got, buf[:n]...)
@@ -187,7 +187,8 @@ func TestStreamingReadThroughput(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		return sum(got), float64(len(got)) / MiB / time.Since(t0).Seconds()
+		elapsed := time.Since(t0)
+		return sum(got), float64(len(got)) / MiB / elapsed.Seconds()
 	}
 
 	h, cold := read(false)

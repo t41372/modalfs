@@ -6,10 +6,12 @@ import (
 	"errors"
 	"hash/fnv"
 	"io"
+	"math"
 	"net"
 	"os"
 	"path"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/go-git/go-billy/v5"
@@ -30,10 +32,12 @@ type billyFS struct {
 	fs       *vfs.FS
 	ro       bool
 	uid, gid uint32
+	identity func(string) uint64
 }
 
 type fileInfo struct {
 	a        vfs.Attr
+	id       uint64
 	path     string
 	uid, gid uint32
 }
@@ -44,15 +48,23 @@ func (fi fileInfo) Mode() os.FileMode  { return fi.a.Mode }
 func (fi fileInfo) ModTime() time.Time { return fi.a.Mtime }
 func (fi fileInfo) IsDir() bool        { return fi.a.IsDir }
 func (fi fileInfo) Sys() any {
-	h := fnv.New64a()
-	h.Write([]byte(fi.path))
-	return &nfsfile.FileInfo{Nlink: 1, UID: fi.uid, GID: fi.gid, Fileid: h.Sum64()}
+	id := fi.id
+	if id == 0 {
+		h := fnv.New64a()
+		h.Write([]byte(fi.path))
+		id = h.Sum64()
+	}
+	return &nfsfile.FileInfo{Nlink: 1, UID: fi.uid, GID: fi.gid, Fileid: id}
 }
 
 func norm(p string) string { return strings.Trim(path.Clean("/"+p), "/") }
 
 func (b *billyFS) info(p string, a vfs.Attr) os.FileInfo {
-	return fileInfo{a: a, path: p, uid: b.uid, gid: b.gid}
+	var id uint64
+	if b.identity != nil {
+		id = b.identity(p)
+	}
+	return fileInfo{a: a, id: id, path: p, uid: b.uid, gid: b.gid}
 }
 
 func (b *billyFS) Capabilities() billy.Capability {
@@ -130,7 +142,7 @@ func (b *billyFS) TempFile(dir, prefix string) (billy.File, error) {
 
 func (b *billyFS) ReadDir(name string) ([]os.FileInfo, error) {
 	p := norm(name)
-	as, err := b.fs.ReadDir(p)
+	as, err := b.fs.Names().ReadDirLimit(p, nfs.PathNameMax)
 	if err != nil {
 		return nil, err
 	}
@@ -167,6 +179,44 @@ func (b *billyFS) Chroot(_ string) (billy.Filesystem, error) {
 }
 func (b *billyFS) Root() string { return "/" }
 
+// Named operations are separate from raw handle operations. Their results
+// contain the actual stored path, which the NFS handler pins in its handle.
+func (b *billyFS) LookupNamed(parent, name string) (string, os.FileInfo, error) {
+	p, a, err := b.fs.Names().Lookup(parent, name)
+	if err != nil {
+		return "", nil, err
+	}
+	return p, b.info(p, a), nil
+}
+func (b *billyFS) CreateNamed(parent, name string, exclusive bool, size *uint64, guard func(string, bool) func(error)) (string, os.FileInfo, error) {
+	var target *int64
+	if size != nil {
+		if *size > math.MaxInt64 {
+			return "", nil, syscall.EFBIG
+		}
+		v := int64(*size)
+		target = &v
+	}
+	p, a, err := b.fs.Names().WithClientNameLimit(nfs.PathNameMax).CreateGuarded(parent, name, exclusive, target, guard)
+	if err != nil {
+		return "", nil, err
+	}
+	return p, b.info(p, a), nil
+}
+func (b *billyFS) MkdirNamed(parent, name string, guard func(string) func(error)) (string, os.FileInfo, error) {
+	p, a, err := b.fs.Names().WithClientNameLimit(nfs.PathNameMax).MkdirGuarded(parent, name, guard)
+	if err != nil {
+		return "", nil, err
+	}
+	return p, b.info(p, a), nil
+}
+func (b *billyFS) RemoveNamed(parent, name string, guard func(string) func(error)) (string, error) {
+	return b.fs.Names().RemoveGuarded(parent, name, guard)
+}
+func (b *billyFS) RenameNamed(oldParent, oldName, newParent, newName string, guard func(string, string) func(error)) (string, string, error) {
+	return b.fs.Names().WithClientNameLimit(nfs.PathNameMax).RenameGuarded(oldParent, oldName, newParent, newName, guard)
+}
+
 // billy.Change: Modal Volumes do not store owner or settable mtimes; accept
 // and ignore so that tools like cp -p / rsync / editors do not fail.
 func (b *billyFS) Chmod(string, os.FileMode) error            { return nil }
@@ -200,7 +250,7 @@ func (f *file) Write(b []byte) (int, error) {
 			f.pos = a.Size
 		}
 	}
-	n, err := f.fs.WriteAt(f.p, b, f.pos)
+	n, err := f.fs.WriteExistingAt(f.p, b, f.pos)
 	f.pos += int64(n)
 	return n, err
 }

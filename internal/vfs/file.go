@@ -331,6 +331,7 @@ func (st *fileState) dropIfUnchangedLocked() {
 	st.fs.mu.Lock()
 	if st.fs.files[st.path] == st {
 		delete(st.fs.files, st.path)
+		st.fs.removeLocalNameLocked(st.path)
 	}
 	st.fs.mu.Unlock()
 }
@@ -900,6 +901,16 @@ func (st *fileState) commit(part bool) error {
 		return nil
 	}
 	put := func(to string, check func() error) (int, error) {
+		if err := fs.forgetContent(to); err != nil {
+			return 0, err
+		}
+		// A replacement sidecar is optional and can fail. Remove the old
+		// one before publishing data, even if this commit won't write one:
+		// equal size/second-mtime must not make its old hashes authoritative.
+		if err := fs.purgeContentSidecars(to); err != nil {
+			return 0, err
+		}
+		defer fs.finishContentMutation(to)
 		return fs.c.PutChecked(fs.ctx, []modalapi.PutFile{{
 			Path: to, Size: sn.size, Hashes: hashes,
 			Block: func(i int) ([]byte, error) { return st.readSnapshotBlock(sn, int64(i)) },
@@ -945,16 +956,26 @@ func (st *fileState) commit(part bool) error {
 		return fmt.Errorf("stat after commit: %w", err)
 	}
 	m := &manifest{Size: sn.size, Mtime: e.Mtime, Hashes: hashes}
-	fs.mdb.Put(target, m)
+	fs.publishManifest(target, m)
 	if target != path {
 		st.conflictCopy, st.copySize, st.copyMtime = target, sn.size, e.Mtime
 	}
 
+	// Keep this state discoverable until its optional sidecar finishes.
+	// Rename's existing Flush/commitMu guards can then fence old writers.
+	st.mu.Lock()
+	sidecarEligible := !st.deleted && st.gen == sn.gen && !sn.part
+	st.mu.Unlock()
+	if fs.opt.SidecarMin > 0 && sn.size >= fs.opt.SidecarMin && sidecarEligible {
+		if e := fs.writeSidecar(target, m); e != nil {
+			fs.log.Warn("sidecar write failed", "path", target, "err", e)
+		}
+	}
 	st.mu.Lock()
 	committed = true
 	deleted := st.deleted
 	st.finishCommitLocked(sn, target, e.Mtime, hashes)
-	finished := st.removed // nothing written since the snapshot
+	finished := st.removed
 	st.mu.Unlock()
 
 	if deleted {
@@ -965,13 +986,7 @@ func (st *fileState) commit(part bool) error {
 		fs.invalidate(parentOf(target))
 		return nil
 	}
-	// A sidecar costs an upload and a commit of its own: write it once the
-	// file is done, not for each part of a long write.
-	if fs.opt.SidecarMin > 0 && sn.size >= fs.opt.SidecarMin && finished {
-		if err := fs.writeSidecar(target, m); err != nil {
-			fs.log.Warn("sidecar write failed", "path", target, "err", err)
-		}
-	}
+
 	n := len(hashes)
 	fs.ctr.uploadedBlocks.Add(int64(uploaded))
 	if sn.part {
@@ -1182,6 +1197,7 @@ func (st *fileState) finishCommitLocked(sn *snapshot, target string, mtime int64
 		fs.mu.Lock()
 		if fs.files[st.path] == st {
 			delete(fs.files, st.path)
+			fs.removeLocalNameLocked(st.path)
 		}
 		fs.mu.Unlock()
 		return
@@ -1411,6 +1427,7 @@ meta.json describes the file. The file was %d bytes long.
 	fs.mu.Lock()
 	if fs.files[st.path] == st {
 		delete(fs.files, st.path)
+		fs.removeLocalNameLocked(st.path)
 	}
 	fs.mu.Unlock()
 	fs.log.Error("unsaved changes set aside", "path", st.path, "kept_in", dest, "why", why)

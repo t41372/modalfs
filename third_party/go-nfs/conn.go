@@ -215,7 +215,15 @@ func (c *conn) handle(ctx context.Context, w *response) error {
 		}
 		return c.err(ctx, w, &ResponseCodeProcUnavailableError{})
 	}
-	appError := handler(ctx, w, c.Server.Handler)
+	userHandler := c.Server.Handler
+	if scopes, ok := userHandler.(RequestScopes); ok {
+		var finish func()
+		userHandler, finish = scopes.BeginRequest(w.req.Header)
+		if finish != nil {
+			defer finish()
+		}
+	}
+	appError := handler(ctx, w, userHandler)
 	if drainErr := w.drain(ctx); drainErr != nil {
 		return drainErr
 	}

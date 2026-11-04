@@ -63,3 +63,58 @@ func TestHandlesAreStable(t *testing.T) {
 		t.Fatal("another server's handle resolves")
 	}
 }
+
+func TestRawHandlesKeepDifferentUnicodeFilesDistinct(t *testing.T) {
+	h := newHandler(nil)
+	a := h.ToHandle(nil, []string{"café"})
+	b := h.ToHandle(nil, []string{"cafe\u0301"})
+	if bytes.Equal(a, b) {
+		t.Fatal("different raw files shared a handle")
+	}
+	_, p, err := h.FromHandle(a)
+	if err != nil || len(p) != 1 || p[0] != "café" {
+		t.Fatalf("raw identity lost: %q %v", p, err)
+	}
+}
+
+func TestInvalidatedHandleNeverRevives(t *testing.T) {
+	h := newHandler(nil)
+	old := h.ToHandle(nil, []string{"file"})
+	if err := h.InvalidateHandle(nil, old); err != nil {
+		t.Fatal(err)
+	}
+	next := h.ToHandle(nil, []string{"file"})
+	if bytes.Equal(old, next) {
+		t.Fatal("new path lookup revived the invalidated handle")
+	}
+	if _, _, err := h.FromHandle(old); err == nil {
+		t.Fatal("old handle became usable again")
+	}
+}
+
+func TestRenameRelocatesDescendantsAndKeepsFileIDs(t *testing.T) {
+	h := newHandler(nil)
+	source := h.ToHandle(nil, []string{"source", "nested", "file"})
+	overwritten := h.ToHandle(nil, []string{"destination", "old"})
+	id := binary.BigEndian.Uint64(source[:8])
+	h.Renamed(nil, []string{"source"}, []string{"destination"})
+	_, parts, err := h.FromHandle(source)
+	if err != nil || len(parts) != 3 || parts[0] != "destination" {
+		t.Fatalf("source identity not relocated: %q %v", parts, err)
+	}
+	if got := h.fileID("destination/nested/file"); got != id {
+		t.Fatalf("file ID changed: %d -> %d", id, got)
+	}
+	h.ToHandle(nil, []string{"destination", "old"})
+	if _, _, err := h.FromHandle(overwritten); err == nil {
+		t.Fatal("overwritten destination handle revived")
+	}
+	successor := h.ToHandle(nil, []string{"source", "nested", "file"})
+	if bytes.Equal(source, successor) {
+		t.Fatal("recreated old path reused moved source identity")
+	}
+	h.Removed(nil, []string{"destination"})
+	if _, _, err := h.FromHandle(source); err == nil {
+		t.Fatal("removed descendant handle survived")
+	}
+}

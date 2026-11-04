@@ -3,6 +3,7 @@ module github.com/t41372/modalfs
 go 1.27.3
 
 require (
+	github.com/ebitengine/purego v0.11.2
 	github.com/go-git/go-billy/v5 v5.9.2
 	github.com/hanwen/go-fuse/v2 v2.12.1
 	github.com/hashicorp/golang-lru/v2 v2.0.7
@@ -17,6 +18,7 @@ require (
 	golang.org/x/sync v0.24.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.47.0
+	golang.org/x/text v0.43.0
 	google.golang.org/grpc v1.85.0
 	google.golang.org/protobuf v1.36.12
 )
@@ -37,7 +39,6 @@ require (
 	github.com/rasky/go-xdr v0.0.0-20170124162913-1a41d1a06c93 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	golang.org/x/net v0.62.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261026165753-2ffab32bce7e // indirect
 )
 

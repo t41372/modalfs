@@ -34,7 +34,8 @@ func onMkdir(ctx context.Context, w *response, userHandle Handler) error {
 		return &NFSStatusError{NFSStatusROFS, os.ErrPermission}
 	}
 
-	if len(string(obj.Filename)) > PathNameMax {
+	_, named := fs.(NamedOperations)
+	if !named && len(string(obj.Filename)) > PathNameMax {
 		return &NFSStatusError{NFSStatusNameTooLong, os.ErrInvalid}
 	}
 	if string(obj.Filename) == "." || string(obj.Filename) == ".." {
@@ -43,20 +44,34 @@ func onMkdir(ctx context.Context, w *response, userHandle Handler) error {
 
 	newFolder := append(path, string(obj.Filename))
 	newFolderPath := fs.Join(newFolder...)
-	if s, err := fs.Stat(newFolderPath); err == nil {
-		if s.IsDir() {
-			return &NFSStatusError{NFSStatusExist, nil}
+	if names, ok := fs.(NamedOperations); ok {
+		var guard func(string) func(error)
+		if identities, ok := userHandle.(NamespaceGuards); ok {
+			guard = func(raw string) func(error) { return identities.GuardMkdir(fs, splitFSPath(raw)) }
 		}
+		raw, _, mkdirErr := names.MkdirNamed(fs.Join(path...), string(obj.Filename), guard)
+		if mkdirErr != nil {
+			return &NFSStatusError{statusFromNamedError(mkdirErr), mkdirErr}
+		}
+		newFolderPath = raw
+		newFolder = splitFSPath(raw)
 	} else {
-		if s, err := fs.Stat(fs.Join(path...)); err != nil {
-			return &NFSStatusError{NFSStatusAccess, err}
-		} else if !s.IsDir() {
-			return &NFSStatusError{NFSStatusNotDir, nil}
+		if s, err := fs.Stat(newFolderPath); err == nil {
+			if s.IsDir() {
+				return &NFSStatusError{NFSStatusExist, nil}
+			}
+		} else {
+			if s, err := fs.Stat(fs.Join(path...)); err != nil {
+				return &NFSStatusError{NFSStatusAccess, err}
+			} else if !s.IsDir() {
+				return &NFSStatusError{NFSStatusNotDir, nil}
+			}
 		}
-	}
 
-	if err := fs.MkdirAll(newFolderPath, attrs.Mode(mkdirDefaultMode)); err != nil {
-		return &NFSStatusError{statusFromNameError(err, NFSStatusAccess), err}
+		if err := fs.MkdirAll(newFolderPath, attrs.Mode(mkdirDefaultMode)); err != nil {
+			return &NFSStatusError{statusFromNameError(err, NFSStatusAccess), err}
+		}
+
 	}
 
 	fp := userHandle.ToHandle(fs, newFolder)

@@ -41,7 +41,8 @@ func onRename(ctx context.Context, w *response, userHandle Handler) error {
 		return &NFSStatusError{NFSStatusROFS, os.ErrPermission}
 	}
 
-	if len(string(from.Filename)) > PathNameMax || len(string(to.Filename)) > PathNameMax {
+	_, named := fs.(NamedOperations)
+	if !named && (len(string(from.Filename)) > PathNameMax || len(string(to.Filename)) > PathNameMax) {
 		return &NFSStatusError{NFSStatusNameTooLong, os.ErrInvalid}
 	}
 
@@ -71,13 +72,27 @@ func onRename(ctx context.Context, w *response, userHandle Handler) error {
 	}
 	preDestData := ToFileAttribute(toDirInfo, toDirPath).AsCache()
 
-	oldHandle := userHandle.ToHandle(fs, append(fromPath, string(from.Filename)))
-
 	fromLoc := fs.Join(append(fromPath, string(from.Filename))...)
 	toLoc := fs.Join(append(toPath, string(to.Filename))...)
 
-	err = fs.Rename(fromLoc, toLoc)
+	var guarded bool
+	if names, ok := fs.(NamedOperations); ok {
+		var guard func(string, string) func(error)
+		if identities, ok := userHandle.(NamespaceGuards); ok {
+			guarded = true
+			guard = func(oldRaw, newRaw string) func(error) {
+				return identities.GuardRename(fs, splitFSPath(oldRaw), splitFSPath(newRaw))
+			}
+		}
+		fromLoc, toLoc, err = names.RenameNamed(fromDirPath, string(from.Filename), toDirPath, string(to.Filename), guard)
+	} else {
+		err = fs.Rename(fromLoc, toLoc)
+	}
 	if err != nil {
+
+		if named {
+			return &NFSStatusError{statusFromNamedError(err), err}
+		}
 		if os.IsNotExist(err) {
 			return &NFSStatusError{NFSStatusNoEnt, err}
 		}
@@ -87,8 +102,11 @@ func onRename(ctx context.Context, w *response, userHandle Handler) error {
 		return &NFSStatusError{statusFromNameError(err, NFSStatusIO), err}
 	}
 
-	if err := userHandle.InvalidateHandle(fs, oldHandle); err != nil {
-		return &NFSStatusError{NFSStatusServerFault, err}
+	if !guarded {
+		oldHandle := userHandle.ToHandle(fs, splitFSPath(fromLoc))
+		if err := userHandle.InvalidateHandle(fs, oldHandle); err != nil {
+			return &NFSStatusError{NFSStatusServerFault, err}
+		}
 	}
 
 	writer := bytes.NewBuffer([]byte{})
