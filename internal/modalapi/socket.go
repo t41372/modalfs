@@ -10,8 +10,9 @@ import (
 // Uploads may use 32 TCP connections. Autotuning can grow each send queue
 // to several MiB while the uplink drains it. On macOS that can exhaust
 // kernel mbufs and defunct every socket in the daemon, including NFS and
-// HTTP listeners. Bound queued payload to 8 MiB per client's 32 uploads;
-// excess data stays in the existing upload buffers and waits for TCP.
+// HTTP listeners. Request 256 KiB per connection (8 MiB across 32 uploads
+// on macOS; Linux doubles SO_SNDBUF for accounting). Excess data stays in
+// the existing upload buffers and waits for TCP.
 const blockSendBuffer = 256 << 10
 
 func dialBlockConnection(ctx context.Context, network, address string) (net.Conn, error) {

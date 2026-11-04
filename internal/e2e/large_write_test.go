@@ -119,7 +119,7 @@ func probeDaemonCopy(t *testing.T, p *daemonProc, failed context.CancelFunc) fun
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", info.Socket)
 	}}
-	client := &http.Client{Timeout: 5 * time.Second, Transport: transport}
+	client := &http.Client{Timeout: max(5*time.Second, maxStall+time.Second), Transport: transport}
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	for _, surface := range []string{"directory", "unix", "tcp"} {
@@ -169,7 +169,7 @@ func probeDaemonCopy(t *testing.T, p *daemonProc, failed context.CancelFunc) fun
 					}
 				case "tcp":
 					var conn net.Conn
-					conn, err = net.DialTimeout("tcp", u.Host, 2*time.Second)
+					conn, err = net.DialTimeout("tcp", u.Host, maxStall)
 					if err == nil {
 						conn.Close()
 					}
