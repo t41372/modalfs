@@ -182,7 +182,7 @@ func New(cfg Config) (*Client, error) {
 	c := &Client{cfg: cfg, up: newUpSlots()}
 	tr := &http.Transport{
 		Proxy:               http.ProxyFromEnvironment,
-		DialContext:         (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		DialContext:         dialBlockConnection,
 		MaxIdleConnsPerHost: 64,
 		IdleConnTimeout:     90 * time.Second,
 		// HTTP/1.1 only: over HTTP/2 every block shares one connection to
