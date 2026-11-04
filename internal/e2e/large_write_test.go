@@ -211,9 +211,11 @@ func waitRemoteHash(t *testing.T, b backend, name string, size int64, want strin
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
+	var urls []string
 	for {
-		_, got, err := b.client.BlockURLs(ctx, b.vol.ID, name, 0, 1)
+		gotURLs, got, err := b.client.BlockURLs(ctx, b.vol.ID, name, 0, (size+modalapi.BlockSize-1)/modalapi.BlockSize)
 		if err == nil && got == size {
+			urls = gotURLs
 			break
 		}
 		select {
@@ -222,13 +224,13 @@ func waitRemoteHash(t *testing.T, b backend, name string, size int64, want strin
 		case <-time.After(time.Second):
 		}
 	}
+	if wantBlocks := int((size + modalapi.BlockSize - 1) / modalapi.BlockSize); len(urls) != wantBlocks {
+		t.Fatalf("%s: got %d block URLs, want %d", name, len(urls), wantBlocks)
+	}
 	h := sha256.New()
-	for off := int64(0); off < size; off += modalapi.BlockSize {
-		urls, got, err := b.client.BlockURLs(ctx, b.vol.ID, name, off/modalapi.BlockSize, 1)
-		if err != nil || got != size || len(urls) != 1 {
-			t.Fatalf("read %s at %d: size %d; %v", name, off, got, err)
-		}
-		data, err := b.client.Download(ctx, urls[0], int(min(modalapi.BlockSize, size-off)))
+	for i, u := range urls {
+		off := int64(i) * modalapi.BlockSize
+		data, err := b.client.Download(ctx, u, int(min(modalapi.BlockSize, size-off)))
 		if err != nil {
 			t.Fatal(err)
 		}
