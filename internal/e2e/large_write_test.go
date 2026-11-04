@@ -228,15 +228,32 @@ func waitRemoteHash(t *testing.T, b backend, name string, size int64, want strin
 		t.Fatalf("%s: got %d block URLs, want %d", name, len(urls), wantBlocks)
 	}
 	h := sha256.New()
-	for i, u := range urls {
-		off := int64(i) * modalapi.BlockSize
-		data, err := b.client.Download(ctx, u, int(min(modalapi.BlockSize, size-off)))
-		if err != nil {
-			t.Fatal(err)
+	// Four downloads hide WAN round trips without loading the whole file
+	// into RAM. Hash in file order, with at most 32 MiB resident here.
+	for first := 0; first < len(urls); first += 4 {
+		count := min(4, len(urls)-first)
+		blocks := make([][]byte, count)
+		errs := make([]error, count)
+		var wg sync.WaitGroup
+		for j := range count {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				i := first + j
+				off := int64(i) * modalapi.BlockSize
+				blocks[j], errs[j] = b.client.Download(ctx, urls[i], int(min(modalapi.BlockSize, size-off)))
+			}()
 		}
-		h.Write(data)
+		wg.Wait()
+		for j, data := range blocks {
+			if errs[j] != nil {
+				t.Fatalf("verify %s block %d/%d: %v", name, first+j, len(urls), errs[j])
+			}
+			h.Write(data)
+		}
 	}
 	if got := hex.EncodeToString(h.Sum(nil)); got != want {
 		t.Fatalf("%s remote SHA-256 %s, want %s", name, got, want)
 	}
+	t.Logf("verified %s: %d bytes, SHA-256 %s", name, size, want)
 }
