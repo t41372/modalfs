@@ -43,8 +43,9 @@ type backend struct {
 	net    network
 	client *modalapi.Client
 	vol    modalapi.VolumeInfo
-	flags  []string // for modalfs run, before the volume name
-	env    []string // for modalfs run
+	config modalapi.Config // credentials for an isolated daemon's imported profile
+	flags  []string        // for modalfs run, before the volume name
+	env    []string        // for modalfs run
 }
 
 // live reports whether the tests run against real Modal.
@@ -63,7 +64,8 @@ func startBackend(t *testing.T, root string, opt modalfake.Options) backend {
 		t.Fatal(err)
 	}
 	t.Cleanup(fake.Close)
-	client, err := modalapi.New(modalapi.Config{ServerURL: fake.URL, TokenID: "ak-fake", TokenSecret: "as-fake"})
+	cfg := modalapi.Config{ServerURL: fake.URL, TokenID: "ak-fake", TokenSecret: "as-fake"}
+	client, err := modalapi.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +75,7 @@ func startBackend(t *testing.T, root string, opt modalfake.Options) backend {
 		t.Fatal(err)
 	}
 	return backend{
-		net: fake, client: client, vol: vol,
+		net: fake, client: client, vol: vol, config: cfg,
 		env: []string{"MODAL_SERVER_URL=" + fake.URL, "MODAL_TOKEN_ID=ak-fake", "MODAL_TOKEN_SECRET=as-fake", "MODAL_CONFIG_PATH=/dev/null"},
 	}
 }
@@ -112,7 +114,7 @@ func startLive(t *testing.T, profile string, opt modalfake.Options) backend {
 	}
 	p := startProxy(t, cfg.ServerURL, opt.UpBytesPerSec, opt.DownBytesPerSec)
 	return backend{
-		net: p, client: client, vol: vol,
+		net: p, client: client, vol: vol, config: cfg,
 		flags: []string{"-profile", profile},
 		env:   []string{"HTTPS_PROXY=http://" + p.ln.Addr().String(), "NO_PROXY="},
 	}
