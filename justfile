@@ -81,6 +81,14 @@ test-e2e:
 test-e2e-live profile *args:
     MODALFS_E2E_PROFILE={{profile}} go test -tags e2e -count=1 -timeout 60m ./internal/e2e {{args}}
 
+# native multi-file copies, default 20 GiB + 576 MiB; creates and deletes a scratch volume
+test-large-copy-live profile gib="20":
+    MODALFS_E2E_PROFILE={{profile}} MODALFS_E2E_NATIVE_GIB={{gib}} go test -tags e2e -count=1 -timeout 4h -v -run '^TestDaemonLargeNativeCopies$' ./internal/e2e
+
+# sustained writes, default 100 GiB, without a source file on disk; verifies every remote byte
+test-large-stream-live profile gib="100":
+    MODALFS_E2E_PROFILE={{profile}} MODALFS_E2E_STREAM_GIB={{gib}} go test -tags e2e -count=1 -timeout 4h -v -run '^TestDaemonLargeStream$' ./internal/e2e
+
 # Modal behaviour modalfs relies on that Modal doesn't document, checked against real Modal: each test CREATES AND DELETES a scratch volume in the profile's workspace
 test-modal-contract profile *args:
     MODALFS_E2E_PROFILE={{profile}} go test -tags live -count=1 -timeout 15m -v -run Contract ./internal/modalapi {{args}}
