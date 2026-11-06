@@ -194,8 +194,11 @@ func (e *env) launch() {
 // 8m) this saves modalfs's goroutines (SIGQUIT) to a file and forces the
 // mount off, which fails the stuck call. (It can't help if this process
 // itself is frozen; see TestSyncWaitingOnServerDoesNotFreezeTests.)
-func watchForStall(t *testing.T, cmd *exec.Cmd, logs *syncBuffer, mnt string) {
+func watchForStall(t *testing.T, cmd *exec.Cmd, logs *syncBuffer, mnt string, budget ...time.Duration) {
 	after := ciOr(20*time.Minute, 8*time.Minute)
+	if len(budget) != 0 {
+		after = budget[0]
+	}
 	if v := os.Getenv("MODALFS_E2E_STALL"); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {
