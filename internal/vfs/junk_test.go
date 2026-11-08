@@ -1,6 +1,7 @@
 package vfs
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -45,5 +46,21 @@ func TestEphTrim(t *testing.T) {
 	}
 	if len(fs.eph) < 2*ephMaxFiles {
 		t.Fatalf("files in use were dropped: %d left", len(fs.eph))
+	}
+}
+
+// With the filter on, a truncate of a metadata file that exists on Modal
+// changes a local-only copy, as a write to it does; the file on Modal stays.
+func TestTruncateOfRemoteJunkStaysLocal(t *testing.T) {
+	f := newFakeFS(t, Options{WriteBack: time.Hour, MaxPending: -1, FilterJunk: true})
+	f.put(t, "._x", []byte("EXISTING"))
+	if err := f.Truncate("._x", 1); err != nil {
+		t.Fatal(err)
+	}
+	if a, err := f.Stat("._x"); err != nil || a.Size != 1 {
+		t.Fatalf("the mount shows %+v, %v; want a 1-byte file", a, err)
+	}
+	if got, err := f.client.ReadFile(context.Background(), f.vol.ID, "._x", 1<<20); err != nil || string(got) != "EXISTING" {
+		t.Fatalf("on Modal: %q, %v; want it untouched", got, err)
 	}
 }

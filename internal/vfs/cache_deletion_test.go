@@ -84,7 +84,7 @@ func TestRemoveCacheFailureDoesNotDiscardJournal(t *testing.T) {
 	f.mu.Unlock()
 	manifestDiskReadOnly(t, f.mdb)
 	attempted := false
-	err := f.remove("target", func() error { attempted = true; return nil })
+	err := f.remove("target", RemoveAny, func() error { attempted = true; return nil })
 	if !errors.Is(err, bolt.ErrDatabaseReadOnly) || attempted {
 		t.Fatalf("cache failure must precede discard/mutation marker: attempted=%v err=%v", attempted, err)
 	}

@@ -70,6 +70,16 @@ func (st *fileState) waitRoom(off int64, n int) error {
 		}
 		ok, freed, stuck, left := fs.cache.room(add)
 		if ok {
+			// room counted the blocks as pending: charge them to this file,
+			// so accountLocked settles them against the blocks the write
+			// makes (fewer, if another write made some of them meanwhile).
+			st.mu.Lock()
+			if st.removed {
+				fs.cache.addPending(-add) // nothing will be made: writeAt reports it
+			} else {
+				st.held += add
+			}
+			st.mu.Unlock()
 			return nil
 		}
 		if stuck {

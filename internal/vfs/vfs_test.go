@@ -659,6 +659,90 @@ func TestLongConflictName(t *testing.T) {
 	}
 }
 
+// Two conflict copies of one file named in the same second get different
+// names, so two computers saving theirs at once don't overwrite each other's.
+func TestConflictNamesDiffer(t *testing.T) {
+	f := newFakeFS(t, Options{})
+	a, b := f.conflictName("d/f.txt"), f.conflictName("d/f.txt")
+	if a == b || !strings.HasPrefix(path.Base(a), "f.conflict-") || !strings.HasSuffix(a, ".txt") || path.Dir(a) != "d" {
+		t.Fatalf("conflict copies named %q and %q", a, b)
+	}
+}
+
+// The room a write is given is charged to its file, and settled against the
+// blocks it makes: a write that makes them keeps the count, one that makes
+// none gives the room back.
+func TestRoomGivenIsSettled(t *testing.T) {
+	f := newFakeFS(t, Options{WriteBack: time.Hour, MaxPending: -1, CacheMaxBytes: 64 * blockSize})
+	st, err := f.getState("a", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.waitRoom(0, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.writeAt([]byte("x"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.cache.Pending(); got != blockSize {
+		t.Fatalf("pending = %d after one block was written, want %d", got, blockSize)
+	}
+	if err := st.waitRoom(blockSize, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.cache.Pending(); got != 2*blockSize {
+		t.Fatalf("pending = %d with room for a second block given, want %d", got, 2*blockSize)
+	}
+	if err := f.Remove("a"); err != nil { // nothing made of the room given: it goes back
+		t.Fatal(err)
+	}
+	if got := f.cache.Pending(); got != 0 {
+		t.Fatalf("pending = %d after the file was removed, want 0", got)
+	}
+}
+
+// A truncate that makes a block dirty (growing a file whose last block is
+// partial, or cutting through a block) takes the room a write would.
+func TestTruncateTakesRoom(t *testing.T) {
+	f := newFakeFS(t, Options{WriteBack: time.Hour, MaxPending: -1, CacheMaxBytes: 1 << 20}) // less than a block: no room for any change
+	f.put(t, "f", []byte("0123456789"))
+	if err := f.Truncate("f", 5); !errors.Is(err, syscall.ENOSPC) {
+		t.Fatalf("truncate through a block with no room for it: %v, want ENOSPC", err)
+	}
+	if err := f.Truncate("f", 0); err != nil {
+		t.Fatalf("truncate to 0 makes no block and needs no room: %v", err)
+	}
+}
+
+// rmdir deletes only a folder and unlink only a file: the kernel chose the
+// call from what it last saw, and another writer may have replaced the
+// entry with the other kind since.
+func TestRemoveChecksTheKind(t *testing.T) {
+	f := newFakeFS(t, Options{WriteBack: time.Hour, MaxPending: -1})
+	f.put(t, "x", []byte("a file"))
+	if err := f.Mkdir("d"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Names().RemoveGuarded("", "x", RemoveDir, nil); !errors.Is(err, syscall.ENOTDIR) {
+		t.Fatalf("rmdir of a file: %v, want ENOTDIR", err)
+	}
+	if _, err := f.Names().RemoveGuarded("", "d", RemoveFile, nil); !errors.Is(err, syscall.EISDIR) {
+		t.Fatalf("unlink of a folder: %v, want EISDIR", err)
+	}
+	if _, err := f.Stat("x"); err != nil {
+		t.Fatal("the file was deleted by rmdir")
+	}
+	if _, err := f.Stat("d"); err != nil {
+		t.Fatal("the folder was deleted by unlink")
+	}
+	if _, err := f.Names().RemoveGuarded("", "x", RemoveFile, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Names().RemoveGuarded("", "d", RemoveDir, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Changes that can't be set aside aren't reported as set aside: the
 // commit fails, to be tried again, and the changes stay.
 func TestFailedParkIsAnError(t *testing.T) {

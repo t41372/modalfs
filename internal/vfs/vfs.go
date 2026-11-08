@@ -906,13 +906,19 @@ func (fs *FS) writeAt(p string, data []byte, off int64, create bool) (int, error
 
 func (fs *FS) Truncate(p string, size int64) error {
 	p = clean(p)
-	if fs.ephTruncate(p, size) {
-		return nil
+	if handled, err := fs.ephTruncate(p, size); handled {
+		return err
 	}
 	for {
 		st, err := fs.getState(p, false)
 		if err != nil {
 			return err
+		}
+		// The block a truncate makes dirty takes room, like a write's.
+		if off, ok := st.truncateMakes(size); ok {
+			if err := st.waitRoom(off, 1); err != nil {
+				return err
+			}
 		}
 		if err := st.truncate(size); err != errDetached {
 			return err
@@ -1026,18 +1032,21 @@ func (fs *FS) mkdir(p string, beforeMutation func() error) error {
 	return err
 }
 
-func (fs *FS) Remove(p string) error { return fs.remove(p, nil) }
+func (fs *FS) Remove(p string) error { return fs.remove(p, RemoveAny, nil) }
 
-func (fs *FS) remove(p string, beforeMutation func() error) error {
+func (fs *FS) remove(p string, kind RemoveKind, beforeMutation func() error) error {
 	p = clean(p)
 	if fs.opt.ReadOnly {
 		return syscall.EROFS
 	}
-	if fs.ephRemove(p) {
+	if kind != RemoveDir && fs.ephRemove(p) {
 		return nil
 	}
 	a, err := fs.Stat(p)
 	if err != nil {
+		return err
+	}
+	if err := kind.check(a.IsDir); err != nil {
 		return err
 	}
 	if a.IsDir {
@@ -1227,7 +1236,7 @@ func (fs *FS) Rename(oldp, newp string) (err error) {
 			return syscall.ENOTDIR
 		}
 		if dst.IsDir {
-			if err := fs.remove(newp, func() error {
+			if err := fs.remove(newp, RemoveDir, func() error {
 				if e := preparePublication(); e != nil {
 					return e
 				}

@@ -84,8 +84,9 @@ type fileState struct {
 	unsure map[int64]bool
 
 	// hashes caches each dirty block's SHA-256 from when it was last hashed;
-	// a change to the block drops it. A file committed several times while
-	// it grows (a long copy) then hashes each block once.
+	// a change to the block, to its bytes or to its length, drops it
+	// (changedBlockLocked). A file committed several times while it grows
+	// (a long copy) then hashes each block once.
 	hashes map[int64][]byte
 
 	// unsynced lists dirty blocks written since the last Sync; synced data
@@ -647,6 +648,24 @@ func (st *fileState) truncate(newSize int64) (err error) {
 	return nil
 }
 
+// truncateMakes reports whether a truncate to size would turn a clean block
+// into a dirty one, and an offset in that block: the old partial last block
+// when the file grows, the block the cut goes through when it shrinks.
+func (st *fileState) truncateMakes(size int64) (off int64, ok bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	cs := st.fs.chunkSize()
+	switch {
+	case size > st.size && st.size%cs != 0:
+		off = st.size
+	case size < st.size && size%cs != 0:
+		off = size
+	default:
+		return 0, false
+	}
+	return off, !st.dirty[off/cs]
+}
+
 // touch records a new, empty file. Its journal is what keeps it through a
 // crash: it has no blocks yet.
 func (st *fileState) touch() {
@@ -732,11 +751,13 @@ func (st *fileState) discard() bool {
 const maxName = 255
 
 // conflictName names a conflict copy of p, shortening the name to fit if
-// it has to.
+// it has to. The time says when it was made; the random part keeps two
+// computers that save a copy of the same file in the same second from
+// overwriting each other's (Modal can't refuse a name that's taken).
 func (fs *FS) conflictName(p string) string {
-	suffix, limit := ".conflict-"+time.Now().Format("20060102-150405"), maxName
+	suffix, limit := ".conflict-"+time.Now().Format("20060102-150405")+"-"+rand.Text()[:8], maxName
 	if fs.c.Cipher != nil {
-		suffix, limit = suffix+"-"+rand.Text(), encryption.MaxNameBytes
+		limit = encryption.MaxNameBytes
 	}
 	ext := path.Ext(p)
 	if len(ext) > limit-len(suffix)-1 {
@@ -1028,7 +1049,7 @@ func (st *fileState) snapshotHashes(sn *snapshot, cur modalapi.Entry, curOK bool
 		switch {
 		case sn.dirty[i]:
 			st.mu.Lock()
-			h := st.hashes[i]
+			h, ver := st.hashes[i], st.bver[i]
 			if sn.saved[i] {
 				h = nil // the live block changed; hash the snapshot's copy
 			}
@@ -1040,7 +1061,10 @@ func (st *fileState) snapshotHashes(sn *snapshot, cur modalapi.Entry, curOK bool
 				}
 				h = fs.c.HashBlock(data)
 				st.mu.Lock()
-				if !sn.saved[i] && st.dirty[i] { // still the content just hashed
+				// Keep it for the live block only while that is the block
+				// just hashed: unchanged since, and of the snapshot's length
+				// (a file that grew meanwhile padded its last block).
+				if !sn.saved[i] && st.dirty[i] && st.bver[i] == ver && fs.blockLen(st.size, i) == fs.blockLen(sn.size, i) {
 					st.hashes[i] = h
 				}
 				st.mu.Unlock()

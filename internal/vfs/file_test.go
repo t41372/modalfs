@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/t41372/modalfs/internal/modalapi"
+	"github.com/t41372/modalfs/internal/volume"
 )
 
 func testFS(t *testing.T, cacheDir string) *FS {
@@ -104,7 +106,8 @@ func TestPendingIsCounted(t *testing.T) {
 
 // Pending changes may take the limit but the share kept for reading; past
 // it there's room only once some are uploaded, and none at all when there's
-// nothing to upload.
+// nothing to upload. Room given is counted at once, so writes asking at
+// the same time can't all be given the same room.
 func TestRoomForPending(t *testing.T) {
 	const limit = 64 * blockSize
 	c, err := newBlockCache(t.TempDir(), limit)
@@ -114,7 +117,10 @@ func TestRoomForPending(t *testing.T) {
 	if ok, _, _, _ := c.room(blockSize); !ok {
 		t.Fatal("no room in an empty cache")
 	}
-	c.addPending(limit - readRoom(limit))
+	if got := c.Pending(); got != blockSize {
+		t.Fatalf("pending = %d after room for a block was given, want %d: room given must count until the write makes its blocks", got, blockSize)
+	}
+	c.addPending(limit - readRoom(limit) - blockSize)
 	ok, freed, stuck, _ := c.room(blockSize)
 	if ok || stuck {
 		t.Fatalf("full: ok=%v stuck=%v, want a wait", ok, stuck)
@@ -128,9 +134,54 @@ func TestRoomForPending(t *testing.T) {
 	if ok, _, _, _ := c.room(blockSize); !ok {
 		t.Fatal("no room after a block was uploaded")
 	}
-	c.addPending(-(limit - readRoom(limit) - blockSize))
+	c.addPending(-(limit - readRoom(limit)))
 	if ok, _, stuck, _ := c.room(limit); ok || !stuck {
 		t.Fatalf("a write bigger than the limit with nothing pending: ok=%v stuck=%v, want stuck", ok, stuck)
+	}
+}
+
+// A hash cached for a file's partial last block is of the block at that
+// length. Once the file grows past it, the block is longer (zeros fill it)
+// and the hash no longer describes it: a commit reusing it would name a
+// block Modal has at the old length, and the file would read short.
+func TestGrowthDropsBlockHash(t *testing.T) {
+	st := newFileState(testFS(t, t.TempDir()), "a", "1", false, modalapi.Entry{})
+	if _, err := st.writeAt([]byte("A"), 0); err != nil {
+		t.Fatal(err)
+	}
+	st.hashes[0] = []byte("the hash of block 0 as a 1-byte block") // as a commit or an upload ahead leaves it
+	if _, err := st.writeAt([]byte("Z"), blockSize+5); err != nil {
+		t.Fatal(err)
+	}
+	if st.hashes[0] != nil {
+		t.Fatal("the hash of a block that grew was kept")
+	}
+}
+
+// A commit hashes the snapshot's blocks at the snapshot's length. If the
+// file grew meanwhile, the live last block is longer than the one just
+// hashed, so that hash isn't kept for it.
+func TestSnapshotHashNotKeptForGrownBlock(t *testing.T) {
+	fs := testFS(t, t.TempDir())
+	fs.c = &volume.Volume{} // hashes plaintext; nothing is committed
+	st := newFileState(fs, "a", "1", false, modalapi.Entry{})
+	if _, err := st.writeAt([]byte("A"), 0); err != nil {
+		t.Fatal(err)
+	}
+	sn := &snapshot{gen: st.gen, size: st.size, dirty: map[int64]bool{0: true}, saved: map[int64]bool{}, floor: st.size}
+	st.snap = sn
+	if _, err := st.writeAt([]byte("Z"), blockSize+5); err != nil { // block 0 is a whole block now
+		t.Fatal(err)
+	}
+	hashes, err := st.snapshotHashes(sn, modalapi.Entry{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := sha256.Sum256([]byte("A")); !bytes.Equal(hashes[0], want[:]) {
+		t.Fatalf("the snapshot's block 0 hashed as %x, want the hash of %q", hashes[0], "A")
+	}
+	if st.hashes[0] != nil {
+		t.Fatal("the hash of the snapshot's 1-byte block was kept for the live block, which is a whole block")
 	}
 }
 

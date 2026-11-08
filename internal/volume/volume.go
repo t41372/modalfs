@@ -172,16 +172,33 @@ func (v *Volume) BlockURLs(ctx context.Context, p string, first, n int64) ([]str
 	return urls, size, err
 }
 
+// Download fetches one block of a file, as the plainLen bytes of plaintext
+// the file's size says it holds.
 func (v *Volume) Download(ctx context.Context, url string, plainLen int) ([]byte, error) {
-	wireLen := plainLen
-	if v.Cipher != nil {
-		wireLen += encryption.Overhead
+	if v.Cipher == nil {
+		return v.Client.Download(ctx, url, plainLen)
 	}
-	data, err := v.Client.Download(ctx, url, wireLen)
-	if err == nil && v.Cipher != nil {
-		data, err = v.Cipher.OpenBlock(data)
+	wireLen := plainLen + encryption.Overhead
+	data, served, err := v.Client.DownloadBlock(ctx, url, wireLen)
+	if err != nil {
+		return nil, err
 	}
-	return data, err
+	plain, err := v.Cipher.OpenBlock(data)
+	if err == nil || served >= wireLen {
+		return plain, err
+	}
+	// The stored block is shorter than the file says. modalfs 0.2.0 and
+	// earlier could commit a file that grew while it was committed with the
+	// hash of its last block from before it grew; nothing was written past
+	// that block's end (a write there would have changed the hash), so the
+	// rest is zeros, as in a file with a hole. Modal may also have left
+	// trailing zero bytes of the ciphertext out: try the lengths that makes.
+	for n := served; n < wireLen && n <= served+4; n++ {
+		if short, e := v.Cipher.OpenBlock(data[:n]); e == nil {
+			return append(short, make([]byte, plainLen-len(short))...), nil
+		}
+	}
+	return nil, err
 }
 
 func (v *Volume) ReadFile(ctx context.Context, p string, limit int64) ([]byte, error) {
@@ -368,16 +385,32 @@ func Detect(ctx context.Context, c *modalapi.Client, id string) (bool, *Marker, 
 				return false, nil, err
 			}
 			for _, child := range metadata {
-				if strings.HasPrefix(path.Base(child.Path), encryption.NamePrefix) {
+				if looksEncrypted(path.Base(child.Path)) {
 					return true, nil, nil
 				}
 			}
 		}
-		if strings.HasPrefix(e.Path, encryption.NamePrefix) {
+		if looksEncrypted(path.Base(e.Path)) {
 			return true, nil, nil
 		}
 	}
 	return false, nil, nil
+}
+
+// looksEncrypted reports whether a name has the form of an encrypted one:
+// the prefix, then base64url. A plaintext name that merely starts with the
+// prefix (mfs1_notes.txt) isn't taken for one.
+func looksEncrypted(name string) bool {
+	rest, ok := strings.CutPrefix(name, encryption.NamePrefix)
+	if !ok || rest == "" {
+		return false
+	}
+	for _, c := range []byte(rest) {
+		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func (v *Volume) WriteMarker(ctx context.Context) error {
@@ -412,7 +445,7 @@ func (v *Volume) VerifyKey(ctx context.Context, marker *Marker) error {
 		return nil
 	}
 	for _, e := range append(entries, metadata...) {
-		if strings.HasPrefix(path.Base(e.Path), encryption.NamePrefix) {
+		if looksEncrypted(path.Base(e.Path)) {
 			return errors.New("this isn't the right key for this volume")
 		}
 	}
@@ -422,7 +455,7 @@ func (v *Volume) VerifyKey(ctx context.Context, marker *Marker) error {
 // anyDecrypts reports whether an encrypted name in the listing authenticates.
 func (v *Volume) anyDecrypts(entries []modalapi.Entry) bool {
 	for _, e := range entries {
-		if e.Path == MetaDir || !strings.HasPrefix(path.Base(e.Path), encryption.NamePrefix) {
+		if e.Path == MetaDir || !looksEncrypted(path.Base(e.Path)) {
 			continue
 		}
 		if _, err := v.Cipher.DecodePath(e.Path); err == nil {

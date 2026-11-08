@@ -43,7 +43,9 @@ type NamedOperations interface {
 	LookupNamed(parent, name string) (string, os.FileInfo, error)
 	CreateNamed(parent, name string, exclusive bool, size *uint64, guard func(string, bool) func(error)) (string, os.FileInfo, error)
 	MkdirNamed(parent, name string, guard func(string) func(error)) (string, os.FileInfo, error)
-	RemoveNamed(parent, name string, guard func(string) func(error)) (string, error)
+	// RemoveNamed deletes a folder (dir, RMDIR) or a file (REMOVE), and
+	// refuses the other kind, which the entry may have become meanwhile.
+	RemoveNamed(parent, name string, dir bool, guard func(string) func(error)) (string, error)
 	RenameNamed(oldParent, oldName, newParent, newName string, guard func(string, string) func(error)) (string, string, error)
 }
 

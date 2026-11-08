@@ -198,16 +198,27 @@ func (fs *FS) ephWrite(p string, data []byte, off int64) (int, error) {
 	return len(data), nil
 }
 
-func (fs *FS) ephTruncate(p string, size int64) bool {
-	if !fs.opt.FilterJunk {
-		return false
+// ephTruncate handles a truncate of a local-only file. One of these names
+// that exists on Modal (put there by another tool, or before the filter was
+// turned on) gets a local-only file in front of it, as a write to it does:
+// with the filter on, nothing under these names changes on Modal.
+func (fs *FS) ephTruncate(p string, size int64) (handled bool, err error) {
+	if !fs.isJunk(p) || fs.opt.ReadOnly {
+		return false, nil
+	}
+	key, err := fs.nameKey(path.Base(p))
+	if err != nil {
+		return true, err
 	}
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	e := fs.eph[p]
 	if e == nil {
-		return false
+		e = &ephFile{}
+		fs.eph[p] = e
+		fs.addLocalNameLocked(p, key)
 	}
+	defer fs.ephTrimLocked()
 	size = min(size, maxEphSize)
 	if int64(len(e.data)) > size {
 		fs.ephSetLocked(e, e.data[:size])
@@ -215,7 +226,7 @@ func (fs *FS) ephTruncate(p string, size int64) bool {
 		fs.ephSetLocked(e, append(e.data, make([]byte, size-int64(len(e.data)))...))
 	}
 	e.mtime, e.used = time.Now(), time.Now()
-	return true
+	return true, nil
 }
 
 func (fs *FS) ephRemove(p string) bool {

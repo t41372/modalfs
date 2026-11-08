@@ -210,8 +210,12 @@ func (b *billyFS) MkdirNamed(parent, name string, guard func(string) func(error)
 	}
 	return p, b.info(p, a), nil
 }
-func (b *billyFS) RemoveNamed(parent, name string, guard func(string) func(error)) (string, error) {
-	return b.fs.Names().RemoveGuarded(parent, name, guard)
+func (b *billyFS) RemoveNamed(parent, name string, dir bool, guard func(string) func(error)) (string, error) {
+	kind := vfs.RemoveFile
+	if dir {
+		kind = vfs.RemoveDir
+	}
+	return b.fs.Names().RemoveGuarded(parent, name, kind, guard)
 }
 func (b *billyFS) RenameNamed(oldParent, oldName, newParent, newName string, guard func(string, string) func(error)) (string, string, error) {
 	return b.fs.Names().WithClientNameLimit(nfs.PathNameMax).RenameGuarded(oldParent, oldName, newParent, newName, guard)
