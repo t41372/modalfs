@@ -418,15 +418,19 @@ func TestDownloadLifecycle(t *testing.T) {
 	if x.view(v.ID).State == "done" || downloads.Ended(x.job(v.ID).State) {
 		t.Fatal("a handed-over download was taken as ended")
 	}
-	x.r.record(t, v.ID, "status.json", map[string]any{"state": "done", "done": 10000, "total": 10000, "t": 200, "attempt": 3, "name": "big.iso",
+	// The agent's final status says when it ended; modalfs may notice later
+	// (here a second later; for a laptop that was shut, hours).
+	ended := time.Now().Unix()
+	x.r.record(t, v.ID, "status.json", map[string]any{"state": "done", "done": 10000, "total": 10000, "t": ended, "attempt": 3, "name": "big.iso",
 		"files": []map[string]any{{"path": "In/big.iso", "size": 10000}}})
+	time.Sleep(1100 * time.Millisecond)
 	x.r.end("fc-99", map[string]any{"state": "done", "done": 10000})
 	done := x.waitState(v.ID, "done")
 	if done.Status == nil || len(done.Status.Files) != 1 || done.Status.Files[0].Path != "In/big.iso" {
 		t.Fatalf("done: %+v", done.Status)
 	}
-	if done.Ended == 0 || done.Ended < done.Created || done.Ran < 0 {
-		t.Fatalf("done: ended %d, ran %d s; the list needs when it ended and how long it ran", done.Ended, done.Ran)
+	if done.Ended != ended || done.Ran < 0 {
+		t.Fatalf("done: ended %d, want %d as the agent recorded it; ran %d s", done.Ended, ended, done.Ran)
 	}
 	if len(x.events("dl_done")) != 1 || len(x.events("dl_paused")) != 1 || len(x.events("dl_continued")) != 1 {
 		t.Fatalf("events: %+v", x.d.Events(0))
@@ -957,5 +961,25 @@ func TestUnknownConflictPolicyIsRefused(t *testing.T) {
 	}
 	if m, _ := x.d.store.Mount("mnt-1"); m.OnConflict != "" {
 		t.Fatalf("the mount's policy is now %q", m.OnConflict)
+	}
+}
+
+// Removing an account takes its downloads off the list: they've all ended
+// (a running one stops the removal), and without the account their records
+// can't be reached anyway.
+func TestRemovingAnAccountForgetsItsDownloads(t *testing.T) {
+	x := newDLTest(t, true)
+	v := x.add("https://example.com/a.bin")
+	x.waitState(v.ID, "starting")
+	if err := x.d.RemoveAccount("acct-1"); err == nil {
+		t.Fatal("an account with a running download was removed")
+	}
+	x.r.end(x.job(v.ID).Calls[0], map[string]any{"state": "done", "done": 10})
+	x.waitState(v.ID, "done")
+	if err := x.d.RemoveAccount("acct-1"); err != nil {
+		t.Fatal(err)
+	}
+	if left := x.d.dl.store.List(); len(left) != 0 {
+		t.Fatalf("downloads left after their account was removed: %+v", left)
 	}
 }

@@ -1093,7 +1093,7 @@ export async function mockRequest(method: string, path: string, raw?: unknown): 
   if (route === 'POST /mounts') {
     const acct = accounts.find((a) => a.id === body.account_id) ?? fail('account not found')
     const name = String(body.volume_name)
-    const v = (volumes[acct.id] || []).find((x) => x.name === name) ?? fail(`volume ${name} not found`)
+    const v = (volumes[acct.id] || []).find((x) => (body.volume_id ? x.id === body.volume_id : x.name === name)) ?? fail(`volume ${name} not found`)
     if (mounts.some((x) => x.volume_id === v.id)) fail('this volume is already mounted')
     const mt: Mount = {
       id: `m-${name}`,

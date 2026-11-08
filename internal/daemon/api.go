@@ -884,16 +884,23 @@ func (d *Daemon) ImportProfiles(ctx context.Context, names []string) ([]config.A
 	}
 	var added []config.Account
 	var errs []string
+	found := map[string]bool{}
 	for _, p := range ps {
 		if len(want) > 0 && !want[p.Name] {
 			continue
 		}
+		found[p.Name] = true
 		a, err := d.AddAccount(ctx, p.Name, p.TokenID, p.TokenSecret, p.ServerURL, p.Environment, p.Name, false)
 		if err != nil {
 			errs = append(errs, p.Name+": "+err.Error())
 			continue
 		}
 		added = append(added, a)
+	}
+	for _, n := range names {
+		if !found[n] {
+			errs = append(errs, n+": there's no profile with this name in ~/.modal.toml")
+		}
 	}
 	return added, errs
 }
@@ -942,12 +949,20 @@ func (d *Daemon) RemoveAccount(id string) error {
 	if d.avatars != nil {
 		d.avatars.forget(a.ID)
 	}
+	if d.dl != nil {
+		d.dl.forgetAccount(a.ID)
+	}
 	if err := config.DeleteSecret(a); err != nil {
 		return fmt.Errorf("removed the account, but could not delete its token secret: %w", err)
 	}
 	return nil
 }
 
+// AddMount saves a mount. A caller that knows the volume's ID (from a
+// listing, or having just created it) passes it, so the mount is pinned to
+// that volume from the start: a saved mount of the same name in another
+// environment, or a volume that takes the name later, is then never
+// mistaken for it. Without it the name is looked up at the first mount.
 func (d *Daemon) AddMount(m config.Mount) (config.Mount, error) {
 	a, ok := d.store.Account(m.AccountID)
 	if !ok {
@@ -969,8 +984,16 @@ func (d *Daemon) AddMount(m config.Mount) (config.Mount, error) {
 	var dup config.Mount
 	err := d.store.Update(func(f *config.File) error {
 		for _, x := range f.Mounts {
-			// a mount not pinned yet may be for any environment
-			if x.AccountID == m.AccountID && x.VolumeName == m.VolumeName && (x.Environment == m.Environment || x.Environment == "" || m.Environment == "") {
+			if x.AccountID != m.AccountID {
+				continue
+			}
+			// Two IDs tell the volumes apart whatever their names; a mount
+			// not pinned yet may be any environment's volume of that name.
+			same := x.VolumeID == m.VolumeID
+			if x.VolumeID == "" || m.VolumeID == "" {
+				same = x.VolumeName == m.VolumeName && (x.Environment == m.Environment || x.Environment == "" || m.Environment == "")
+			}
+			if same {
 				dup = x
 				return errors.New("this volume already has a saved mount")
 			}

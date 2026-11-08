@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -179,9 +180,39 @@ type Conflict struct {
 	At   int64  `json:"at"`
 }
 
+// conflicts is the list of conflicts not marked handled yet, by mount. It's
+// kept in a file, so a restart doesn't drop what the user has yet to look
+// at; the copies themselves are on Modal, named in the Activity feed too.
 type conflicts struct {
-	mu sync.Mutex
-	m  map[string][]Conflict
+	path string // "" keeps them in memory only
+	log  *slog.Logger
+	mu   sync.Mutex
+	m    map[string][]Conflict
+}
+
+func (c *conflicts) load() {
+	raw, err := os.ReadFile(c.path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			c.log.Warn("couldn't read the open conflicts", "path", c.path, "err", err)
+		}
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := json.Unmarshal(raw, &c.m); err != nil {
+		c.log.Warn("couldn't read the open conflicts", "path", c.path, "err", err)
+	}
+}
+
+func (c *conflicts) saveLocked() {
+	if c.path == "" {
+		return
+	}
+	raw, _ := json.Marshal(c.m)
+	if err := config.WriteAtomic(c.path, raw); err != nil {
+		c.log.Warn("couldn't save the open conflicts; a restart forgets them", "path", c.path, "err", err)
+	}
 }
 
 func (c *conflicts) add(id string, x Conflict) {
@@ -191,6 +222,7 @@ func (c *conflicts) add(id string, x Conflict) {
 		c.m = map[string][]Conflict{}
 	}
 	c.m[id] = append(c.m[id], x)
+	c.saveLocked()
 }
 
 func (c *conflicts) get(id string) []Conflict {
@@ -209,6 +241,7 @@ func (c *conflicts) count(id string) int {
 func (c *conflicts) clear(id, copyPath string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer c.saveLocked()
 	if copyPath == "" {
 		delete(c.m, id)
 		return
@@ -218,6 +251,10 @@ func (c *conflicts) clear(id, copyPath string) {
 		if x.Copy != copyPath {
 			keep = append(keep, x)
 		}
+	}
+	if len(keep) == 0 {
+		delete(c.m, id)
+		return
 	}
 	c.m[id] = keep
 }

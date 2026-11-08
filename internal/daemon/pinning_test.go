@@ -87,3 +87,34 @@ func TestMountIsPinnedToItsEnvironment(t *testing.T) {
 		t.Fatalf("a pin that wasn't saved shows: %s (the volume is %s)", saved.VolumeID, inOther.ID)
 	}
 }
+
+// A mount added with its volume's ID is that volume's, whatever its name:
+// another volume of the same name gets a mount of its own, and the same
+// volume under another name doesn't get a second one.
+func TestAddMountByVolumeID(t *testing.T) {
+	t.Setenv("MODALFS_HOME", t.TempDir())
+	d := testDaemon(t)
+	var err error
+	if d.store, err = config.Open(); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.store.Update(func(f *config.File) error {
+		f.Accounts = append(f.Accounts, config.Account{ID: "acct-1", Label: "me", TokenID: "ak-1"})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if _, err := d.AddMount(config.Mount{AccountID: "acct-1", VolumeName: "data", VolumeID: "vo-1", Mountpoint: filepath.Join(dir, "a")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.AddMount(config.Mount{AccountID: "acct-1", VolumeName: "data", VolumeID: "vo-2", Mountpoint: filepath.Join(dir, "b")}); err != nil {
+		t.Fatalf("another volume of the same name: %v", err)
+	}
+	if _, err := d.AddMount(config.Mount{AccountID: "acct-1", VolumeName: "renamed", VolumeID: "vo-1", Mountpoint: filepath.Join(dir, "c")}); err == nil {
+		t.Fatal("the same volume under another name got a second mount")
+	}
+	if _, err := d.AddMount(config.Mount{AccountID: "acct-1", VolumeName: "data", Mountpoint: filepath.Join(dir, "d")}); err == nil {
+		t.Fatal("a mount by name alone was added beside saved mounts of that name")
+	}
+}

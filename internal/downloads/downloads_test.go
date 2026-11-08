@@ -30,6 +30,8 @@ func TestNewJob(t *testing.T) {
 	}
 	for _, bad := range []struct{ url, tool, size, folder string }{
 		{"example.com/a", "", "", ""},
+		{"https://", "", "", ""},
+		{"not-a-scheme://host/a", "", "", ""},
 		{"https://example.com/a", "wget", "", ""},
 		{"https://example.com/a", "", "huge", ""},
 		{"https://example.com/a", "", "", ".modalfs/x"},

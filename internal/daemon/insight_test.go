@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -40,8 +41,11 @@ func TestTrafficKeepsAnHourAndRestartsWithTheMount(t *testing.T) {
 	}
 }
 
+// Conflicts stay listed until marked handled, through a restart too.
 func TestConflictsMarkedHandled(t *testing.T) {
-	var c conflicts
+	path := filepath.Join(t.TempDir(), "conflicts.json")
+	log := slog.New(slog.DiscardHandler)
+	c := conflicts{path: path, log: log}
 	c.add("m", Conflict{Path: "a.txt", Copy: "a.conflict-1.txt"})
 	c.add("m", Conflict{Path: "b.txt", Copy: "b.conflict-1.txt"})
 	c.add("other", Conflict{Path: "c.txt", Copy: "c.conflict-1.txt"})
@@ -49,9 +53,19 @@ func TestConflictsMarkedHandled(t *testing.T) {
 	if got := c.get("m"); len(got) != 1 || got[0].Path != "b.txt" {
 		t.Fatalf("after clearing one: %v", got)
 	}
+	again := conflicts{path: path, log: log}
+	again.load()
+	if got := again.get("m"); len(got) != 1 || got[0].Path != "b.txt" || again.count("other") != 1 {
+		t.Fatalf("after a restart: m=%v other=%d", got, again.count("other"))
+	}
 	c.clear("m", "")
 	if c.count("m") != 0 || c.count("other") != 1 {
 		t.Fatalf("after clearing all: m=%d other=%d", c.count("m"), c.count("other"))
+	}
+	again = conflicts{path: path, log: log}
+	again.load()
+	if again.count("m") != 0 || again.count("other") != 1 {
+		t.Fatalf("after a restart: m=%d other=%d", again.count("m"), again.count("other"))
 	}
 }
 

@@ -449,16 +449,22 @@ func (m *dlManager) ended(ctx context.Context, r downloads.Runner, j downloads.J
 			state, msg = downloads.StateCancelled, ""
 		}
 	}
+	// When it ended: the agent's final status says, and is right when modalfs
+	// wasn't there to see it end (quit, or offline). A call cut short without
+	// a final word (a cancel) ended about now.
+	end := time.Now().Unix()
+	if st != nil && !st.Running() && st.T > 0 {
+		end = min(end, max(int64(st.T), j.Started))
+	}
 	if st != nil && st.Running() {
 		// Cut short without a final word (a cancel): don't show it running.
 		st.State, st.Speed, st.ETA = state, 0, nil
 	}
 	j, _ = m.store.Update(j.ID, func(j *downloads.Job) {
-		now := time.Now().Unix()
 		if j.Started > 0 {
-			j.Ran += max(now-j.Started, 0)
+			j.Ran += max(end-j.Started, 0)
 		}
-		j.Ended = now
+		j.Ended = end
 		j.State, j.Error, j.ErrorKind, j.Stopping, j.Keep = state, msg, kind, "", false
 		if st != nil {
 			j.Status = st
@@ -741,6 +747,25 @@ func (m *dlManager) Forget(ctx context.Context, id string) error {
 	delete(m.status, id)
 	m.mu.Unlock()
 	return m.store.Remove(id)
+}
+
+// forgetAccount takes the downloads of an account being removed off the
+// list. They've all ended (RemoveAccount refuses otherwise), and without the
+// account their records, and anything they downloaded, can't be reached
+// from here anyway: that stays on the volume.
+func (m *dlManager) forgetAccount(accountID string) {
+	for _, j := range m.store.List() {
+		if j.AccountID != accountID {
+			continue
+		}
+		m.mu.Lock()
+		delete(m.history, j.ID)
+		delete(m.status, j.ID)
+		m.mu.Unlock()
+		if err := m.store.Remove(j.ID); err != nil {
+			m.d.log.Warn("couldn't take a removed account's download off the list", "id", j.ID, "err", err)
+		}
+	}
 }
 
 // ---------- views ----------

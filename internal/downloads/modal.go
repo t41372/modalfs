@@ -31,10 +31,9 @@ type Modal struct {
 	// DeployAppID is the app the deploy Sandbox ran in, once it has.
 	DeployAppID string
 
-	sdk      *modal.Client
-	cfg      modalapi.Config
-	mu       sync.Mutex
-	deployed string // the agent version known to be deployed
+	sdk *modal.Client
+	cfg modalapi.Config
+	mu  sync.Mutex // one deploy at a time
 }
 
 // NewModal makes a runner for one account and environment. api must be a
@@ -60,21 +59,20 @@ func NewModal(cfg modalapi.Config, api *modalapi.Client, app string) (*Modal, er
 func (m *Modal) Close() { m.sdk.Close() }
 
 // Deploy makes sure the app in the workspace runs this build's agent, and
-// deploys it if not. Deploying needs Modal's Python client, so it runs in
-// a short-lived Sandbox: users don't need Python. say reports progress.
+// deploys it if not. It asks Modal every time (two short calls) rather than
+// remember the answer: the app may have been stopped meanwhile (`modal app
+// stop`), and a download started into a Function that's gone fails. Deploying
+// needs Modal's Python client, so it runs in a short-lived Sandbox: users
+// don't need Python. say reports progress.
 func (m *Modal) Deploy(ctx context.Context, say func(string)) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	want := remote.Version()
-	if m.deployed == want {
-		return nil
-	}
 	_, tags, err := m.API.DeployedApp(ctx, m.App)
 	if err != nil && !modalapi.IsNotDeployed(err) {
 		return fmt.Errorf("looking up the %s app: %w", m.App, err)
 	}
 	if tags["modalfs-agent"] == want {
-		m.deployed = want
 		return nil
 	}
 	if say == nil {
@@ -90,7 +88,6 @@ func (m *Modal) Deploy(ctx context.Context, say func(string)) error {
 	if tags["modalfs-agent"] != want {
 		return fmt.Errorf("deployed the %s app, but it reports version %q, not %q", m.App, tags["modalfs-agent"], want)
 	}
-	m.deployed = want
 	return nil
 }
 

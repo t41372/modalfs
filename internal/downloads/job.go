@@ -129,8 +129,8 @@ func StripCredentials(link string) string {
 
 // NewJob checks a request and makes a job for it.
 func NewJob(accountID, env, volumeID, volumeName, folder, url, tool, size string) (Job, error) {
-	if !strings.Contains(url, "://") && !strings.HasPrefix(url, "magnet:") {
-		return Job{}, fmt.Errorf("%q isn't a link (http://, https://, ftp:// or magnet:)", url)
+	if err := checkLink(url); err != nil {
+		return Job{}, err
 	}
 	if tool == "" {
 		tool = DefaultTool(url)
@@ -152,6 +152,19 @@ func NewJob(accountID, env, volumeID, volumeName, folder, url, tool, size string
 		ID: config.NewID("dl"), AccountID: accountID, Environment: env, VolumeID: volumeID, VolumeName: volumeName,
 		Folder: folder, URL: url, Tool: tool, Size: size, LiveToken: randomToken(), Created: config.Now(),
 	}, nil
+}
+
+// checkLink refuses what no downloader could fetch, before a Function is
+// started for it: a link without a host, or of a kind none of them takes.
+func checkLink(link string) error {
+	if strings.HasPrefix(link, "magnet:") {
+		return nil
+	}
+	u, err := url.Parse(link)
+	if err != nil || u.Host == "" || !contains([]string{"http", "https", "ftp", "ftps", "sftp"}, strings.ToLower(u.Scheme)) {
+		return fmt.Errorf("%q isn't a link a downloader can fetch (http://, https://, ftp:// or magnet:)", link)
+	}
+	return nil
 }
 
 // DefaultTool picks the downloader for a link: yt-dlp for video sites,

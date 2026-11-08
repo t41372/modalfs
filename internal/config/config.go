@@ -47,7 +47,7 @@ type Mount struct {
 	AccountID   string `json:"account_id"`
 	Environment string `json:"environment,omitempty"`
 	VolumeName  string `json:"volume_name"`
-	VolumeID    string `json:"volume_id,omitempty"` // pinned on first mount
+	VolumeID    string `json:"volume_id,omitempty"` // pinned when added with it, else on the first mount
 	Mountpoint  string `json:"mountpoint"`
 	// FollowLabel: the mountpoint is a folder in the mount root named after
 	// the volume's label, chosen again at each mount (daemon/folder.go).
