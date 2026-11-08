@@ -890,10 +890,12 @@ func (fs *FS) writeAt(p string, data []byte, off int64, create bool) (int, error
 		if err != nil {
 			return 0, err
 		}
-		if err := st.waitRoom(off, len(data)); err != nil {
+		room, err := st.waitRoom(off, len(data))
+		if err != nil {
 			return 0, err
 		}
 		n, err := st.writeAt(data, off)
+		st.giveBack(room)
 		if err != errDetached {
 			return n, err
 		}
@@ -914,13 +916,17 @@ func (fs *FS) Truncate(p string, size int64) error {
 		if err != nil {
 			return err
 		}
-		// The block a truncate makes dirty takes room, like a write's.
+		// The block a truncate makes dirty, or copies, takes room like a
+		// write's.
+		var room int64
 		if off, ok := st.truncateMakes(size); ok {
-			if err := st.waitRoom(off, 1); err != nil {
+			if room, err = st.waitRoom(off, 1); err != nil {
 				return err
 			}
 		}
-		if err := st.truncate(size); err != errDetached {
+		err = st.truncate(size)
+		st.giveBack(room)
+		if err != errDetached {
 			return err
 		}
 	}

@@ -981,8 +981,9 @@ func TestGrowthDuringCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Once the commit's upload of the first block has begun, its hashes are
-	// settled; now extend the file past the second block, so that block,
-	// a byte long in the commit, becomes a whole one.
+	// settled (a file of two blocks isn't uploaded ahead, so the first bytes
+	// Modal gets are the commit's); now extend the file past the second
+	// block, so that block, a byte long in the commit, becomes a whole one.
 	for deadline := time.Now().Add(30 * time.Second); e.net.Received() == 0; time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("no upload started within 30 s")

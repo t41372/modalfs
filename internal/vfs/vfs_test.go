@@ -669,36 +669,51 @@ func TestConflictNamesDiffer(t *testing.T) {
 	}
 }
 
-// The room a write is given is charged to its file, and settled against the
-// blocks it makes: a write that makes them keeps the count, one that makes
-// none gives the room back.
+// The room a write is given stays counted until that write is made, even
+// when another write to the file is made first (the NFS client sends a
+// file's writes in parallel), and is settled against the blocks it made.
 func TestRoomGivenIsSettled(t *testing.T) {
 	f := newFakeFS(t, Options{WriteBack: time.Hour, MaxPending: -1, CacheMaxBytes: 64 * blockSize})
 	st, err := f.getState("a", true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.waitRoom(0, 1); err != nil {
+	pending := func(want int64, when string) {
+		t.Helper()
+		if got := f.cache.Pending(); got != want*blockSize {
+			t.Fatalf("pending = %d blocks %s, want %d", got/blockSize, when, want)
+		}
+	}
+	write := func(room int64, off int64) {
+		t.Helper()
+		_, err := st.writeAt([]byte("x"), off)
+		st.giveBack(room)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := st.waitRoom(0, 1)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.writeAt([]byte("x"), 0); err != nil {
+	second, err := st.waitRoom(blockSize, 1)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got := f.cache.Pending(); got != blockSize {
-		t.Fatalf("pending = %d after one block was written, want %d", got, blockSize)
-	}
-	if err := st.waitRoom(blockSize, 1); err != nil {
+	pending(2, "with room for two blocks given")
+	write(second, blockSize)
+	pending(2, "after the second write, with the first still to be made")
+	write(first, 0)
+	pending(2, "after both writes")
+	write(0, 5) // a block made already takes no room
+	pending(2, "after a write into a block made already")
+	if _, err := st.waitRoom(2*blockSize, 1); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.cache.Pending(); got != 2*blockSize {
-		t.Fatalf("pending = %d with room for a second block given, want %d", got, 2*blockSize)
-	}
-	if err := f.Remove("a"); err != nil { // nothing made of the room given: it goes back
+	if err := f.Remove("a"); err != nil { // nothing will be made of the room given: it goes back
 		t.Fatal(err)
 	}
-	if got := f.cache.Pending(); got != 0 {
-		t.Fatalf("pending = %d after the file was removed, want 0", got)
-	}
+	pending(0, "after the file was removed")
 }
 
 // A truncate that makes a block dirty (growing a file whose last block is

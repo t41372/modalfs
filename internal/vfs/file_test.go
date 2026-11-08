@@ -140,6 +140,38 @@ func TestRoomForPending(t *testing.T) {
 	}
 }
 
+// A write's room is the blocks it makes dirty, the copies it keeps for the
+// commit in flight, and the old partial last block it makes whole when it
+// starts past it.
+func TestRoomCountsWhatAWriteMakes(t *testing.T) {
+	// on Modal: a whole block 0, changed here, and a byte of block 1
+	st := newFileState(testFS(t, t.TempDir()), "a", "1", true, modalapi.Entry{Path: "a", Size: blockSize + 1})
+	st.dirty[0] = true
+	for _, c := range []struct {
+		name   string
+		off, n int64
+		blocks int64
+	}{
+		{"into a dirty block", 1, 10, 0},
+		{"into the partial last block", blockSize + 5, 10, 1},
+		{"across two blocks, one dirty", blockSize - 5, 10, 1},
+		{"past the partial last block", 3*blockSize + 5, 1, 2},
+		{"from the partial last block on", blockSize + 5, 2*blockSize - 10, 2},
+	} {
+		if got := st.roomLocked(c.off, c.n); got != c.blocks*blockSize {
+			t.Errorf("%s: room %d blocks, want %d", c.name, got/blockSize, c.blocks)
+		}
+	}
+	st.snap = &snapshot{dirty: map[int64]bool{0: true}, saved: map[int64]bool{}}
+	if got := st.roomLocked(1, 10); got != blockSize {
+		t.Errorf("into a block the commit in flight still reads: room %d blocks, want 1 for its copy", got/blockSize)
+	}
+	st.snap.saved[0] = true
+	if got := st.roomLocked(1, 10); got != 0 {
+		t.Errorf("into a block whose copy is kept already: room %d blocks, want 0", got/blockSize)
+	}
+}
+
 // A hash cached for a file's partial last block is of the block at that
 // length. Once the file grows past it, the block is longer (zeros fill it)
 // and the hash no longer describes it: a commit reusing it would name a

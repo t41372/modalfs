@@ -18,10 +18,16 @@ import (
 
 var errClosing = errors.New("the volume is being unmounted")
 
-// waitRoom waits, before a write of n bytes at off, until the blocks it
-// would add fit in the shared limit and on the disk. It returns ENOSPC at
+// waitRoom waits, before a write of n bytes at off, until the room it takes
+// (see roomLocked) fits in the shared limit and on the disk, and reserves
+// it: the write gives it back with giveBack once made. It returns ENOSPC at
 // once, and says so, when nothing waiting to upload could free room.
-func (st *fileState) waitRoom(off int64, n int) error {
+//
+// The room is reckoned from the file as it is while the write waits. A
+// change to the file in the instant before the write is made (a commit
+// that ends, another write that grows it) can make it take a block more
+// than it was given; the next write waits for that one.
+func (st *fileState) waitRoom(off int64, n int) (int64, error) {
 	fs := st.fs
 	rounds := 0
 	paced := false
@@ -33,22 +39,17 @@ func (st *fileState) waitRoom(off int64, n int) error {
 	}()
 	for {
 		if fs.closed.Load() {
-			return nil // unmounting: what's written now is committed by Close
+			return 0, nil // unmounting: what's written now is committed by Close
 		}
 		st.mu.Lock()
 		if st.removed {
 			st.mu.Unlock()
-			return nil // writeAt reports it
+			return 0, nil // writeAt reports it
 		}
-		var add int64
-		for idx := off / fs.chunkSize(); idx*fs.chunkSize() < off+int64(n); idx++ {
-			if !st.dirty[idx] {
-				add += fs.chunkSize()
-			}
-		}
+		add := st.roomLocked(off, int64(n))
 		st.mu.Unlock()
 		if add == 0 {
-			return nil
+			return 0, nil
 		}
 		if !paced {
 			paced = true
@@ -63,24 +64,25 @@ func (st *fileState) waitRoom(off int64, n int) error {
 				select {
 				case <-time.After(d):
 				case <-fs.ctx.Done():
-					return errClosing
+					return 0, errClosing
 				}
 				continue
 			}
 		}
 		ok, freed, stuck, left := fs.cache.room(add)
 		if ok {
-			// room counted the blocks as pending: charge them to this file,
-			// so accountLocked settles them against the blocks the write
-			// makes (fewer, if another write made some of them meanwhile).
+			// room counted it as pending at once: charge it to this file as
+			// reserved until the write gives it back, by then counted as the
+			// blocks it made (fewer, if another write made some meanwhile).
 			st.mu.Lock()
+			defer st.mu.Unlock()
 			if st.removed {
 				fs.cache.addPending(-add) // nothing will be made: writeAt reports it
-			} else {
-				st.held += add
+				return 0, nil
 			}
-			st.mu.Unlock()
-			return nil
+			st.held += add
+			st.reserved += add
+			return add, nil
 		}
 		if stuck {
 			if now := time.Now().Unix(); now-fs.noRoom.Swap(now) >= 60 {
@@ -90,7 +92,7 @@ func (st *fileState) waitRoom(off int64, n int) error {
 				}
 				fs.event("error", "", why)
 			}
-			return syscall.ENOSPC
+			return 0, syscall.ENOSPC
 		}
 		if !waiting {
 			waiting = true
@@ -108,7 +110,7 @@ func (st *fileState) waitRoom(off int64, n int) error {
 		case <-freed:
 		case <-time.After(time.Second): // the disk can free up by itself
 		case <-fs.ctx.Done():
-			return errClosing
+			return 0, errClosing
 		}
 	}
 }
