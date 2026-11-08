@@ -72,6 +72,38 @@ func TestConflictsMarkedHandled(t *testing.T) {
 	}
 }
 
+// A change reaches the file on its own, a moment later; once the daemon
+// stops, at once.
+func TestConflictsAreSavedAfterAChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "conflicts.json")
+	log := slog.New(slog.DiscardHandler)
+	c := conflicts{path: path, log: log}
+	saved := func(want int, when string) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * conflictSave); ; time.Sleep(20 * time.Millisecond) {
+			again := conflicts{path: path, log: log}
+			again.load()
+			if again.count("m") == want {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: the file lists %d conflicts, want %d", when, again.count("m"), want)
+			}
+		}
+	}
+	c.add("m", Conflict{Path: "a.txt", Copy: "a.conflict-1.txt", At: 1})
+	saved(1, "after an addition")
+	c.clear("m", "a.conflict-1.txt")
+	saved(0, "after it was marked handled")
+	c.flush()
+	c.add("m", Conflict{Path: "b.txt", Copy: "b.conflict-1.txt", At: 2})
+	again := conflicts{path: path, log: log}
+	again.load()
+	if again.count("m") != 1 {
+		t.Fatalf("a change after the daemon began to stop wasn't saved at once: the file lists %d conflicts", again.count("m"))
+	}
+}
+
 func TestUsageMeasuresAVolumeAndKeepsTheResult(t *testing.T) {
 	dir := t.TempDir()
 	fake, err := modalfake.Start(filepath.Join(dir, "fake"), modalfake.Options{})
