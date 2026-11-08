@@ -899,7 +899,8 @@ func (d *Daemon) ImportProfiles(ctx context.Context, names []string) ([]config.A
 	}
 	for _, n := range names {
 		if !found[n] {
-			errs = append(errs, n+": there's no profile with this name in ~/.modal.toml")
+			found[n] = true // said once, however often it was asked for
+			errs = append(errs, fmt.Sprintf("%s: there's no profile with this name and a token in %s", n, modalapi.ModalConfigPath()))
 		}
 	}
 	return added, errs

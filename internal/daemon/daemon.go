@@ -212,6 +212,7 @@ func Run(log *slog.Logger) error {
 	// this file knows it quit on purpose and doesn't start it again.
 	_ = os.Remove(InfoPath())
 	d.stopAll()
+	d.conflicts.flush() // after stopAll: the last commits may have added some
 	d.logins.close()
 	_ = ul.Close()
 	_ = tl.Close()

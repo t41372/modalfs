@@ -184,11 +184,18 @@ type Conflict struct {
 // kept in a file, so a restart doesn't drop what the user has yet to look
 // at; the copies themselves are on Modal, named in the Activity feed too.
 type conflicts struct {
-	path string // "" keeps them in memory only
-	log  *slog.Logger
-	mu   sync.Mutex
-	m    map[string][]Conflict
+	path   string // "" keeps them in memory only
+	log    *slog.Logger
+	mu     sync.Mutex
+	m      map[string][]Conflict
+	due    *time.Timer // a save is due (see changedLocked)
+	saving sync.Mutex  // one save at a time, so the newest list is written last
 }
+
+// conflictSave is how long a change to the list waits to be saved, with the
+// changes after it: a commit that conflicts on many files at once saves the
+// list once, not once a file, and doesn't wait for each save.
+const conflictSave = time.Second
 
 func (c *conflicts) load() {
 	raw, err := os.ReadFile(c.path)
@@ -205,13 +212,36 @@ func (c *conflicts) load() {
 	}
 }
 
-func (c *conflicts) saveLocked() {
-	if c.path == "" {
-		return
+// changedLocked saves the list soon (see conflictSave).
+func (c *conflicts) changedLocked() {
+	if c.path != "" && c.due == nil {
+		c.due = time.AfterFunc(conflictSave, c.save)
 	}
+}
+
+// save writes the list as it is now.
+func (c *conflicts) save() {
+	c.saving.Lock()
+	defer c.saving.Unlock()
+	c.mu.Lock()
+	c.due = nil
 	raw, _ := json.Marshal(c.m)
+	c.mu.Unlock()
 	if err := config.WriteAtomic(c.path, raw); err != nil {
 		c.log.Warn("couldn't save the open conflicts; a restart forgets them", "path", c.path, "err", err)
+	}
+}
+
+// flush saves a change not saved yet, before the daemon exits.
+func (c *conflicts) flush() {
+	c.mu.Lock()
+	due := c.due != nil
+	if due {
+		c.due.Stop()
+	}
+	c.mu.Unlock()
+	if due {
+		c.save()
 	}
 }
 
@@ -222,7 +252,7 @@ func (c *conflicts) add(id string, x Conflict) {
 		c.m = map[string][]Conflict{}
 	}
 	c.m[id] = append(c.m[id], x)
-	c.saveLocked()
+	c.changedLocked()
 }
 
 func (c *conflicts) get(id string) []Conflict {
@@ -241,22 +271,22 @@ func (c *conflicts) count(id string) int {
 func (c *conflicts) clear(id, copyPath string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	defer c.saveLocked()
-	if copyPath == "" {
-		delete(c.m, id)
-		return
-	}
+	before := len(c.m[id])
 	keep := c.m[id][:0]
 	for _, x := range c.m[id] {
-		if x.Copy != copyPath {
+		if copyPath != "" && x.Copy != copyPath {
 			keep = append(keep, x)
 		}
 	}
+	if len(keep) == before {
+		return // nothing to mark
+	}
 	if len(keep) == 0 {
 		delete(c.m, id)
-		return
+	} else {
+		c.m[id] = keep
 	}
-	c.m[id] = keep
+	c.changedLocked()
 }
 
 // ---------- size ----------

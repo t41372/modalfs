@@ -974,6 +974,11 @@ func TestRemovingAnAccountForgetsItsDownloads(t *testing.T) {
 	if err := x.d.RemoveAccount("acct-1"); err == nil {
 		t.Fatal("an account with a running download was removed")
 	}
+	// One that starts as the account goes stays listed: its Function runs.
+	x.d.dl.forgetAccount("acct-1")
+	if _, err := x.d.dl.job(v.ID); err != nil {
+		t.Fatal("a running download was taken off the list")
+	}
 	x.r.end(x.job(v.ID).Calls[0], map[string]any{"state": "done", "done": 10})
 	x.waitState(v.ID, "done")
 	if err := x.d.RemoveAccount("acct-1"); err != nil {
@@ -981,5 +986,29 @@ func TestRemovingAnAccountForgetsItsDownloads(t *testing.T) {
 	}
 	if left := x.d.dl.store.List(); len(left) != 0 {
 		t.Fatalf("downloads left after their account was removed: %+v", left)
+	}
+}
+
+// A status from before the current run (the last run's, read back late)
+// says nothing about it: while Modal can't say whether the call runs, the
+// download is followed still, not taken for ended.
+func TestTheLastRunsStatusDoesntEndThisOne(t *testing.T) {
+	x := newDLTest(t, true)
+	v := x.add("https://example.com/a.bin")
+	x.waitState(v.ID, "starting")
+	j := x.job(v.ID)
+	now := float64(time.Now().Unix())
+	if _, err := x.d.dl.store.Update(v.ID, func(j *downloads.Job) { j.Before = now - 1800 }); err != nil {
+		t.Fatal(err)
+	}
+	x.d.dl.noteStatus(j, downloads.Status{State: "paused", T: now - 3600})
+	x.r.mu.Lock()
+	x.r.calls[j.Calls[0]].err = errors.New("offline")
+	x.r.mu.Unlock()
+	if x.d.dl.step(v.ID) {
+		t.Fatal("a running download was taken for ended on the last run's status")
+	}
+	if got := x.job(v.ID).State; got != downloads.StateRunning {
+		t.Fatalf("state %q, want %q", got, downloads.StateRunning)
 	}
 }

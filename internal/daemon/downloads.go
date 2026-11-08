@@ -354,7 +354,7 @@ func (m *dlManager) step(id string) bool {
 		// Modal may forget a call long after it ended (a laptop closed for
 		// a week). The agent's own record says how it ended.
 		st, ok := m.cachedStatus(id)
-		if !ok || st.Running() || st.State == "interrupted" || float64(time.Now().Unix())-st.T < 60 {
+		if !ok || st.T <= j.Before || st.Running() || st.State == "interrupted" || float64(time.Now().Unix())-st.T < 60 {
 			return false
 		}
 	}
@@ -387,11 +387,12 @@ func (m *dlManager) ended(ctx context.Context, r downloads.Runner, j downloads.J
 	if fresh, err := m.job(j.ID); err == nil {
 		j = fresh // a pause or cancel may have come in meanwhile
 	}
-	// The agent writes its last status before it returns.
+	// The agent writes its last status before it returns. One from before
+	// this run (the last run's, read back late) says nothing about it.
 	var st *downloads.Status
 	if s, err := downloads.ReadStatus(ctx, r.Volume(j), j); err == nil && s.T > j.Before {
 		st = &s
-	} else if cached, ok := m.cachedStatus(j.ID); ok {
+	} else if cached, ok := m.cachedStatus(j.ID); ok && cached.T > j.Before {
 		st = &cached
 	}
 	// A call that handed over to a successor (the 24 h limit) isn't the
@@ -749,13 +750,14 @@ func (m *dlManager) Forget(ctx context.Context, id string) error {
 	return m.store.Remove(id)
 }
 
-// forgetAccount takes the downloads of an account being removed off the
-// list. They've all ended (RemoveAccount refuses otherwise), and without the
-// account their records, and anything they downloaded, can't be reached
-// from here anyway: that stays on the volume.
+// forgetAccount takes the ended downloads of an account being removed off
+// the list: without the account their records, and anything they
+// downloaded, can't be reached from here anyway; that stays on the volume.
+// RemoveAccount refuses while one runs, but one may start meanwhile: it
+// stays listed, so its Function isn't hidden.
 func (m *dlManager) forgetAccount(accountID string) {
 	for _, j := range m.store.List() {
-		if j.AccountID != accountID {
+		if j.AccountID != accountID || !downloads.Ended(j.State) {
 			continue
 		}
 		m.mu.Lock()
