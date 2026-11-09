@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -179,18 +180,104 @@ type Conflict struct {
 	At   int64  `json:"at"`
 }
 
+// conflicts is the list of conflicts not marked handled yet, by mount. It's
+// kept in a file, so a restart doesn't drop what the user has yet to look
+// at; the copies themselves are on Modal, named in the Activity feed too.
 type conflicts struct {
-	mu sync.Mutex
-	m  map[string][]Conflict
+	path string // "" keeps them in memory only
+	log  *slog.Logger
+	mu   sync.Mutex
+	m    map[string][]Conflict
+	// dirty: the file isn't the list yet; due: a save is scheduled for it.
+	// stopping: the daemon is stopping, and every change is saved at once.
+	dirty, stopping bool
+	due             *time.Timer
+	saving          sync.Mutex // one save at a time, so the newest list is written last
+}
+
+// conflictSave is how long a change to the list waits to be saved, with the
+// changes after it: a commit that conflicts on many files at once saves the
+// list once, not once a file, and doesn't wait for each save.
+const conflictSave = time.Second
+
+func (c *conflicts) load() {
+	raw, err := os.ReadFile(c.path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			c.log.Warn("couldn't read the open conflicts", "path", c.path, "err", err)
+		}
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := json.Unmarshal(raw, &c.m); err != nil {
+		c.log.Warn("couldn't read the open conflicts", "path", c.path, "err", err)
+	}
+}
+
+// changedLocked saves the list soon (see conflictSave), or reports that the
+// caller must save it now, once it lets go of c.mu: the daemon is stopping.
+func (c *conflicts) changedLocked() (now bool) {
+	if c.path == "" {
+		return false
+	}
+	c.dirty = true
+	if c.stopping {
+		return true
+	}
+	if c.due == nil {
+		c.due = time.AfterFunc(conflictSave, c.save)
+	}
+	return false
+}
+
+// save writes the list as it is now, if the file isn't that already. A save
+// that fails leaves it to the next change, or to flush.
+func (c *conflicts) save() {
+	c.saving.Lock()
+	defer c.saving.Unlock()
+	c.mu.Lock()
+	c.due = nil
+	if !c.dirty {
+		c.mu.Unlock()
+		return
+	}
+	c.dirty = false
+	raw, _ := json.Marshal(c.m)
+	c.mu.Unlock()
+	if err := config.WriteAtomic(c.path, raw); err != nil {
+		c.mu.Lock()
+		c.dirty = true
+		c.mu.Unlock()
+		c.log.Warn("couldn't save the open conflicts; a restart forgets them", "path", c.path, "err", err)
+	}
+}
+
+// flush saves what isn't saved yet, after a save under way, as the daemon
+// stops; any change after it is saved at once.
+func (c *conflicts) flush() {
+	c.mu.Lock()
+	c.stopping = true
+	if c.due != nil {
+		c.due.Stop()
+	}
+	c.mu.Unlock()
+	if c.path != "" {
+		c.save()
+	}
 }
 
 func (c *conflicts) add(id string, x Conflict) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.m == nil {
 		c.m = map[string][]Conflict{}
 	}
 	c.m[id] = append(c.m[id], x)
+	now := c.changedLocked()
+	c.mu.Unlock()
+	if now {
+		c.save()
+	}
 }
 
 func (c *conflicts) get(id string) []Conflict {
@@ -208,18 +295,27 @@ func (c *conflicts) count(id string) int {
 // clear marks one conflict handled, or all of them for path "".
 func (c *conflicts) clear(id, copyPath string) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if copyPath == "" {
-		delete(c.m, id)
-		return
-	}
+	before := len(c.m[id])
 	keep := c.m[id][:0]
 	for _, x := range c.m[id] {
-		if x.Copy != copyPath {
+		if copyPath != "" && x.Copy != copyPath {
 			keep = append(keep, x)
 		}
 	}
-	c.m[id] = keep
+	if len(keep) == before {
+		c.mu.Unlock()
+		return // nothing to mark
+	}
+	if len(keep) == 0 {
+		delete(c.m, id)
+	} else {
+		c.m[id] = keep
+	}
+	now := c.changedLocked()
+	c.mu.Unlock()
+	if now {
+		c.save()
+	}
 }
 
 // ---------- size ----------

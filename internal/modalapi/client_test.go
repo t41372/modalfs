@@ -43,6 +43,9 @@ func TestDownloadPads(t *testing.T) {
 	if err != nil || !bytes.Equal(b, []byte("abc\x00\x00\x00\x00\x00")) {
 		t.Fatalf("got %q, %v", b, err)
 	}
+	if _, served, err := c.DownloadBlock(context.Background(), srv.URL, 8); err != nil || served != 3 {
+		t.Fatalf("served %d bytes, %v; want 3", served, err)
+	}
 }
 
 // Out of reach: no network or a timeout, wrapped or not. Not an answer from

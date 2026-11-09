@@ -191,6 +191,34 @@ func TestContractBlocksOverHTTP1(t *testing.T) {
 	}
 }
 
+// A block stored shorter than the file says is served as stored, so the
+// count DownloadBlock returns tells it from a whole block. modalfs 0.2.0 and
+// earlier could commit an encrypted file that way, and volume.Download reads
+// it again on this.
+func TestContractShortBlockServedAsStored(t *testing.T) {
+	c, vol := scratch(t)
+	ctx := context.Background()
+	short, tail := []byte("a short block"), []byte("Z") // neither ends in a zero Modal could leave out
+	h0, h1 := sha256.Sum256(short), sha256.Sum256(tail)
+	size := int64(BlockSize + len(tail))
+	_, err := c.Put(ctx, vol, []PutFile{{Path: "short.bin", Size: size, Hashes: [][]byte{h0[:], h1[:]},
+		Block: func(i int) ([]byte, error) { return [][]byte{short, tail}[i], nil }}})
+	if err != nil {
+		t.Fatalf("committing a file whose first block is short: %v", err)
+	}
+	urls, got, err := c.BlockURLs(ctx, vol, "short.bin", 0, 2)
+	if err != nil || got != size || len(urls) != 2 {
+		t.Fatalf("block URLs: %d, size %d, err %v", len(urls), got, err)
+	}
+	b, served, err := c.DownloadBlock(ctx, urls[0], BlockSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if served != len(short) || !bytes.Equal(b, append(short, make([]byte, BlockSize-len(short))...)) {
+		t.Fatalf("the short block was served as %d bytes, not %d: volume.Download can't tell it from a whole one", served, len(short))
+	}
+}
+
 // putReq asks to commit path as one block, with an optional receipt.
 func putReq(volID, path string, size int64, hash, receipt []byte) *pb.VolumePutFiles2Request {
 	b := pb.VolumePutFiles2Request_Block_builder{ContentsSha256: hash}

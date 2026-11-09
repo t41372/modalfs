@@ -154,7 +154,9 @@ func Run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	d := &Daemon{store: store, log: log, cache: cache, running: map[string]*runMount{}, bootID: randomHex(8), quit: make(chan struct{}), now: make(chan struct{})}
+	d := &Daemon{store: store, log: log, cache: cache, running: map[string]*runMount{}, bootID: randomHex(8), quit: make(chan struct{}), now: make(chan struct{}),
+		conflicts: conflicts{path: filepath.Join(config.Dir(), "conflicts.json"), log: log}}
+	d.conflicts.load()
 	if d.dl, err = newDLManager(d, config.Dir(), d.quit); err != nil {
 		return err
 	}
@@ -210,6 +212,7 @@ func Run(log *slog.Logger) error {
 	// this file knows it quit on purpose and doesn't start it again.
 	_ = os.Remove(InfoPath())
 	d.stopAll()
+	d.conflicts.flush() // after stopAll: the last commits may have added some
 	d.logins.close()
 	_ = ul.Close()
 	_ = tl.Close()

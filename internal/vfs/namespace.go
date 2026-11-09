@@ -466,7 +466,9 @@ func (n *Namespace) createSelected(s nameSelection, exclusive bool, size *int64,
 		}
 		n.fs.mu.Unlock()
 		if size != nil {
-			n.fs.ephTruncate(s.path, *size)
+			if _, err := n.fs.ephTruncate(s.path, *size); err != nil {
+				return "", Attr{}, err
+			}
 		}
 		a, _ := n.fs.ephStat(s.path)
 		return s.path, a, nil
@@ -560,8 +562,29 @@ func (n *Namespace) mkdirSelected(s nameSelection, guard func(string) func(error
 	return s.path, attr, nil
 }
 
+// RemoveKind is what a removal was asked to delete. The kernel chose unlink
+// or rmdir from what it last saw of the entry, and another writer may have
+// replaced it with the other kind since, so the entry is checked again here.
+type RemoveKind int
+
+const (
+	RemoveAny  RemoveKind = iota // whatever the name is
+	RemoveFile                   // unlink: a file; a folder is EISDIR
+	RemoveDir                    // rmdir: a folder; a file is ENOTDIR
+)
+
+func (k RemoveKind) check(isDir bool) error {
+	switch {
+	case k == RemoveFile && isDir:
+		return syscall.EISDIR
+	case k == RemoveDir && !isDir:
+		return syscall.ENOTDIR
+	}
+	return nil
+}
+
 func (n *Namespace) Remove(parent, name string) (string, error) {
-	return n.RemoveGuarded(parent, name, nil)
+	return n.RemoveGuarded(parent, name, RemoveAny, nil)
 }
 
 // The API contract explicitly refuses symlink mutations. Reject these
@@ -577,7 +600,7 @@ func (n *Namespace) rejectSymlinkMutation(s nameSelection, operation string) err
 	return err
 }
 
-func (n *Namespace) RemoveGuarded(parent, name string, guard func(string) func(error)) (raw string, err error) {
+func (n *Namespace) RemoveGuarded(parent, name string, kind RemoveKind, guard func(string) func(error)) (raw string, err error) {
 	if n.fs.opt.ReadOnly {
 		return "", syscall.EROFS
 	}
@@ -591,6 +614,10 @@ func (n *Namespace) RemoveGuarded(parent, name string, guard func(string) func(e
 	if !s.exists {
 		return "", os.ErrNotExist
 	}
+	// a name known here only (a pending file, a local-only one) is a file
+	if err := kind.check(s.remote && s.entry.IsDir); err != nil {
+		return "", err
+	}
 	if err := n.rejectSymlinkMutation(s, "delete"); err != nil {
 		return "", err
 	}
@@ -600,7 +627,7 @@ func (n *Namespace) RemoveGuarded(parent, name string, guard func(string) func(e
 		}
 	}
 	attempted := false
-	err = n.fs.remove(s.path, func() error { attempted = true; return nil })
+	err = n.fs.remove(s.path, kind, func() error { attempted = true; return nil })
 	if err != nil && attempted {
 		err = &removeEntryError{cause: err}
 	}

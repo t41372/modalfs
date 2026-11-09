@@ -44,11 +44,14 @@ func (st *fileState) initAhead() {
 	st.bver, st.touched, st.ahead = map[int64]uint64{}, map[int64]time.Time{}, map[int64]aheadState{}
 }
 
-// changedBlockLocked records that block idx's content changed.
+// changedBlockLocked records that block idx changed: its bytes, or its
+// length (the last block of a file that grew). Its hash and its upload
+// ahead described the block as it was.
 func (st *fileState) changedBlockLocked(idx int64) {
 	st.bver[idx]++
 	st.touched[idx] = time.Now()
 	delete(st.ahead, idx)
+	delete(st.hashes, idx)
 }
 
 // forgetBlockLocked drops what's known about block idx's upload ahead, once

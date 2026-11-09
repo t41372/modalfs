@@ -961,3 +961,56 @@ func TestSyncWaitingOnServerDoesNotFreezeTests(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A file that grows while it's being committed: the commit in flight holds
+// the file's last block at its length then, and the next commit must hash
+// that block again at its new length. Reusing the hash from before the
+// growth would name a short block Modal already has, and the file would
+// read as damaged (encrypted volumes can't even decrypt it).
+func TestGrowthDuringCommit(t *testing.T) {
+	e := setup(t, modalfake.Options{UpBytesPerSec: 4 * MiB, Latency: 20 * time.Millisecond}, []string{"-write-back", "1s"})
+	first := append(randomBytes(t, modalapi.BlockSize), 'B') // two blocks; the second a byte long
+	f, err := os.Create(filepath.Join(e.mnt, "grows.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsync.File(f); err != nil {
+		t.Fatal(err)
+	}
+	// Once the commit's upload of the first block has begun, its hashes are
+	// settled (a file of two blocks isn't uploaded ahead, so the first bytes
+	// Modal gets are the commit's); now extend the file past the second
+	// block, so that block, a byte long in the commit, becomes a whole one.
+	for deadline := time.Now().Add(30 * time.Second); e.net.Received() == 0; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("no upload started within 30 s")
+		}
+	}
+	if _, err := f.WriteAt([]byte("Z"), 2*modalapi.BlockSize+5); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsync.File(f); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	want := make([]byte, 2*modalapi.BlockSize+6)
+	copy(want, first)
+	want[len(want)-1] = 'Z'
+	e.waitRemote("grows.bin", want, 2*time.Minute)
+	if live() {
+		return // Modal may serve a block without its trailing zeros: only the fake shows the block's stored length
+	}
+	ctx := context.Background()
+	urls, _, err := e.client.BlockURLs(ctx, e.vol.ID, "grows.bin", 1, 1)
+	if err != nil || len(urls) != 1 {
+		t.Fatalf("block URLs: %v, %v", urls, err)
+	}
+	if _, served, err := e.client.DownloadBlock(ctx, urls[0], modalapi.BlockSize); err != nil || served != modalapi.BlockSize {
+		t.Fatalf("the second block on Modal is %d bytes (%v), want a whole block: the commit named it at its length before the file grew", served, err)
+	}
+}

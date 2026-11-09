@@ -53,3 +53,26 @@ func TestUnescapeMountinfo(t *testing.T) {
 		}
 	}
 }
+
+// A mountpoint that is a symbolic link is mounted at the folder it points
+// to: that's what the mount table shows, and where the watch for mounts
+// gone missing looks.
+func TestPrepareMountpointFollowsLink(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	got, err := prepareMountpoint(link)
+	want, _ := filepath.EvalSymlinks(real)
+	if err != nil || got != want {
+		t.Fatalf("prepareMountpoint(link) = %s, %v; want %s", got, err, want)
+	}
+	if tablePath(got) != want {
+		t.Fatalf("tablePath(%s) = %s, want %s", got, tablePath(got), want)
+	}
+}

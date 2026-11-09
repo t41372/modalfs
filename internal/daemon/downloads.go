@@ -354,7 +354,7 @@ func (m *dlManager) step(id string) bool {
 		// Modal may forget a call long after it ended (a laptop closed for
 		// a week). The agent's own record says how it ended.
 		st, ok := m.cachedStatus(id)
-		if !ok || st.Running() || st.State == "interrupted" || float64(time.Now().Unix())-st.T < 60 {
+		if !ok || st.T <= j.Before || st.Running() || st.State == "interrupted" || float64(time.Now().Unix())-st.T < 60 {
 			return false
 		}
 	}
@@ -387,11 +387,12 @@ func (m *dlManager) ended(ctx context.Context, r downloads.Runner, j downloads.J
 	if fresh, err := m.job(j.ID); err == nil {
 		j = fresh // a pause or cancel may have come in meanwhile
 	}
-	// The agent writes its last status before it returns.
+	// The agent writes its last status before it returns. One from before
+	// this run (the last run's, read back late) says nothing about it.
 	var st *downloads.Status
 	if s, err := downloads.ReadStatus(ctx, r.Volume(j), j); err == nil && s.T > j.Before {
 		st = &s
-	} else if cached, ok := m.cachedStatus(j.ID); ok {
+	} else if cached, ok := m.cachedStatus(j.ID); ok && cached.T > j.Before {
 		st = &cached
 	}
 	// A call that handed over to a successor (the 24 h limit) isn't the
@@ -449,16 +450,22 @@ func (m *dlManager) ended(ctx context.Context, r downloads.Runner, j downloads.J
 			state, msg = downloads.StateCancelled, ""
 		}
 	}
+	// When it ended: the agent's final status says, and is right when modalfs
+	// wasn't there to see it end (quit, or offline). A call cut short without
+	// a final word (a cancel) ended about now.
+	end := time.Now().Unix()
+	if st != nil && !st.Running() && st.T > 0 {
+		end = min(end, max(int64(st.T), j.Started))
+	}
 	if st != nil && st.Running() {
 		// Cut short without a final word (a cancel): don't show it running.
 		st.State, st.Speed, st.ETA = state, 0, nil
 	}
 	j, _ = m.store.Update(j.ID, func(j *downloads.Job) {
-		now := time.Now().Unix()
 		if j.Started > 0 {
-			j.Ran += max(now-j.Started, 0)
+			j.Ran += max(end-j.Started, 0)
 		}
-		j.Ended = now
+		j.Ended = end
 		j.State, j.Error, j.ErrorKind, j.Stopping, j.Keep = state, msg, kind, "", false
 		if st != nil {
 			j.Status = st
@@ -741,6 +748,26 @@ func (m *dlManager) Forget(ctx context.Context, id string) error {
 	delete(m.status, id)
 	m.mu.Unlock()
 	return m.store.Remove(id)
+}
+
+// forgetAccount takes the ended downloads of an account being removed off
+// the list: without the account their records, and anything they
+// downloaded, can't be reached from here anyway; that stays on the volume.
+// RemoveAccount refuses while one runs, but one may start meanwhile: it
+// stays listed, so its Function isn't hidden.
+func (m *dlManager) forgetAccount(accountID string) {
+	for _, j := range m.store.List() {
+		if j.AccountID != accountID || !downloads.Ended(j.State) {
+			continue
+		}
+		m.mu.Lock()
+		delete(m.history, j.ID)
+		delete(m.status, j.ID)
+		m.mu.Unlock()
+		if err := m.store.Remove(j.ID); err != nil {
+			m.d.log.Warn("couldn't take a removed account's download off the list", "id", j.ID, "err", err)
+		}
+	}
 }
 
 // ---------- views ----------

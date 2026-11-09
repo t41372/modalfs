@@ -12,6 +12,14 @@ The NFS server only accepts requests carrying the AUTH_UNIX credentials of the u
 
 A sidecar (the block list modalfs stores next to a large file) is now compared with any hashes already known, and ignored on a mismatch. When none is known (a fresh cache editing a file another client wrote), it's still trusted on size and mtime alone. **Fix:** hash one block of the file before trusting the sidecar (8 MiB of download per first edit). `internal/vfs/sidecar.go`.
 
+### A replacement of the same size in the same second goes unnoticed
+
+Modal describes a file by its size and a modification time in whole seconds, and never shows block hashes, so modalfs tells versions apart by size and second. A file another writer replaces with one of the same size within the same second as the version modalfs has read keeps being served from the cache, and an edit made on top of it is committed over the replacement (the edit is kept; the replacement is lost, with no conflict copy). Two writers to one file within a second is already last-writer-wins on Modal; this is the one shape of it modalfs can't see. **Fix:** nothing cheap. Hashing every block again after each listing would cost a download per block of every file read; a block's signed URL may encode its hash, but Modal doesn't promise that. `internal/vfs/manifest.go`.
+
+### Writes to a file after its conflict copy was made go to the file as it is now
+
+While a file is edited here and replaced on Modal, the commit saves the edit as a conflict copy and leaves the replacement in place, as documented. A program that keeps writing to the same open file afterwards writes onto the replacement (its later bytes land in the file, not in the copy), which is what a shared filesystem without locks does. **Fix:** following the open file to its conflict copy would need the mount's file handles to carry an object identity across both frontends; a large change for a case that needs a replacement by someone else during a pause in a write stream. `internal/vfs/file.go`.
+
 ### Range reads from the cache aren't checked
 
 A cached block used whole (as the base of a write or a commit) is checked against its SHA-256. A plain read of part of a block isn't, so a disk error in the cache can return wrong bytes to a reader, though it can't reach Modal through a commit. **Fix:** verify a block once when it's first read after startup, and remember that it was. `internal/vfs/cache.go`.
@@ -39,6 +47,10 @@ Read-ahead is bounded (it starts after three blocks read in a row and shares a l
 ### BitTorrent uploads while it downloads
 
 gopeed and aria2 send pieces to other peers while they download a torrent, even with seeding off (the container exits as soon as the data is complete). Modal's terms (§1.5) forbid peer-to-peer file sharing, so a torrent download risks the account, and its peers see the container's address. The Cloudflare WARP option doesn't help: neither tool sends its peer traffic through a proxy, so torrents can't use it and connect directly (the app and CLI say so). **Fix:** a download-only client that proxies its peers (anacrolix/torrent with `NoUpload`, MPL-2.0, or libtorrent), run in the WARP namespace, with UDP through the proxy. `docs/design/remote-downloads.md`.
+
+### Downloads of same-named files into one folder can overwrite each other
+
+Each download runs in its own Function and moves its finished file into the chosen folder, renaming it `name (1).ext` if the name is taken in that Function's view of the volume. Two downloads that finish at the same moment with the same file name don't see each other's file, and the later commit replaces the earlier one (the records of both say done). **Fix:** a folder per download under the chosen one would make the names distinct, at the cost of a folder the user didn't ask for; a check of the folder after the volume is committed would still race. Until a choice is made, give such downloads different folders, or add them one at a time. `internal/downloads/remote/app.py`.
 
 ### gopeed gives up on some servers
 

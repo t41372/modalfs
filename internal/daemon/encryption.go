@@ -44,6 +44,19 @@ func (d *Daemon) saveEncryption(v config.VolumeEncryption) error {
 	})
 }
 
+func (d *Daemon) forgetEncryption(id string) error {
+	return d.store.Update(func(f *config.File) error {
+		keep := f.Encryption[:0]
+		for _, v := range f.Encryption {
+			if v.VolumeID != id {
+				keep = append(keep, v)
+			}
+		}
+		f.Encryption = keep
+		return nil
+	})
+}
+
 // cipherLocked loads only the recorded secret store, never a forgotten key
 // left somewhere else. The encryption mutex also serializes locking.
 func (d *Daemon) cipherLocked(id string) (*encryption.Cipher, error) {
@@ -89,6 +102,15 @@ func (d *Daemon) inspectVolume(ctx context.Context, c *modalapi.Client, id strin
 		if r.VolumeID == id {
 			known = true
 		}
+	}
+	// A record without a fingerprint rests on a guess alone: a name that
+	// looked encrypted, with no marker and no key ever given. When the guess
+	// no longer holds (the file was renamed), the record goes.
+	if known && !encrypted && record.Fingerprint == "" {
+		if err := d.forgetEncryption(id); err != nil {
+			return nil, false, err
+		}
+		known = false
 	}
 	encrypted = encrypted || known
 	if encrypted && !known {

@@ -10,6 +10,13 @@ import (
 )
 
 func onRemove(ctx context.Context, w *response, userHandle Handler) error {
+	return removeEntry(ctx, w, userHandle, false)
+}
+
+// removeEntry is REMOVE (dir false) and RMDIR (dir true). modalfs: a named
+// filesystem is told which, so an entry that changed kind since the client
+// last saw it isn't deleted by the wrong call.
+func removeEntry(ctx context.Context, w *response, userHandle Handler, dir bool) error {
 	w.errorFmt = wccDataErrorFormatter
 	obj := DirOpArg{}
 	if err := xdr.Read(w.req.Body, &obj); err != nil {
@@ -56,7 +63,7 @@ func onRemove(ctx context.Context, w *response, userHandle Handler) error {
 			guarded = true
 			guard = func(raw string) func(error) { return identities.GuardRemove(fs, splitFSPath(raw)) }
 		}
-		toDelete, err = names.RemoveNamed(fs.Join(path...), string(obj.Filename), guard)
+		toDelete, err = names.RemoveNamed(fs.Join(path...), string(obj.Filename), dir, guard)
 	} else {
 		err = fs.Remove(toDelete)
 	}

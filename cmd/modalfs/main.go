@@ -421,7 +421,7 @@ func cmdMount(args []string) {
 		return
 	}
 	in := map[string]any{"account_id": a.ID, "environment": *env, "volume_name": pos[0], "mountpoint": mp,
-		"read_only": *ro, "auto_mount": *auto, "mode": *mode, "filter_junk": !*noFilter, "start": true, "wait": true}
+		"read_only": *ro, "auto_mount": *auto, "mode": *mode, "filter_junk": !*noFilter}
 	fl.Visit(func(f *flag.Flag) { // left out, they follow the defaults
 		switch f.Name {
 		case "on-conflict":
@@ -430,6 +430,13 @@ func cmdMount(args []string) {
 			in["write_back_ms"] = writeBack.Milliseconds()
 		}
 	})
+	addMount(c, in)
+}
+
+// addMount saves a new mount (in is what POST /api/mounts takes), mounts it
+// and says where.
+func addMount(c *daemon.Client, in map[string]any) {
+	in["start"], in["wait"] = true, true
 	var out struct {
 		Mount config.Mount `json:"mount"`
 		Error string       `json:"error"`
@@ -795,7 +802,10 @@ func cmdVolume(args []string) {
 		must(c.Do("POST", "/api/accounts/"+a.ID+"/volumes", in, &v))
 		fmt.Printf("created %s (%s)\n", v.Name, v.ID)
 		if *mountIt {
-			cmdMount([]string{pos[0], "--account", a.ID, "--env", *env})
+			// The volume just made, by its ID: not a saved mount of that
+			// name in another environment, nor a volume that takes the
+			// name later.
+			addMount(c, map[string]any{"account_id": a.ID, "environment": *env, "volume_name": v.Name, "volume_id": v.ID, "filter_junk": true})
 		}
 	case "key":
 		if len(pos) != 1 {
@@ -955,10 +965,15 @@ func cmdAccount(args []string) {
 				fatal(fmt.Errorf("%s is %s; unmount it first (it belongs to %s)", m.VolumeName, m.State, a.Label))
 			}
 		}
+		dls := 0
 		for _, d := range st.Downloads {
-			if d.AccountID == a.ID && !downloads.Ended(d.State) {
+			if d.AccountID != a.ID {
+				continue
+			}
+			if !downloads.Ended(d.State) {
 				fatal(fmt.Errorf("a remote download of %s is %s; pause or cancel it first", a.Label, d.State))
 			}
+			dls++
 		}
 		if !*yes {
 			what := "the token"
@@ -966,6 +981,9 @@ func cmdAccount(args []string) {
 				what = "the token and the 1 volume it manages"
 			} else if n > 1 {
 				what = fmt.Sprintf("the token and the %d volumes it manages", n)
+			}
+			if dls > 0 {
+				what += fmt.Sprintf("; its %d downloads leave the list (what they downloaded stays)", dls)
 			}
 			fmt.Printf("Disconnect %s? modalfs forgets %s. Nothing on Modal changes.\nType yes to confirm: ", a.Label, what)
 			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')

@@ -48,7 +48,7 @@ func TestNamespaceTruncateRetriesCommittedState(t *testing.T) {
 	for {
 		buf := make([]byte, 1<<20)
 		n := runtime.Stack(buf, true)
-		if strings.Contains(string(buf[:n]), "(*fileState).truncate(") {
+		if strings.Contains(string(buf[:n]), "(*fileState).truncate") { // truncate, or truncateMakes before it
 			break
 		}
 		if time.Now().After(deadline) {

@@ -269,7 +269,7 @@ func (n *node) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.En
 	return n.newChild(ctx, raw, a), 0
 }
 
-func (n *node) remove(name string) syscall.Errno {
+func (n *node) remove(name string, kind vfs.RemoveKind) syscall.Errno {
 	if len(name) > maxClientNameBytes {
 		return syscall.ENAMETOOLONG
 	}
@@ -280,13 +280,17 @@ func (n *node) remove(name string) syscall.Errno {
 	if status != 0 {
 		return status
 	}
-	_, err := n.v.Names().RemoveGuarded(p, name, n.ids.removeGuard)
+	_, err := n.v.Names().RemoveGuarded(p, name, kind, n.ids.removeGuard)
 	return errno(err)
 }
 
-func (n *node) Unlink(ctx context.Context, name string) syscall.Errno { return n.remove(name) }
+func (n *node) Unlink(ctx context.Context, name string) syscall.Errno {
+	return n.remove(name, vfs.RemoveFile)
+}
 
-func (n *node) Rmdir(ctx context.Context, name string) syscall.Errno { return n.remove(name) }
+func (n *node) Rmdir(ctx context.Context, name string) syscall.Errno {
+	return n.remove(name, vfs.RemoveDir)
+}
 
 func (n *node) Rename(ctx context.Context, name string, newParent gofs.InodeEmbedder, newName string, flags uint32) syscall.Errno {
 	if len(name) > maxClientNameBytes || len(newName) > maxClientNameBytes {

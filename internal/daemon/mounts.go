@@ -290,8 +290,8 @@ func (d *Daemon) doStart(m config.Mount, ph *runMount) (_ *runMount, err error) 
 	}
 	d.setStep(m.ID, ph, StepMount)
 	m = d.followLabel(m, vol.ID)
-	mp := expandHome(m.Mountpoint)
-	if err := prepareMountpoint(mp); err != nil {
+	mp, err := prepareMountpoint(expandHome(m.Mountpoint))
+	if err != nil {
 		_ = fsys.Close()
 		return nil, err
 	}
@@ -743,26 +743,37 @@ func expandHome(p string) string {
 	return p
 }
 
-func prepareMountpoint(mp string) error {
+// prepareMountpoint makes sure mp is an empty folder with nothing mounted
+// on it, and returns the path to mount at. A folder that is a symbolic
+// link is mounted at the folder it points to: that's the path the kernel's
+// mount table shows, where watch looks for the mount.
+func prepareMountpoint(mp string) (string, error) {
 	if mp == "" || mp == "/" {
-		return errors.New("invalid mountpoint")
+		return "", errors.New("invalid mountpoint")
 	}
 	if err := os.MkdirAll(mp, 0o755); err != nil {
-		return err
+		return "", err
+	}
+	if fi, err := os.Lstat(mp); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		real, err := filepath.EvalSymlinks(mp)
+		if err != nil {
+			return "", err
+		}
+		mp = real
 	}
 	if mounted, _ := isMountpoint(mp); mounted {
-		return fmt.Errorf("%s is already a mount point", mp)
+		return "", fmt.Errorf("%s is already a mount point", mp)
 	}
 	ents, err := os.ReadDir(mp)
 	if err != nil {
-		return err
+		return "", err
 	}
 	for _, e := range ents {
 		if e.Name() != ".DS_Store" && e.Name() != ".localized" {
-			return fmt.Errorf("%s is not empty; refusing to hide its contents", mp)
+			return "", fmt.Errorf("%s is not empty; refusing to hide its contents", mp)
 		}
 	}
-	return nil
+	return mp, nil
 }
 
 func nfsMount(port int, mp string, ro bool) (string, error) {

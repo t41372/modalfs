@@ -475,10 +475,20 @@ func (c *Client) BlockURLs(ctx context.Context, volID, path string, first, n int
 	return r.GetGetUrls(), int64(r.GetSize()), nil
 }
 
-// Download fetches a signed block URL and pads it to expectLen (the server
-// may omit trailing zero bytes when ClientPadsBlocks is set).
+// Download fetches a signed block URL and pads the block with zeros to
+// expectLen: the server may leave trailing zero bytes out of what it
+// serves (ClientPadsBlocks).
 func (c *Client) Download(ctx context.Context, url string, expectLen int) ([]byte, error) {
-	return transfer(ctx, func(ctx context.Context, w watch) ([]byte, error) {
+	b, _, err := c.DownloadBlock(ctx, url, expectLen)
+	return b, err
+}
+
+// DownloadBlock is Download that also says how many bytes Modal served, for
+// a caller that can tell a stored block shorter than the file says it is
+// from trailing zeros left out.
+func (c *Client) DownloadBlock(ctx context.Context, url string, expectLen int) ([]byte, int, error) {
+	served := 0
+	b, err := transfer(ctx, func(ctx context.Context, w watch) ([]byte, error) {
 		req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
 		resp, err := c.HTTP.Do(req)
 		if err != nil {
@@ -504,8 +514,10 @@ func (c *Client) Download(ctx context.Context, url string, expectLen int) ([]byt
 			return nil, status.Errorf(codes.Unavailable, "block GET: body cut short (%d of %d bytes)", n, resp.ContentLength)
 		}
 		c.BytesDown.Add(int64(n))
+		served = n
 		return buf, nil
 	})
+	return b, served, err
 }
 
 type PutFile struct {

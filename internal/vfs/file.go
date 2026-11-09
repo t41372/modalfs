@@ -84,8 +84,9 @@ type fileState struct {
 	unsure map[int64]bool
 
 	// hashes caches each dirty block's SHA-256 from when it was last hashed;
-	// a change to the block drops it. A file committed several times while
-	// it grows (a long copy) then hashes each block once.
+	// a change to the block, to its bytes or to its length, drops it
+	// (changedBlockLocked). A file committed several times while it grows
+	// (a long copy) then hashes each block once.
 	hashes map[int64][]byte
 
 	// unsynced lists dirty blocks written since the last Sync; synced data
@@ -124,10 +125,13 @@ type fileState struct {
 	copySize, copyMtime int64
 
 	// held is the disk this file's pending changes take, as counted in the
-	// shared cache's pending bytes (see accountLocked). leftover: the mount
-	// closed, and they're counted as its volume's now.
-	held     int64
-	leftover bool
+	// shared cache's pending bytes (see accountLocked). reserved is the part
+	// of it that is room given to changes not made yet (see waitRoom): it
+	// stays counted until the change gives it back, whatever else settles
+	// the count meanwhile. leftover: the mount closed, and they're counted as
+	// its volume's now.
+	held, reserved int64
+	leftover       bool
 
 	// last journal written (crash recovery)
 	jSize, jFloor int64
@@ -164,10 +168,10 @@ func (st *fileState) snapFile(idx int64) string { return st.blockFile(idx) + ".s
 // live file changes or drops it. move is for a block about to be deleted.
 func (st *fileState) preserveLocked(idx int64, move bool) error {
 	delete(st.hashes, idx)
-	sn := st.snap
-	if sn == nil || !sn.dirty[idx] || sn.saved[idx] {
+	if !st.keepsLocked(idx) {
 		return nil
 	}
+	sn := st.snap
 	var err error
 	if move {
 		err = os.Rename(st.blockFile(idx), st.snapFile(idx))
@@ -179,6 +183,43 @@ func (st *fileState) preserveLocked(idx int64, move bool) error {
 	}
 	sn.saved[idx] = true
 	return nil
+}
+
+// keepsLocked reports whether a change to block idx first copies it for the
+// commit in flight, which hasn't read it yet.
+func (st *fileState) keepsLocked(idx int64) bool {
+	sn := st.snap
+	return sn != nil && sn.dirty[idx] && !sn.saved[idx]
+}
+
+// roomLocked is the room, in bytes of blocks, that writing n bytes at off
+// takes: the blocks it makes dirty, the copies it keeps for the commit in
+// flight, and the old partial last block, made whole when the write starts
+// past it (growLocked).
+func (st *fileState) roomLocked(off, n int64) int64 {
+	cs := st.fs.chunkSize()
+	var blocks int64
+	for idx := off / cs; idx*cs < off+n; idx++ {
+		if !st.dirty[idx] || st.keepsLocked(idx) {
+			blocks++
+		}
+	}
+	if last := st.size / cs; st.size%cs != 0 && last < off/cs && !st.dirty[last] {
+		blocks++
+	}
+	return blocks * cs
+}
+
+// giveBack returns the room reserved for a change (see waitRoom) once the
+// change is made, or failed: the blocks it made are counted by then.
+func (st *fileState) giveBack(room int64) {
+	if room == 0 {
+		return
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.reserved -= room
+	st.accountLocked()
 }
 
 func copyFile(src, dst string) error {
@@ -196,8 +237,9 @@ func copyFile(src, dst string) error {
 
 // accountLocked brings the shared count of pending bytes up to date with
 // the block files this file keeps: its dirty blocks and the copies set
-// aside for the commit in flight. Every change to them ends with it. What a
-// closed mount leaves is counted as its volume's (see Close).
+// aside for the commit in flight, and the room reserved for changes not
+// made yet. Every change to them ends with it. What a closed mount leaves
+// is counted as its volume's (see Close).
 func (st *fileState) accountLocked() {
 	var n int64
 	if !st.removed && !st.leftover {
@@ -205,7 +247,7 @@ func (st *fileState) accountLocked() {
 		if st.snap != nil {
 			n += int64(len(st.snap.saved))
 		}
-		n *= st.fs.chunkSize()
+		n = n*st.fs.chunkSize() + st.reserved
 	}
 	if d := n - st.held; d != 0 {
 		st.held = n
@@ -647,6 +689,23 @@ func (st *fileState) truncate(newSize int64) (err error) {
 	return nil
 }
 
+// truncateMakes reports whether a truncate to size takes room, and an
+// offset in the block that takes it: the old partial last block, made dirty
+// when the file grows; the block the cut goes through, made dirty or copied
+// for the commit in flight when it shrinks.
+func (st *fileState) truncateMakes(size int64) (off int64, ok bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	cs := st.fs.chunkSize()
+	switch {
+	case size > st.size && st.size%cs != 0:
+		return st.size, !st.dirty[st.size/cs]
+	case size < st.size && size%cs != 0:
+		return size, !st.dirty[size/cs] || st.keepsLocked(size/cs)
+	}
+	return 0, false
+}
+
 // touch records a new, empty file. Its journal is what keeps it through a
 // crash: it has no blocks yet.
 func (st *fileState) touch() {
@@ -732,11 +791,13 @@ func (st *fileState) discard() bool {
 const maxName = 255
 
 // conflictName names a conflict copy of p, shortening the name to fit if
-// it has to.
+// it has to. The time says when it was made; the random part keeps two
+// computers that save a copy of the same file in the same second from
+// overwriting each other's (Modal can't refuse a name that's taken).
 func (fs *FS) conflictName(p string) string {
-	suffix, limit := ".conflict-"+time.Now().Format("20060102-150405"), maxName
+	suffix, limit := ".conflict-"+time.Now().Format("20060102-150405")+"-"+rand.Text()[:8], maxName
 	if fs.c.Cipher != nil {
-		suffix, limit = suffix+"-"+rand.Text(), encryption.MaxNameBytes
+		limit = encryption.MaxNameBytes
 	}
 	ext := path.Ext(p)
 	if len(ext) > limit-len(suffix)-1 {
@@ -1028,7 +1089,7 @@ func (st *fileState) snapshotHashes(sn *snapshot, cur modalapi.Entry, curOK bool
 		switch {
 		case sn.dirty[i]:
 			st.mu.Lock()
-			h := st.hashes[i]
+			h, ver := st.hashes[i], st.bver[i]
 			if sn.saved[i] {
 				h = nil // the live block changed; hash the snapshot's copy
 			}
@@ -1040,7 +1101,10 @@ func (st *fileState) snapshotHashes(sn *snapshot, cur modalapi.Entry, curOK bool
 				}
 				h = fs.c.HashBlock(data)
 				st.mu.Lock()
-				if !sn.saved[i] && st.dirty[i] { // still the content just hashed
+				// Keep it for the live block only while that is the block
+				// just hashed: unchanged since, and of the snapshot's length
+				// (a file that grew meanwhile padded its last block).
+				if !sn.saved[i] && st.dirty[i] && st.bver[i] == ver && fs.blockLen(st.size, i) == fs.blockLen(sn.size, i) {
 					st.hashes[i] = h
 				}
 				st.mu.Unlock()

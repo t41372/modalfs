@@ -335,10 +335,13 @@ func (c *blockCache) Left(vol string) int64 {
 	return c.left[vol]
 }
 
-// room reports whether need more bytes of pending changes fit. If not,
-// freed is closed when some are uploaded, stuck says nothing a mount could
-// upload is pending, so waiting can't help, and left says changes of
-// volumes that aren't mounted fill the limit.
+// room reports whether need more bytes of pending changes fit, and if they
+// do, counts them as pending at once, so writes that check at the same time
+// can't all find the same room; the caller charges them to its file, whose
+// accounting settles them against the blocks it makes (see waitRoom). If
+// they don't fit, freed is closed when some are uploaded, stuck says
+// nothing a mount could upload is pending, so waiting can't help, and left
+// says changes of volumes that aren't mounted fill the limit.
 func (c *blockCache) room(need int64) (ok bool, freed <-chan struct{}, stuck, left bool) {
 	free := diskFree(c.dir)
 	c.mu.Lock()
@@ -349,6 +352,10 @@ func (c *blockCache) room(need int64) (ok bool, freed <-chan struct{}, stuck, le
 	}
 	fits := c.max <= 0 || c.pending+need <= c.max-readRoom(c.max)
 	ok = fits && (free < 0 || free-need >= minFree)
+	if ok {
+		c.pending += need
+		c.evictLocked()
+	}
 	return ok, c.freed, c.pending == kept, !fits && kept > 0
 }
 

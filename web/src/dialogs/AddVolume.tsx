@@ -68,7 +68,8 @@ export function AddVolumeDialog({ open, onOpenChange }: { open: boolean; onOpenC
   async function add(name: string, id: string, locked: boolean) {
     setBusy(id)
     try {
-      const r = await api<{ mount: Mount; error?: string }>('POST', '/mounts', { account_id: account, environment: envName, volume_name: name, filter_junk: true, start: !locked })
+      // By ID: a volume that takes this name later is never mounted in its place.
+      const r = await api<{ mount: Mount; error?: string }>('POST', '/mounts', { account_id: account, environment: envName, volume_name: name, volume_id: id, filter_junk: true, start: !locked })
       setAdded((x) => [...x, id])
       if (r.error) toast.error(r.error)
       else if (!locked) toast(t('toast.mounting', { name }))
