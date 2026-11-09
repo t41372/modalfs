@@ -75,6 +75,12 @@ type fileState struct {
 	recovered  bool
 	dirtySince time.Time // when the oldest uncommitted change was made
 
+	// baseRevision counts the commits that replaced the base. A read checks
+	// it to tell whether its plan still holds: size and mtime (in seconds)
+	// can stay the same across a commit.
+	baseRevision int64
+	readBaseLost bool // a completed conflict copy retired the local view
+
 	// sure holds the base's block hashes known to be its own: known before
 	// this edit began, or committed by it. Modal gives a block's URL with
 	// the file's size but no version, so a block learned since could belong
@@ -98,8 +104,8 @@ type fileState struct {
 	// written before it is durable, including what a sync in flight took.
 	syncMu sync.Mutex
 
-	// commitMu serializes commits of this file. Reads and writes never take
-	// it, so they carry on while a commit uploads.
+	// commitMu serializes commits of this file. Only a read that gets ESTALE
+	// waits for it: our own commit may have landed before updating the base.
 	commitMu   sync.Mutex
 	snap       *snapshot // the commit in flight, if any
 	prehashing bool      // prehashBase started for this state
@@ -440,12 +446,16 @@ func (st *fileState) readAt(buf []byte, off int64) (int, error) {
 	// the lock. If a commit changed the base meanwhile, read it all again.
 	for attempt := 0; ; attempt++ {
 		st.mu.Lock()
+		if st.readBaseLost {
+			st.mu.Unlock()
+			return 0, fmt.Errorf("%s changed during read: %w", st.path, syscall.ESTALE)
+		}
 		if off >= st.size {
 			st.mu.Unlock()
 			return 0, nil
 		}
 		end := min(off+int64(len(buf)), st.size)
-		ver := [3]int64{st.baseSize, st.baseMtime, st.truncFloor}
+		ver := [2]int64{st.baseRevision, st.truncFloor}
 		type part struct{ idx, inBlk, at, n int64 }
 		var remote []part
 		for pos := off; pos < end; {
@@ -460,16 +470,45 @@ func (st *fileState) readAt(buf []byte, off int64) (int, error) {
 		p, size, mtime := st.path, st.baseSize, st.baseMtime
 		st.mu.Unlock()
 
+		var readErr error
 		for _, r := range remote {
-			if err := st.fs.readRemoteBlock(p, size, mtime, r.idx, buf[r.at:r.at+r.n], r.inBlk); err != nil {
-				return 0, err
+			if readErr = st.fs.readRemoteBlock(p, size, mtime, r.idx, buf[r.at:r.at+r.n], r.inBlk); readErr != nil {
+				break
 			}
+		}
+		if readErr != nil && !errors.Is(readErr, syscall.ESTALE) {
+			return 0, readErr
+		}
+		if readErr != nil {
+			// Put may have landed while the commit still holds the old base.
+			// Wait without mu: finishing the commit needs it. Successful reads
+			// never wait for an upload, and another writer still gets ESTALE
+			// unless our base changed and a fresh plan can read it safely.
+			st.commitMu.Lock()
+			st.commitMu.Unlock()
 		}
 
 		st.mu.Lock()
-		if ver != [3]int64{st.baseSize, st.baseMtime, st.truncFloor} && attempt < 3 {
+		if st.readBaseLost {
+			// The local blocks went to a conflict copy. Retrying this path
+			// would lose those parts of the read, even if an earlier commit
+			// or truncate also changed the base while we read remotely.
 			st.mu.Unlock()
-			continue
+			if readErr == nil {
+				readErr = fmt.Errorf("%s changed during read: %w", p, syscall.ESTALE)
+			}
+			return 0, readErr
+		}
+		if ver != [2]int64{st.baseRevision, st.truncFloor} {
+			st.mu.Unlock()
+			if attempt < 3 {
+				continue
+			}
+			return 0, fmt.Errorf("%s changed during read: %w", p, syscall.ESTALE)
+		}
+		if readErr != nil {
+			st.mu.Unlock()
+			return 0, readErr
 		}
 		n, err := st.fillLocalLocked(buf, off)
 		st.mu.Unlock()
@@ -1243,7 +1282,15 @@ func (st *fileState) finishCommitLocked(sn *snapshot, target string, mtime int64
 	if st.deleted {
 		return
 	}
+	if target == st.path {
+		// Readers may still hold this state after a finished commit detaches
+		// it. They too need the committed version as their new base.
+		st.baseExists, st.baseSize, st.baseMtime = true, sn.size, mtime
+		st.baseRevision++
+		st.truncFloor = min(sn.size, sn.floor)
+	}
 	if st.gen == sn.gen && !sn.part {
+		st.readBaseLost = target != st.path
 		for i := range sn.dirty {
 			if int(i) < len(hashes) {
 				fs.cache.Adopt(hashes[i], st.blockFile(i), int64(st.fs.blockLen(sn.size, i)))
@@ -1277,9 +1324,7 @@ func (st *fileState) finishCommitLocked(sn *snapshot, target string, mtime int64
 	if target == st.path {
 		// The committed version is the new base. Snapshot blocks the live
 		// file didn't touch are identical to it, so they may stay dirty.
-		st.baseExists, st.baseSize, st.baseMtime = true, sn.size, mtime
 		st.sure, st.unsure = append([][]byte(nil), hashes...), nil
-		st.truncFloor = min(sn.size, sn.floor)
 		st.releaseCommittedLocked(sn, hashes)
 	}
 	st.dirtySince = time.Now()

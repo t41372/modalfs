@@ -50,6 +50,9 @@ type Options struct {
 	// TrimZeros makes block GETs omit trailing zero bytes, as Modal may when
 	// the client pads blocks.
 	TrimZeros bool
+	// InterceptRPC wraps RPCs after their simulated latency, without holding
+	// the server lock. Tests can use it to coordinate reads and commits.
+	InterceptRPC grpc.UnaryServerInterceptor
 }
 
 // Server is a running fake. Its URL goes in modalapi.Config.ServerURL.
@@ -143,13 +146,19 @@ func (s *Server) latency() time.Duration {
 	return s.opt.Latency
 }
 
-func (s *Server) delay(ctx context.Context, req any, _ *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
+func (s *Server) delay(ctx context.Context, req any, info *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
 	if d := s.latency(); d > 0 {
 		select {
 		case <-time.After(d):
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
+	}
+	s.mu.Lock()
+	intercept := s.opt.InterceptRPC
+	s.mu.Unlock()
+	if intercept != nil {
+		return intercept(ctx, req, info, h)
 	}
 	return h(ctx, req)
 }
