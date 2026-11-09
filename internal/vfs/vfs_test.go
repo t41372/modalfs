@@ -611,10 +611,10 @@ func TestFailedTruncateKeepsPendingTail(t *testing.T) {
 	f := newFakeFS(t, Options{WriteBack: time.Hour, MaxPending: -1})
 	f.put(t, "f", randBytes(2*blockSize))
 	ours := randBytes(blockSize)
+	f.client.Stub = refuseBlocks{f.client.Stub} // install before the write starts prehashing
 	if _, err := f.WriteAt("f", ours, blockSize); err != nil {
 		t.Fatal(err)
 	}
-	f.client.Stub = refuseBlocks{f.client.Stub}
 	if err := f.Truncate("f", blockSize/2); err == nil {
 		t.Fatal("the truncate succeeded without the block it cuts through")
 	}
